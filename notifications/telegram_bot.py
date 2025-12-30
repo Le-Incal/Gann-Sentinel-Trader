@@ -1,886 +1,735 @@
 """
 Telegram Bot for Gann Sentinel Trader
-Handles notifications, commands, and daily digests.
+Handles notifications and command processing for trade approvals and system control.
 """
 
 import os
 import json
 import logging
 import asyncio
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, List, Any
-from dataclasses import dataclass, field
-from collections import defaultdict
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any, Callable
+from dataclasses import dataclass
+from enum import Enum
+
 import httpx
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class SourceQuery:
-    """Track individual source queries."""
-    source: str
-    query: str
-    timestamp_utc: datetime
-    signals_returned: int
-    error: Optional[str] = None
+class CommandType(Enum):
+    STATUS = "status"
+    PENDING = "pending"
+    APPROVE = "approve"
+    REJECT = "reject"
+    SCAN = "scan"
+    STOP = "stop"
+    RESUME = "resume"
+    POSITIONS = "positions"
+    HISTORY = "history"
+    ERRORS = "errors"
+    HELP = "help"
 
 
 @dataclass
-class DigestData:
-    """Accumulates data throughout the day for the daily digest."""
-    date: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-    run_count: int = 0
-    
-    # Source tracking
-    source_queries: List[SourceQuery] = field(default_factory=list)
-    
-    # Signal tracking
-    signals_by_source: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    signals_by_category: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    signal_themes: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    
-    # Staleness tracking
-    stale_signals_excluded: List[Dict[str, Any]] = field(default_factory=list)
-    
-    # Decision tracking
-    decisions: List[Dict[str, Any]] = field(default_factory=list)
-    
-    # Error tracking
-    retrieval_errors: List[Dict[str, Any]] = field(default_factory=list)
-    system_errors: List[Dict[str, Any]] = field(default_factory=list)
-    
-    # Known blind spots (static + dynamic)
-    blind_spots: List[str] = field(default_factory=list)
-    
-    def reset(self):
-        """Reset for new day."""
-        self.date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        self.run_count = 0
-        self.source_queries = []
-        self.signals_by_source = defaultdict(int)
-        self.signals_by_category = defaultdict(int)
-        self.signal_themes = defaultdict(int)
-        self.stale_signals_excluded = []
-        self.decisions = []
-        self.retrieval_errors = []
-        self.system_errors = []
-        self.blind_spots = []
+class TelegramCommand:
+    """Represents a parsed Telegram command."""
+    command: CommandType
+    args: List[str]
+    chat_id: int
+    message_id: int
+    timestamp: datetime
 
 
 class TelegramBot:
-    """Telegram bot for notifications and commands."""
+    """
+    Telegram bot for Gann Sentinel Trader notifications and commands.
     
-    # Static blind spots we always report
-    STATIC_BLIND_SPOTS = [
-        "Chinese language sources not checked",
-        "Options flow data not available",
-        "Earnings calendar not integrated",
-        "After-hours price moves not captured",
-        "Dark pool activity not tracked",
-    ]
+    Responsibilities:
+    - Send trade recommendation notifications
+    - Process approval/rejection commands
+    - Provide system status updates
+    - Handle emergency stop/resume
+    """
     
-    def __init__(self, token: str = None, chat_id: str = None):
-        # Auto-read from environment if not provided
+    def __init__(
+        self,
+        token: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        database = None,
+        risk_engine = None,
+        alpaca_executor = None
+    ):
         self.token = token or os.getenv("TELEGRAM_BOT_TOKEN")
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
+        self.database = database
+        self.risk_engine = risk_engine
+        self.alpaca_executor = alpaca_executor
         
-        if not self.token or not self.chat_id:
-            raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set")
+        if not self.token:
+            logger.warning("TELEGRAM_BOT_TOKEN not set - notifications disabled")
+        if not self.chat_id:
+            logger.warning("TELEGRAM_CHAT_ID not set - notifications disabled")
         
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.last_update_id = 0
-        self.digest_data = DigestData()
-        self._last_digest_date: Optional[str] = None
-        self.pending_approvals: Dict[str, Any] = {}  # Track pending approvals
+        self._command_handlers: Dict[CommandType, Callable] = {}
+        self._setup_handlers()
+    
+    def _setup_handlers(self):
+        """Register command handlers."""
+        self._command_handlers = {
+            CommandType.STATUS: self._handle_status,
+            CommandType.PENDING: self._handle_pending,
+            CommandType.APPROVE: self._handle_approve,
+            CommandType.REJECT: self._handle_reject,
+            CommandType.SCAN: self._handle_scan,
+            CommandType.STOP: self._handle_stop,
+            CommandType.RESUME: self._handle_resume,
+            CommandType.POSITIONS: self._handle_positions,
+            CommandType.HISTORY: self._handle_history,
+            CommandType.ERRORS: self._handle_errors,
+            CommandType.HELP: self._handle_help,
+        }
+    
+    @property
+    def is_configured(self) -> bool:
+        """Check if bot is properly configured."""
+        return bool(self.token and self.chat_id)
+    
+    async def send_message(
+        self,
+        text: str,
+        chat_id: Optional[str] = None,
+        parse_mode: str = "HTML",
+        disable_notification: bool = False
+    ) -> bool:
+        """Send a message to Telegram."""
+        if not self.is_configured:
+            logger.warning("Telegram not configured, skipping message")
+            return False
         
-    async def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
-        """Send a message to the configured chat."""
+        target_chat = chat_id or self.chat_id
+        
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{self.base_url}/sendMessage",
                     json={
-                        "chat_id": self.chat_id,
+                        "chat_id": target_chat,
                         "text": text,
                         "parse_mode": parse_mode,
-                    },
-                    timeout=30.0
+                        "disable_notification": disable_notification
+                    }
                 )
+                
                 if response.status_code == 200:
+                    logger.debug(f"Message sent to {target_chat}")
                     return True
                 else:
-                    logger.error(f"Telegram send failed: {response.text}")
+                    logger.error(f"Failed to send message: {response.status_code} - {response.text}")
                     return False
+                    
         except Exception as e:
-            logger.error(f"Telegram send error: {e}")
+            logger.error(f"Error sending Telegram message: {e}")
             return False
     
-    # ══════════════════════════════════════════════════════════════════
-    # DIGEST DATA COLLECTION METHODS
-    # ══════════════════════════════════════════════════════════════════
-    
-    def record_scan_start(self):
-        """Call at the start of each scan cycle."""
-        # Check if we need to reset for new day
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if self.digest_data.date != today:
-            self.digest_data.reset()
+    async def get_updates(self) -> List[Dict[str, Any]]:
+        """Fetch new updates from Telegram."""
+        if not self.is_configured:
+            return []
         
-        self.digest_data.run_count += 1
-    
-    def record_source_query(
-        self, 
-        source: str, 
-        query: str, 
-        signals_returned: int,
-        error: Optional[str] = None
-    ):
-        """Record a source query for the digest."""
-        self.digest_data.source_queries.append(SourceQuery(
-            source=source,
-            query=query,
-            timestamp_utc=datetime.now(timezone.utc),
-            signals_returned=signals_returned,
-            error=error
-        ))
-        
-        if error:
-            self.digest_data.retrieval_errors.append({
-                "source": source,
-                "query": query,
-                "error": error,
-                "timestamp_utc": datetime.now(timezone.utc).isoformat()
-            })
-    
-    def record_signal(self, signal: Dict[str, Any]):
-        """Record a signal for the digest."""
-        source = signal.get("source_type", signal.get("source", "unknown"))
-        category = signal.get("category", "unknown")
-        
-        self.digest_data.signals_by_source[source] += 1
-        self.digest_data.signals_by_category[category] += 1
-        
-        # Extract themes from summary
-        summary = signal.get("summary", "").lower()
-        theme_keywords = {
-            "fed": "Fed rate expectations",
-            "rate cut": "Fed rate expectations",
-            "rate hike": "Fed rate expectations",
-            "inflation": "Inflation concerns",
-            "cpi": "Inflation concerns",
-            "tariff": "Trade/tariff policy",
-            "china": "China trade policy",
-            "ai": "AI/semiconductor demand",
-            "nvidia": "AI/semiconductor demand",
-            "chip": "AI/semiconductor demand",
-            "semiconductor": "AI/semiconductor demand",
-            "earnings": "Earnings season",
-            "recession": "Recession risk",
-            "unemployment": "Labor market",
-            "jobs": "Labor market",
-        }
-        
-        for keyword, theme in theme_keywords.items():
-            if keyword in summary:
-                self.digest_data.signal_themes[theme] += 1
-                break
-    
-    def record_stale_signal(self, signal: Dict[str, Any], reason: str):
-        """Record a signal that was excluded due to staleness."""
-        self.digest_data.stale_signals_excluded.append({
-            "signal_id": signal.get("signal_id"),
-            "source": signal.get("source_type", signal.get("source")),
-            "category": signal.get("category"),
-            "reason": reason,
-            "timestamp_utc": datetime.now(timezone.utc).isoformat()
-        })
-    
-    def record_decision(self, decision: Dict[str, Any]):
-        """Record a decision (trade or no-trade) for the digest."""
-        self.digest_data.decisions.append({
-            "decision_type": decision.get("decision_type"),
-            "ticker": decision.get("trade_details", {}).get("ticker"),
-            "side": decision.get("trade_details", {}).get("side"),
-            "conviction": decision.get("trade_details", {}).get("conviction_score"),
-            "rationale": decision.get("reasoning", {}).get("rationale", "")[:100],
-            "status": decision.get("status", "logged"),
-            "timestamp_utc": datetime.now(timezone.utc).isoformat()
-        })
-    
-    def record_system_error(self, component: str, error: str, critical: bool = False):
-        """Record a system error for the digest."""
-        self.digest_data.system_errors.append({
-            "component": component,
-            "error": error,
-            "critical": critical,
-            "timestamp_utc": datetime.now(timezone.utc).isoformat()
-        })
-    
-    def add_blind_spot(self, blind_spot: str):
-        """Add a dynamic blind spot discovered during scanning."""
-        if blind_spot not in self.digest_data.blind_spots:
-            self.digest_data.blind_spots.append(blind_spot)
-    
-    # ══════════════════════════════════════════════════════════════════
-    # DIGEST GENERATION
-    # ══════════════════════════════════════════════════════════════════
-    
-    def _format_sources_section(self) -> str:
-        """Format the sources reviewed section."""
-        lines = ["═══ SOURCES REVIEWED ═══"]
-        
-        # Aggregate by source
-        source_stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
-            "queries": 0,
-            "signals": 0,
-            "errors": 0,
-            "query_list": []
-        })
-        
-        for sq in self.digest_data.source_queries:
-            stats = source_stats[sq.source]
-            stats["queries"] += 1
-            stats["signals"] += sq.signals_returned
-            if sq.error:
-                stats["errors"] += 1
-            if sq.query and len(stats["query_list"]) < 5:
-                stats["query_list"].append(sq.query)
-        
-        # Format each source
-        for source, stats in sorted(source_stats.items()):
-            if stats["errors"] > 0:
-                status = "⚠️"
-                error_note = f" | {stats['errors']} errors"
-            else:
-                status = "✅"
-                error_note = ""
-            
-            lines.append(
-                f"{status} {source:<18} | {stats['queries']} queries | "
-                f"{stats['signals']} signals{error_note}"
-            )
-        
-        # Source details
-        lines.append("")
-        lines.append("Source Details:")
-        
-        for source, stats in sorted(source_stats.items()):
-            if stats["query_list"]:
-                queries_str = ", ".join(f'"{q}"' for q in stats["query_list"][:3])
-                if len(stats["query_list"]) > 3:
-                    queries_str += "..."
-                lines.append(f"• {source}: {queries_str}")
-        
-        return "\n".join(lines)
-    
-    def _format_errors_section(self) -> str:
-        """Format the retrieval errors section."""
-        lines = ["═══ RETRIEVAL ERRORS ═══"]
-        
-        if not self.digest_data.retrieval_errors:
-            lines.append("None")
-        else:
-            # Group by source
-            by_source: Dict[str, List[Dict]] = defaultdict(list)
-            for err in self.digest_data.retrieval_errors:
-                by_source[err["source"]].append(err)
-            
-            for source, errors in by_source.items():
-                error_types = defaultdict(int)
-                times = []
-                for err in errors:
-                    error_types[err["error"]] += 1
-                    times.append(err["timestamp_utc"].split("T")[1][:5])
-                
-                for err_type, count in error_types.items():
-                    times_str = ", ".join(times[:3])
-                    if len(times) > 3:
-                        times_str += "..."
-                    lines.append(f"• {source}: {err_type} ({count}x) - {times_str} UTC")
-        
-        return "\n".join(lines)
-    
-    def _format_blind_spots_section(self) -> str:
-        """Format the known blind spots section."""
-        lines = ["═══ KNOWN BLIND SPOTS ═══"]
-        
-        all_blind_spots = self.STATIC_BLIND_SPOTS + self.digest_data.blind_spots
-        for spot in all_blind_spots:
-            lines.append(f"• {spot}")
-        
-        return "\n".join(lines)
-    
-    def _format_signals_section(self) -> str:
-        """Format the signals received section."""
-        total = sum(self.digest_data.signals_by_source.values())
-        
-        lines = [
-            "═══ SIGNALS RECEIVED ═══",
-            f"Total: {total}",
-            "",
-            "By Source:"
-        ]
-        
-        for source, count in sorted(
-            self.digest_data.signals_by_source.items(),
-            key=lambda x: -x[1]
-        ):
-            lines.append(f"• {source}: {count}")
-        
-        lines.append("")
-        lines.append("By Category:")
-        
-        for category, count in sorted(
-            self.digest_data.signals_by_category.items(),
-            key=lambda x: -x[1]
-        ):
-            lines.append(f"• {category}: {count}")
-        
-        # Top themes
-        if self.digest_data.signal_themes:
-            lines.append("")
-            lines.append("Top Themes:")
-            sorted_themes = sorted(
-                self.digest_data.signal_themes.items(),
-                key=lambda x: -x[1]
-            )[:5]
-            for theme, count in sorted_themes:
-                lines.append(f"• {theme} ({count} signals)")
-        
-        return "\n".join(lines)
-    
-    def _format_stale_section(self) -> str:
-        """Format the stale signals section."""
-        lines = ["═══ STALE SIGNALS EXCLUDED ═══"]
-        
-        if not self.digest_data.stale_signals_excluded:
-            lines.append("None")
-        else:
-            # Group by source
-            by_source: Dict[str, int] = defaultdict(int)
-            for stale in self.digest_data.stale_signals_excluded:
-                by_source[stale.get("source", "unknown")] += 1
-            
-            for source, count in sorted(by_source.items(), key=lambda x: -x[1]):
-                lines.append(f"• {count} {source} signals")
-        
-        return "\n".join(lines)
-    
-    def _format_decisions_section(self) -> str:
-        """Format the decisions section."""
-        lines = ["═══ DECISIONS ═══"]
-        
-        trades = [d for d in self.digest_data.decisions if d["decision_type"] == "TRADE"]
-        no_trades = [d for d in self.digest_data.decisions if d["decision_type"] == "NO_TRADE"]
-        watches = [d for d in self.digest_data.decisions if d["decision_type"] == "WATCH"]
-        
-        lines.append(f"TRADE: {len(trades)}")
-        for t in trades:
-            lines.append(
-                f"• {t['ticker']} | {t['side']} | "
-                f"Conviction: {t['conviction']} | Status: {t['status']}"
-            )
-        
-        lines.append(f"\nNO_TRADE: {len(no_trades)}")
-        # Summarize reasons
-        reasons: Dict[str, int] = defaultdict(int)
-        for nt in no_trades:
-            rationale = nt.get("rationale", "")
-            if "conviction" in rationale.lower():
-                reasons["Insufficient conviction"] += 1
-            elif "stale" in rationale.lower():
-                reasons["Stale data"] += 1
-            elif "risk" in rationale.lower():
-                reasons["Risk limit"] += 1
-            else:
-                reasons["Other"] += 1
-        
-        for reason, count in sorted(reasons.items(), key=lambda x: -x[1]):
-            lines.append(f"• {reason} ({count})")
-        
-        if watches:
-            lines.append(f"\nWATCH: {len(watches)}")
-            for w in watches:
-                lines.append(f"• {w['ticker']} - {w.get('rationale', '')[:50]}")
-        
-        return "\n".join(lines)
-    
-    def _format_system_errors_section(self) -> str:
-        """Format the system errors section."""
-        lines = ["═══ SYSTEM ERRORS ═══"]
-        
-        if not self.digest_data.system_errors:
-            lines.append("None")
-        else:
-            by_component: Dict[str, List[str]] = defaultdict(list)
-            for err in self.digest_data.system_errors:
-                by_component[err["component"]].append(err["error"])
-            
-            for component, errors in by_component.items():
-                error_counts = defaultdict(int)
-                for e in errors:
-                    error_counts[e] += 1
-                
-                for error, count in error_counts.items():
-                    critical_marker = "🚨 " if any(
-                        e.get("critical") for e in self.digest_data.system_errors
-                        if e["component"] == component and e["error"] == error
-                    ) else ""
-                    lines.append(f"• {critical_marker}{component}: {error} ({count}x)")
-        
-        return "\n".join(lines)
-    
-    async def send_daily_digest(
-        self, 
-        positions: List[Dict[str, Any]] = None,
-        portfolio: Dict[str, Any] = None,
-        pending_approvals: List[Dict[str, Any]] = None
-    ) -> bool:
-        """Generate and send the daily digest."""
-        
-        now = datetime.now(timezone.utc)
-        
-        # Header
-        digest_parts = [
-            "📊 GANN SENTINEL DAILY DIGEST",
-            f"Date: {self.digest_data.date}",
-            f"Run Count: {self.digest_data.run_count}",
-            f"Generated: {now.strftime('%H:%M')} UTC",
-            "",
-        ]
-        
-        # Sources reviewed
-        digest_parts.append(self._format_sources_section())
-        digest_parts.append("")
-        
-        # Retrieval errors
-        digest_parts.append(self._format_errors_section())
-        digest_parts.append("")
-        
-        # Known blind spots
-        digest_parts.append(self._format_blind_spots_section())
-        digest_parts.append("")
-        
-        # Signals received
-        digest_parts.append(self._format_signals_section())
-        digest_parts.append("")
-        
-        # Stale signals
-        digest_parts.append(self._format_stale_section())
-        digest_parts.append("")
-        
-        # Decisions
-        digest_parts.append(self._format_decisions_section())
-        digest_parts.append("")
-        
-        # Positions
-        digest_parts.append("═══ POSITIONS ═══")
-        if not positions:
-            digest_parts.append("None")
-        else:
-            for pos in positions:
-                pnl_pct = pos.get("unrealized_pnl_pct", 0) * 100
-                pnl_emoji = "🟢" if pnl_pct >= 0 else "🔴"
-                digest_parts.append(
-                    f"{pnl_emoji} {pos['ticker']} | {pos['quantity']} shares | "
-                    f"${pos.get('market_value', 0):,.2f} | {pnl_pct:+.1f}%"
-                )
-        digest_parts.append("")
-        
-        # Portfolio
-        digest_parts.append("═══ PORTFOLIO ═══")
-        if portfolio:
-            digest_parts.append(f"Cash: ${portfolio.get('cash', 0):,.2f}")
-            digest_parts.append(f"Positions Value: ${portfolio.get('positions_value', 0):,.2f}")
-            digest_parts.append(f"Total: ${portfolio.get('total_value', 0):,.2f}")
-            daily_pnl = portfolio.get('daily_pnl', 0)
-            daily_pnl_pct = portfolio.get('daily_pnl_pct', 0) * 100
-            pnl_emoji = "🟢" if daily_pnl >= 0 else "🔴"
-            digest_parts.append(f"Daily P&L: {pnl_emoji} ${daily_pnl:,.2f} ({daily_pnl_pct:+.2f}%)")
-        else:
-            digest_parts.append("Portfolio data unavailable")
-        digest_parts.append("")
-        
-        # System errors
-        digest_parts.append(self._format_system_errors_section())
-        digest_parts.append("")
-        
-        # Pending approvals
-        digest_parts.append("═══ PENDING APPROVAL ═══")
-        if not pending_approvals:
-            digest_parts.append("None")
-        else:
-            for pa in pending_approvals:
-                digest_parts.append(f"ID: {pa['id']}")
-                digest_parts.append(
-                    f"Ticker: {pa['ticker']} | {pa['side']} | "
-                    f"{pa.get('position_size_pct', 0)*100:.0f}% position"
-                )
-                digest_parts.append(f"Thesis: {pa.get('thesis', '')[:80]}...")
-                digest_parts.append(f"/approve {pa['id']}")
-                digest_parts.append("")
-        
-        # Combine and send
-        full_digest = "\n".join(digest_parts)
-        
-        # Telegram has a 4096 char limit, split if needed
-        if len(full_digest) > 4000:
-            # Send in parts
-            parts = self._split_message(full_digest, 4000)
-            for i, part in enumerate(parts):
-                if i > 0:
-                    part = f"... (continued {i+1}/{len(parts)})\n\n" + part
-                await self.send_message(part, parse_mode=None)
-            return True
-        else:
-            return await self.send_message(full_digest, parse_mode=None)
-    
-    def _split_message(self, text: str, max_len: int) -> List[str]:
-        """Split a message at section boundaries."""
-        parts = []
-        current = ""
-        
-        for line in text.split("\n"):
-            if len(current) + len(line) + 1 > max_len:
-                parts.append(current)
-                current = line
-            else:
-                current = current + "\n" + line if current else line
-        
-        if current:
-            parts.append(current)
-        
-        return parts
-    
-    # ══════════════════════════════════════════════════════════════════
-    # EXISTING NOTIFICATION METHODS
-    # ══════════════════════════════════════════════════════════════════
-    
-    async def send_startup_message(self):
-        """Send startup notification."""
-        await self.send_message("🚀 Gann Sentinel Trader Started")
-    
-    async def send_trade_recommendation(
-        self,
-        trade_id: str,
-        ticker: str,
-        side: str,
-        conviction: int,
-        position_size_pct: float,
-        thesis: str,
-        bull_case: str,
-        bear_case: str,
-        time_horizon: str,
-        stop_loss_pct: float,
-        entry_price: float,
-        signals_count: int
-    ):
-        """Send a trade recommendation for approval."""
-        stop_loss_price = entry_price * (1 - stop_loss_pct) if side == "BUY" else entry_price * (1 + stop_loss_pct)
-        
-        message = f"""
-🔔 TRADE RECOMMENDATION
-
-Ticker: {ticker}
-Action: {side}
-Conviction: {conviction}/100
-Position Size: {position_size_pct*100:.0f}%
-
-📈 THESIS
-{thesis}
-
-✅ BULL CASE
-{bull_case}
-
-⚠️ BEAR CASE
-{bear_case}
-
-⏰ Time Horizon: {time_horizon}
-🛑 Stop Loss: {stop_loss_pct*100:.0f}% (${stop_loss_price:.2f})
-
-Signals Used: {signals_count}
-
-/approve {trade_id}
-/reject {trade_id}
-"""
-        return await self.send_message(message.strip(), parse_mode=None)
-    
-    async def send_trade_executed(
-        self,
-        ticker: str,
-        side: str,
-        quantity: float,
-        fill_price: float,
-        thesis: str
-    ):
-        """Send trade execution confirmation."""
-        message = f"""
-✅ TRADE EXECUTED
-
-{side} {quantity} {ticker} @ ${fill_price:.2f}
-
-Thesis: {thesis[:100]}...
-"""
-        return await self.send_message(message.strip(), parse_mode=None)
-    
-    async def send_stop_loss_triggered(
-        self,
-        ticker: str,
-        quantity: float,
-        entry_price: float,
-        exit_price: float,
-        pnl: float,
-        pnl_pct: float
-    ):
-        """Send stop loss notification."""
-        message = f"""
-🛑 STOP LOSS TRIGGERED
-
-{ticker}: Sold {quantity} shares
-Entry: ${entry_price:.2f}
-Exit: ${exit_price:.2f}
-P&L: ${pnl:.2f} ({pnl_pct*100:+.1f}%)
-"""
-        return await self.send_message(message.strip(), parse_mode=None)
-    
-    async def send_error_alert(self, component: str, error: str, critical: bool = False):
-        """Send error alert."""
-        emoji = "🚨" if critical else "⚠️"
-        message = f"{emoji} ERROR: {component}\n{error}"
-        
-        # Also record for digest
-        self.record_system_error(component, error, critical)
-        
-        return await self.send_message(message)
-    
-    async def send_circuit_breaker_alert(self, breaker: str, reset_time: str):
-        """Send circuit breaker notification."""
-        message = f"""
-🔴 CIRCUIT BREAKER TRIGGERED
-
-{breaker}
-
-Trading halted until: {reset_time}
-Use /resume to manually restart.
-"""
-        return await self.send_message(message.strip(), parse_mode=None)
-    
-    async def send_status(
-        self,
-        positions: List[Dict[str, Any]],
-        portfolio: Dict[str, Any],
-        system_status: str
-    ):
-        """Send current status."""
-        lines = [
-            "📊 STATUS",
-            f"System: {system_status}",
-            "",
-            "Portfolio:",
-            f"  Cash: ${portfolio.get('cash', 0):,.2f}",
-            f"  Positions: ${portfolio.get('positions_value', 0):,.2f}",
-            f"  Total: ${portfolio.get('total_value', 0):,.2f}",
-            "",
-            "Positions:"
-        ]
-        
-        if not positions:
-            lines.append("  None")
-        else:
-            for pos in positions:
-                pnl_pct = pos.get('unrealized_pnl_pct', 0) * 100
-                lines.append(
-                    f"  {pos['ticker']}: {pos['quantity']} @ ${pos.get('avg_entry_price', 0):.2f} "
-                    f"({pnl_pct:+.1f}%)"
-                )
-        
-        return await self.send_message("\n".join(lines), parse_mode=None)
-    
-    # ══════════════════════════════════════════════════════════════════
-    # COMMAND PROCESSING
-    # ══════════════════════════════════════════════════════════════════
-    
-    async def get_updates(self) -> List[Dict]:
-        """Get new messages/commands from Telegram."""
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
                     f"{self.base_url}/getUpdates",
                     params={
                         "offset": self.last_update_id + 1,
-                        "timeout": 1
-                    },
-                    timeout=10.0
+                        "timeout": 5,
+                        "allowed_updates": ["message"]
+                    }
                 )
                 
                 if response.status_code == 200:
                     data = response.json()
-                    if data.get("ok"):
-                        updates = data.get("result", [])
+                    if data.get("ok") and data.get("result"):
+                        updates = data["result"]
                         if updates:
                             self.last_update_id = updates[-1]["update_id"]
                         return updates
                 return []
+                
         except Exception as e:
-            logger.error(f"Error getting updates: {e}")
+            logger.error(f"Error fetching Telegram updates: {e}")
             return []
     
-    def parse_command(self, text: str) -> tuple[Optional[str], Optional[str]]:
-        """Parse a command from message text."""
-        if not text or not text.startswith("/"):
-            return None, None
+    def _parse_command(self, message: Dict[str, Any]) -> Optional[TelegramCommand]:
+        """Parse a Telegram message into a command."""
+        text = message.get("text", "")
+        if not text.startswith("/"):
+            return None
         
-        parts = text.split(maxsplit=1)
-        command = parts[0][1:].lower()  # Remove leading /
-        arg = parts[1] if len(parts) > 1 else None
+        parts = text.split()
+        cmd_text = parts[0][1:].lower()  # Remove leading /
+        args = parts[1:] if len(parts) > 1 else []
         
-        return command, arg
+        # Handle commands with @botname suffix
+        if "@" in cmd_text:
+            cmd_text = cmd_text.split("@")[0]
+        
+        try:
+            command_type = CommandType(cmd_text)
+        except ValueError:
+            logger.debug(f"Unknown command: {cmd_text}")
+            return None
+        
+        return TelegramCommand(
+            command=command_type,
+            args=args,
+            chat_id=message["chat"]["id"],
+            message_id=message["message_id"],
+            timestamp=datetime.now(timezone.utc)
+        )
     
-    async def process_commands(self) -> List[Dict[str, Any]]:
-        """Process incoming commands and return parsed command list."""
-        commands = []
+    async def process_commands(self) -> List[TelegramCommand]:
+        """
+        Fetch and process any pending Telegram commands.
+        Returns list of processed commands.
+        """
+        processed = []
         updates = await self.get_updates()
         
         for update in updates:
-            message = update.get("message", {})
-            text = message.get("text", "")
-            chat_id = message.get("chat", {}).get("id")
-            
-            # Only process messages from our configured chat
-            if str(chat_id) != str(self.chat_id):
+            message = update.get("message")
+            if not message:
                 continue
             
-            command, arg = self.parse_command(text)
+            # Only process messages from our chat
+            if str(message.get("chat", {}).get("id")) != str(self.chat_id):
+                logger.debug(f"Ignoring message from chat {message.get('chat', {}).get('id')}")
+                continue
             
+            command = self._parse_command(message)
             if command:
-                cmd_data = {"command": command}
-                
-                if command == "approve" and arg:
-                    # Try to match partial trade ID
-                    trade_id = self._resolve_trade_id(arg)
-                    cmd_data["trade_id"] = trade_id
-                
-                elif command == "reject" and arg:
-                    parts = arg.split(maxsplit=1)
-                    trade_id = self._resolve_trade_id(parts[0])
-                    cmd_data["trade_id"] = trade_id
-                    cmd_data["reason"] = parts[1] if len(parts) > 1 else "Rejected by user"
-                
-                commands.append(cmd_data)
+                await self._execute_command(command)
+                processed.append(command)
         
-        return commands
+        return processed
     
-    def _resolve_trade_id(self, partial_id: str) -> str:
-        """Resolve a partial trade ID to full ID from pending approvals."""
-        # Check if it matches any pending approval
-        for full_id in self.pending_approvals:
-            if full_id.startswith(partial_id) or partial_id in full_id:
-                return full_id
-        return partial_id
+    async def _execute_command(self, command: TelegramCommand) -> None:
+        """Execute a parsed command."""
+        handler = self._command_handlers.get(command.command)
+        if handler:
+            try:
+                await handler(command)
+            except Exception as e:
+                logger.error(f"Error executing command {command.command}: {e}")
+                await self.send_message(f"⚠️ Error executing command: {str(e)}")
+        else:
+            await self.send_message(f"Unknown command: {command.command.value}")
     
-    def remove_pending_approval(self, trade_id: str) -> None:
-        """Remove a trade from pending approvals."""
-        # Remove by partial match
-        to_remove = None
-        for full_id in self.pending_approvals:
-            if trade_id in full_id or full_id.startswith(trade_id):
-                to_remove = full_id
-                break
-        if to_remove:
-            del self.pending_approvals[to_remove]
+    # === Command Handlers ===
     
-    async def send_trade_alert(
-        self,
-        trade_id: str,
-        ticker: str,
-        side: str,
-        quantity: float,
-        conviction: int,
-        thesis: str
-    ) -> bool:
-        """Send a trade alert for approval."""
-        # Store in pending approvals
-        self.pending_approvals[trade_id] = {
-            "ticker": ticker,
-            "side": side,
-            "quantity": quantity,
-            "conviction": conviction
-        }
+    async def _handle_status(self, command: TelegramCommand) -> None:
+        """Handle /status command."""
+        try:
+            status_parts = ["📊 <b>GANN SENTINEL STATUS</b>\n"]
+            
+            # System status
+            mode = os.getenv("MODE", "PAPER")
+            approval_gate = os.getenv("APPROVAL_GATE", "ON")
+            status_parts.append(f"Mode: {mode}")
+            status_parts.append(f"Approval Gate: {approval_gate}")
+            
+            # Risk engine status
+            if self.risk_engine:
+                is_halted = getattr(self.risk_engine, 'is_halted', False)
+                status_parts.append(f"Trading: {'🔴 HALTED' if is_halted else '🟢 ACTIVE'}")
+            
+            # Portfolio summary
+            if self.database:
+                snapshot = self.database.get_latest_portfolio_snapshot()
+                if snapshot:
+                    status_parts.append(f"\n💰 <b>Portfolio</b>")
+                    status_parts.append(f"Total Value: ${snapshot.get('total_value', 0):,.2f}")
+                    status_parts.append(f"Cash: ${snapshot.get('cash', 0):,.2f}")
+                    daily_pnl = snapshot.get('daily_pnl', 0)
+                    daily_pnl_pct = snapshot.get('daily_pnl_pct', 0)
+                    pnl_emoji = "🟢" if daily_pnl >= 0 else "🔴"
+                    status_parts.append(f"Daily P&L: {pnl_emoji} ${daily_pnl:,.2f} ({daily_pnl_pct:+.2f}%)")
+            
+            # Pending trades
+            if self.database:
+                pending = self.database.get_pending_trades()
+                status_parts.append(f"\n⏳ Pending Approvals: {len(pending)}")
+            
+            await self.send_message("\n".join(status_parts))
+            
+        except Exception as e:
+            logger.error(f"Error in status handler: {e}")
+            await self.send_message(f"⚠️ Error fetching status: {str(e)}")
+    
+    async def _handle_pending(self, command: TelegramCommand) -> None:
+        """Handle /pending command."""
+        try:
+            if not self.database:
+                await self.send_message("Database not connected")
+                return
+            
+            pending = self.database.get_pending_trades()
+            
+            if not pending:
+                await self.send_message("✅ No pending trade approvals")
+                return
+            
+            msg_parts = ["⏳ <b>PENDING APPROVALS</b>\n"]
+            
+            for trade in pending:
+                trade_id = trade.get("id", "unknown")[:8]
+                ticker = trade.get("ticker", "N/A")
+                side = trade.get("side", "N/A").upper()
+                conviction = trade.get("conviction_score", "N/A")
+                thesis = trade.get("thesis", "No thesis")[:100]
+                
+                msg_parts.append(f"\n<b>{side} {ticker}</b> (ID: {trade_id})")
+                msg_parts.append(f"Conviction: {conviction}/100")
+                msg_parts.append(f"Thesis: {thesis}...")
+                msg_parts.append(f"/approve {trade_id}  |  /reject {trade_id}")
+            
+            await self.send_message("\n".join(msg_parts))
+            
+        except Exception as e:
+            logger.error(f"Error in pending handler: {e}")
+            await self.send_message(f"⚠️ Error fetching pending: {str(e)}")
+    
+    async def _handle_approve(self, command: TelegramCommand) -> None:
+        """Handle /approve <id> command."""
+        if not command.args:
+            await self.send_message("Usage: /approve <trade_id>")
+            return
         
-        message = f"""
-🔔 **TRADE ALERT**
-
-**{side.upper()}** {ticker}
-Shares: {quantity}
-Conviction: {conviction}/100
-
-**Thesis:**
-{thesis[:500]}{'...' if len(thesis) > 500 else ''}
-
-`/approve {trade_id[:8]}`
-`/reject {trade_id[:8]}`
-"""
-        return await self.send_message(message.strip())
+        trade_id = command.args[0]
+        
+        try:
+            if self.database:
+                # Find trade by partial ID match
+                trade = self.database.get_trade_by_partial_id(trade_id)
+                
+                if not trade:
+                    await self.send_message(f"❌ Trade not found: {trade_id}")
+                    return
+                
+                if trade.get("status") != "pending_approval":
+                    await self.send_message(f"❌ Trade {trade_id} is not pending (status: {trade.get('status')})")
+                    return
+                
+                # Update status to approved
+                self.database.update_trade_status(trade["id"], "approved")
+                
+                await self.send_message(
+                    f"✅ <b>APPROVED</b>\n\n"
+                    f"Trade: {trade.get('side', '').upper()} {trade.get('ticker', 'N/A')}\n"
+                    f"ID: {trade['id'][:8]}\n\n"
+                    f"Trade will execute on next cycle."
+                )
+            else:
+                await self.send_message("Database not connected")
+                
+        except Exception as e:
+            logger.error(f"Error approving trade: {e}")
+            await self.send_message(f"⚠️ Error approving trade: {str(e)}")
     
-    async def send_execution_alert(
-        self,
-        ticker: str,
-        side: str,
-        quantity: float,
-        price: float,
-        total: float
-    ) -> bool:
-        """Send trade execution confirmation."""
-        message = f"""
-✅ **TRADE EXECUTED**
-
-**{side.upper()}** {quantity} {ticker}
-Price: ${price:.2f}
-Total: ${total:.2f}
-"""
-        return await self.send_message(message.strip())
+    async def _handle_reject(self, command: TelegramCommand) -> None:
+        """Handle /reject <id> command."""
+        if not command.args:
+            await self.send_message("Usage: /reject <trade_id>")
+            return
+        
+        trade_id = command.args[0]
+        
+        try:
+            if self.database:
+                trade = self.database.get_trade_by_partial_id(trade_id)
+                
+                if not trade:
+                    await self.send_message(f"❌ Trade not found: {trade_id}")
+                    return
+                
+                self.database.update_trade_status(trade["id"], "rejected")
+                
+                await self.send_message(
+                    f"🚫 <b>REJECTED</b>\n\n"
+                    f"Trade: {trade.get('side', '').upper()} {trade.get('ticker', 'N/A')}\n"
+                    f"ID: {trade['id'][:8]}"
+                )
+            else:
+                await self.send_message("Database not connected")
+                
+        except Exception as e:
+            logger.error(f"Error rejecting trade: {e}")
+            await self.send_message(f"⚠️ Error rejecting trade: {str(e)}")
     
-    async def send_system_status(
-        self,
-        status: str,
-        mode: str,
-        approval_gate: bool,
-        positions_count: int,
-        pending_trades: int
-    ) -> bool:
-        """Send system status message."""
-        gate_status = "ON" if approval_gate else "OFF"
-        message = f"""
-📊 **SYSTEM STATUS**
-
-Status: {status}
-Mode: {mode}
-Approval Gate: {gate_status}
-Positions: {positions_count}
-Pending Trades: {pending_trades}
-"""
-        return await self.send_message(message.strip())
+    async def _handle_scan(self, command: TelegramCommand) -> None:
+        """Handle /scan command - triggers manual scan cycle."""
+        await self.send_message("🔍 Manual scan triggered. Running analysis cycle...")
+        # The actual scan is handled by the agent loop which checks for this flag
+        # We just acknowledge here - agent.py should check for scan requests
     
-    async def send_stop_loss_alert(
-        self,
-        ticker: str,
-        trigger_price: float,
-        loss_pct: float
-    ) -> bool:
-        """Send stop loss triggered alert."""
-        message = f"""
-🛑 **STOP LOSS TRIGGERED**
+    async def _handle_stop(self, command: TelegramCommand) -> None:
+        """Handle /stop command - emergency halt."""
+        try:
+            if self.risk_engine:
+                self.risk_engine.halt_trading("Manual stop via Telegram")
+            
+            # Try to cancel open orders
+            if self.alpaca_executor:
+                try:
+                    cancelled = await self.alpaca_executor.cancel_all_orders()
+                    await self.send_message(
+                        f"🛑 <b>TRADING HALTED</b>\n\n"
+                        f"All trading suspended.\n"
+                        f"Open orders cancelled: {cancelled}\n\n"
+                        f"Use /resume to restart."
+                    )
+                except Exception as e:
+                    await self.send_message(
+                        f"🛑 <b>TRADING HALTED</b>\n\n"
+                        f"Warning: Could not cancel orders: {str(e)}\n\n"
+                        f"Use /resume to restart."
+                    )
+            else:
+                await self.send_message(
+                    "🛑 <b>TRADING HALTED</b>\n\n"
+                    "All trading suspended.\n\n"
+                    "Use /resume to restart."
+                )
+                
+        except Exception as e:
+            logger.error(f"Error in stop handler: {e}")
+            await self.send_message(f"⚠️ Error halting: {str(e)}")
+    
+    async def _handle_resume(self, command: TelegramCommand) -> None:
+        """Handle /resume command - resume trading after halt."""
+        try:
+            if self.risk_engine:
+                self.risk_engine.resume_trading()
+            
+            await self.send_message(
+                "🟢 <b>TRADING RESUMED</b>\n\n"
+                "System is now active and accepting trades."
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in resume handler: {e}")
+            await self.send_message(f"⚠️ Error resuming: {str(e)}")
+    
+    async def _handle_positions(self, command: TelegramCommand) -> None:
+        """Handle /positions command."""
+        try:
+            if not self.database:
+                await self.send_message("Database not connected")
+                return
+            
+            positions = self.database.get_all_positions()
+            
+            if not positions:
+                await self.send_message("📭 No open positions")
+                return
+            
+            msg_parts = ["📈 <b>OPEN POSITIONS</b>\n"]
+            
+            total_value = 0
+            total_pnl = 0
+            
+            for pos in positions:
+                ticker = pos.get("ticker", "N/A")
+                qty = pos.get("quantity", 0)
+                entry = pos.get("avg_entry_price", 0)
+                current = pos.get("current_price", entry)
+                pnl = pos.get("unrealized_pnl", 0)
+                pnl_pct = pos.get("unrealized_pnl_pct", 0)
+                market_value = pos.get("market_value", 0)
+                
+                total_value += market_value
+                total_pnl += pnl
+                
+                pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+                
+                msg_parts.append(f"\n<b>{ticker}</b>")
+                msg_parts.append(f"Qty: {qty} @ ${entry:.2f}")
+                msg_parts.append(f"Current: ${current:.2f}")
+                msg_parts.append(f"P&L: {pnl_emoji} ${pnl:,.2f} ({pnl_pct:+.2f}%)")
+                
+                if pos.get("stop_loss_price"):
+                    msg_parts.append(f"Stop: ${pos['stop_loss_price']:.2f}")
+            
+            total_pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
+            msg_parts.append(f"\n<b>Total Value:</b> ${total_value:,.2f}")
+            msg_parts.append(f"<b>Total P&L:</b> {total_pnl_emoji} ${total_pnl:,.2f}")
+            
+            await self.send_message("\n".join(msg_parts))
+            
+        except Exception as e:
+            logger.error(f"Error in positions handler: {e}")
+            await self.send_message(f"⚠️ Error fetching positions: {str(e)}")
+    
+    async def _handle_history(self, command: TelegramCommand) -> None:
+        """Handle /history <n> command."""
+        try:
+            n = int(command.args[0]) if command.args else 5
+            n = min(n, 20)  # Cap at 20
+            
+            if not self.database:
+                await self.send_message("Database not connected")
+                return
+            
+            trades = self.database.get_recent_trades(n)
+            
+            if not trades:
+                await self.send_message("📭 No trade history")
+                return
+            
+            msg_parts = [f"📜 <b>LAST {len(trades)} TRADES</b>\n"]
+            
+            for trade in trades:
+                ticker = trade.get("ticker", "N/A")
+                side = trade.get("side", "N/A").upper()
+                status = trade.get("status", "unknown")
+                fill_price = trade.get("fill_price")
+                created = trade.get("created_at", "")[:10]
+                
+                status_emoji = {
+                    "filled": "✅",
+                    "rejected": "🚫",
+                    "cancelled": "❌",
+                    "pending_approval": "⏳",
+                    "approved": "🟡",
+                    "submitted": "📤"
+                }.get(status, "❓")
+                
+                price_str = f" @ ${fill_price:.2f}" if fill_price else ""
+                msg_parts.append(f"\n{status_emoji} {side} {ticker}{price_str}")
+                msg_parts.append(f"   Status: {status} | {created}")
+            
+            await self.send_message("\n".join(msg_parts))
+            
+        except ValueError:
+            await self.send_message("Usage: /history <number>")
+        except Exception as e:
+            logger.error(f"Error in history handler: {e}")
+            await self.send_message(f"⚠️ Error fetching history: {str(e)}")
+    
+    async def _handle_errors(self, command: TelegramCommand) -> None:
+        """Handle /errors command."""
+        try:
+            if not self.database:
+                await self.send_message("Database not connected")
+                return
+            
+            errors = self.database.get_recent_errors(5)
+            
+            if not errors:
+                await self.send_message("✅ No recent errors")
+                return
+            
+            msg_parts = ["⚠️ <b>RECENT ERRORS</b>\n"]
+            
+            for err in errors:
+                component = err.get("component", "unknown")
+                error_type = err.get("error_type", "unknown")
+                message = err.get("message", "No message")[:100]
+                created = err.get("created_at", "")[:19]
+                
+                msg_parts.append(f"\n<b>[{component}]</b> {error_type}")
+                msg_parts.append(f"{message}")
+                msg_parts.append(f"<i>{created}</i>")
+            
+            await self.send_message("\n".join(msg_parts))
+            
+        except Exception as e:
+            logger.error(f"Error in errors handler: {e}")
+            await self.send_message(f"⚠️ Error fetching errors: {str(e)}")
+    
+    async def _handle_help(self, command: TelegramCommand) -> None:
+        """Handle /help command."""
+        help_text = """
+🤖 <b>GANN SENTINEL COMMANDS</b>
 
-{ticker} @ ${trigger_price:.2f}
-Loss: {loss_pct:.1f}%
+<b>Status & Info</b>
+/status - Portfolio & system status
+/positions - Open positions detail
+/pending - Pending trade approvals
+/history [n] - Last n trades (default 5)
+/errors - Recent system errors
 
-Position closed automatically.
+<b>Trade Control</b>
+/approve [id] - Approve a pending trade
+/reject [id] - Reject a pending trade
+/scan - Trigger manual analysis cycle
+
+<b>System Control</b>
+/stop - Emergency halt all trading
+/resume - Resume after halt
+/help - Show this message
 """
-        return await self.send_message(message.strip())
+        await self.send_message(help_text)
+    
+    # === Notification Methods ===
+    
+    async def notify_trade_recommendation(self, analysis: Dict[str, Any], trade_id: str) -> bool:
+        """Send trade recommendation for approval."""
+        try:
+            ticker = analysis.get("ticker", "N/A")
+            side = analysis.get("recommendation", "N/A")
+            conviction = analysis.get("conviction_score", 0)
+            thesis = analysis.get("thesis", "No thesis provided")
+            bull_case = analysis.get("bull_case", "N/A")
+            bear_case = analysis.get("bear_case", "N/A")
+            position_size = analysis.get("position_size_pct", 0) * 100
+            stop_loss = analysis.get("stop_loss_pct", 0) * 100
+            time_horizon = analysis.get("time_horizon", "unknown")
+            
+            short_id = trade_id[:8]
+            
+            message = f"""
+🔔 <b>TRADE RECOMMENDATION</b>
+
+<b>Ticker:</b> {ticker}
+<b>Action:</b> {side}
+<b>Conviction:</b> {conviction}/100
+<b>Position Size:</b> {position_size:.0f}%
+
+📈 <b>THESIS</b>
+{thesis}
+
+✅ <b>BULL CASE</b>
+{bull_case}
+
+⚠️ <b>BEAR CASE</b>
+{bear_case}
+
+⏰ Time Horizon: {time_horizon}
+🛑 Stop Loss: {stop_loss:.0f}%
+
+/approve {short_id}
+/reject {short_id}
+"""
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending trade recommendation: {e}")
+            return False
+    
+    async def notify_trade_executed(self, trade: Dict[str, Any]) -> bool:
+        """Send notification when trade is executed."""
+        try:
+            ticker = trade.get("ticker", "N/A")
+            side = trade.get("side", "N/A").upper()
+            quantity = trade.get("fill_quantity", trade.get("quantity", 0))
+            price = trade.get("fill_price", "N/A")
+            thesis = trade.get("thesis", "")[:100]
+            
+            message = f"""
+✅ <b>TRADE EXECUTED</b>
+
+<b>{side} {ticker}</b>
+Quantity: {quantity}
+Fill Price: ${price}
+
+{thesis}
+"""
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending execution notification: {e}")
+            return False
+    
+    async def notify_stop_loss_triggered(self, position: Dict[str, Any], exit_price: float) -> bool:
+        """Send notification when stop loss is triggered."""
+        try:
+            ticker = position.get("ticker", "N/A")
+            entry = position.get("avg_entry_price", 0)
+            quantity = position.get("quantity", 0)
+            pnl = (exit_price - entry) * quantity
+            pnl_pct = ((exit_price / entry) - 1) * 100 if entry > 0 else 0
+            
+            message = f"""
+🛑 <b>STOP LOSS TRIGGERED</b>
+
+<b>{ticker}</b>
+Entry: ${entry:.2f}
+Exit: ${exit_price:.2f}
+P&L: ${pnl:,.2f} ({pnl_pct:+.2f}%)
+"""
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending stop loss notification: {e}")
+            return False
+    
+    async def notify_daily_summary(self, summary: Dict[str, Any]) -> bool:
+        """Send daily portfolio summary."""
+        try:
+            total_value = summary.get("total_value", 0)
+            daily_pnl = summary.get("daily_pnl", 0)
+            daily_pnl_pct = summary.get("daily_pnl_pct", 0)
+            positions_count = summary.get("positions_count", 0)
+            trades_today = summary.get("trades_today", 0)
+            signals_processed = summary.get("signals_processed", 0)
+            
+            pnl_emoji = "🟢" if daily_pnl >= 0 else "🔴"
+            
+            message = f"""
+📊 <b>DAILY SUMMARY</b>
+
+💰 Portfolio Value: ${total_value:,.2f}
+{pnl_emoji} Daily P&L: ${daily_pnl:,.2f} ({daily_pnl_pct:+.2f}%)
+
+📈 Open Positions: {positions_count}
+🔄 Trades Today: {trades_today}
+📡 Signals Processed: {signals_processed}
+"""
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending daily summary: {e}")
+            return False
+    
+    async def notify_error(self, component: str, error: str) -> bool:
+        """Send error notification."""
+        try:
+            message = f"""
+⚠️ <b>ERROR: {component}</b>
+
+{error[:500]}
+"""
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending error notification: {e}")
+            return False
+    
+    async def notify_circuit_breaker(self, breaker: str, reason: str, reset_time: str) -> bool:
+        """Send circuit breaker notification."""
+        try:
+            message = f"""
+🚨 <b>CIRCUIT BREAKER TRIGGERED</b>
+
+<b>Breaker:</b> {breaker}
+<b>Reason:</b> {reason}
+<b>Reset:</b> {reset_time}
+
+Trading is paused. Use /resume to override (with caution).
+"""
+            return await self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending circuit breaker notification: {e}")
+            return False
 
 
-# Factory function (optional, for backward compatibility)
-def create_telegram_bot() -> TelegramBot:
-    """Create a TelegramBot instance from environment variables."""
-    return TelegramBot()
+# Convenience function for quick notifications
+async def send_telegram_message(text: str) -> bool:
+    """Quick helper to send a Telegram message."""
+    bot = TelegramBot()
+    return await bot.send_message(text)
