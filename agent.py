@@ -329,6 +329,9 @@ class GannSentinelAgent:
         
         logger.info(f"Total signals gathered: {len(signals)}")
         
+        # Convert signals to dict for summary
+        signals_dict = [s.to_dict() if hasattr(s, 'to_dict') else s for s in signals]
+        
         if not signals:
             logger.warning("No signals gathered - skipping analysis")
             # Record no-trade decision for digest
@@ -336,6 +339,13 @@ class GannSentinelAgent:
                 "decision_type": "NO_TRADE",
                 "reasoning": {"rationale": "No signals gathered"}
             })
+            
+            # Still send scan summary even with no signals
+            await self.telegram.send_scan_summary(
+                signals=signals_dict,
+                analysis=None,
+                portfolio=None
+            )
             return
         
         # 3. Get portfolio context
@@ -343,19 +353,26 @@ class GannSentinelAgent:
         positions = await self.executor.get_positions()
         
         # Save portfolio snapshot
-        self.db.save_snapshot(portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio)
+        portfolio_dict = portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio
+        self.db.save_snapshot(portfolio_dict)
         
         # 4. Run Claude analysis
         logger.info("Running Claude analysis...")
+        analysis = None
+        analysis_dict = None
+        
         try:
             analysis = await self.analyst.analyze_signals(
                 signals=signals,
-                portfolio_context=portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio,
+                portfolio_context=portfolio_dict,
                 watchlist=self.watchlist
             )
             
+            # Convert to dict for summary
+            analysis_dict = analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis
+            
             # Save analysis
-            self.db.save_analysis(analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis)
+            self.db.save_analysis(analysis_dict)
             
             # 5. Check if we have an actionable trade
             if analysis.is_actionable:
@@ -397,6 +414,19 @@ class GannSentinelAgent:
                 "decision_type": "NO_TRADE",
                 "reasoning": {"rationale": f"Analysis error: {str(e)[:50]}"}
             })
+        
+        # 6. SEND COMPREHENSIVE SCAN SUMMARY
+        # This is the key addition - send full visibility after every scan
+        try:
+            await self.telegram.send_scan_summary(
+                signals=signals_dict,
+                analysis=analysis_dict,
+                portfolio=portfolio_dict
+            )
+            logger.info("Scan summary sent to Telegram")
+        except Exception as e:
+            logger.error(f"Failed to send scan summary: {e}")
+            # Don't let summary failure break the cycle
     
     async def _handle_trade_recommendation(
         self,
@@ -728,6 +758,9 @@ class GannSentinelAgent:
 /stop - Emergency halt (cancels all orders)
 /resume - Resume trading after stop
 /help - Show this message
+
+**Scan Summaries:**
+Automatic after every scan cycle (~hourly)
 
 **Digest Schedule:**
 Daily at 4 PM ET (9 PM UTC)
