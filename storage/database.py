@@ -343,7 +343,7 @@ class Database:
             return trade_id
     
     def get_trade(self, trade_id: str) -> Optional[dict]:
-        """Get a specific trade by ID."""
+        """Get a specific trade by ID (supports partial ID match)."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM trades WHERE id = ? OR id LIKE ?", (trade_id, f"{trade_id}%"))
@@ -355,6 +355,17 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM trades WHERE status = 'pending_approval' ORDER BY created_at DESC")
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    
+    def get_recent_trades(self, limit: int = 10) -> List[dict]:
+        """Get recent trades ordered by creation date."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM trades ORDER BY created_at DESC LIMIT ?",
+                (limit,)
+            )
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
     
