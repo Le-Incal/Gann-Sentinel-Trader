@@ -26,6 +26,7 @@ class TelegramBot:
     - Process approval/rejection commands (returns dicts for agent to handle)
     - Provide system status updates
     - Track digest data (scans, signals, decisions)
+    - Send comprehensive scan summaries
     """
     
     def __init__(
@@ -220,7 +221,7 @@ class TelegramBot:
     def record_signal(self, signal: Dict[str, Any]) -> None:
         """Record a signal for digest."""
         self._signals.append(signal)
-        logger.debug(f"Signal recorded: {signal.get('signal_id', 'unknown')[:8]}")
+        logger.debug(f"Signal recorded: {signal.get('signal_id', 'unknown')[:8] if signal.get('signal_id') else 'unknown'}")
     
     def record_decision(self, decision: Dict[str, Any]) -> None:
         """Record a decision for digest."""
@@ -244,6 +245,252 @@ class TelegramBot:
         if trade_id in self._pending_approvals:
             self._pending_approvals.remove(trade_id)
             logger.debug(f"Removed pending approval: {trade_id}")
+    
+    # =========================================================================
+    # COMPREHENSIVE SCAN SUMMARY
+    # =========================================================================
+    
+    async def send_scan_summary(
+        self,
+        signals: List[Dict[str, Any]],
+        analysis: Optional[Dict[str, Any]],
+        portfolio: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Send a comprehensive scan summary after each scan cycle.
+        
+        This provides full visibility into:
+        - What sources were queried
+        - What signals were found
+        - Key highlights from each source
+        - Claude's analysis and reasoning
+        - Trade opportunities considered
+        - Conviction score and decision
+        """
+        now = datetime.now(timezone.utc)
+        scan_duration = None
+        if self._scan_start_time:
+            scan_duration = (now - self._scan_start_time).total_seconds()
+        
+        msg_parts = []
+        
+        # Header
+        msg_parts.append("=" * 35)
+        msg_parts.append("🔍 **SCAN CYCLE COMPLETE**")
+        msg_parts.append(f"_{now.strftime('%Y-%m-%d %H:%M:%S UTC')}_")
+        if scan_duration:
+            msg_parts.append(f"Duration: {scan_duration:.1f}s")
+        msg_parts.append("=" * 35)
+        
+        # =====================================================================
+        # SOURCES & SIGNAL COUNTS
+        # =====================================================================
+        msg_parts.append("\n📡 **DATA SOURCES**")
+        
+        total_signals = 0
+        errors = []
+        
+        for query in self._source_queries:
+            source = query.get("source", "Unknown")
+            count = query.get("signals_returned", 0)
+            error = query.get("error")
+            total_signals += count
+            
+            if error:
+                msg_parts.append(f"  ❌ {source}: ERROR ({error})")
+                errors.append(source)
+            else:
+                msg_parts.append(f"  ✓ {source}: {count} signals")
+        
+        msg_parts.append(f"\n**Total Signals: {total_signals}**")
+        
+        # =====================================================================
+        # KEY SIGNALS BY CATEGORY
+        # =====================================================================
+        if signals:
+            msg_parts.append("\n" + "-" * 35)
+            msg_parts.append("📊 **KEY SIGNALS**")
+            
+            # Group signals by category/type
+            sentiment_signals = []
+            macro_signals = []
+            prediction_signals = []
+            other_signals = []
+            
+            for sig in signals:
+                sig_type = sig.get("signal_type") or sig.get("category") or ""
+                source = sig.get("source") or sig.get("source_type") or ""
+                
+                if "sentiment" in sig_type.lower() or "grok" in source.lower():
+                    sentiment_signals.append(sig)
+                elif "macro" in sig_type.lower() or "fred" in source.lower():
+                    macro_signals.append(sig)
+                elif "prediction" in sig_type.lower() or "polymarket" in source.lower():
+                    prediction_signals.append(sig)
+                else:
+                    other_signals.append(sig)
+            
+            # Sentiment/Social signals
+            if sentiment_signals:
+                msg_parts.append(f"\n**🐦 SENTIMENT ({len(sentiment_signals)})**")
+                for sig in sentiment_signals[:3]:  # Top 3
+                    summary = sig.get("summary", "")[:100]
+                    bias = sig.get("directional_bias", "unclear")
+                    confidence = sig.get("confidence", 0)
+                    
+                    # Get tickers
+                    tickers = sig.get("asset_scope", {}).get("tickers", [])
+                    ticker_str = ", ".join(tickers[:3]) if tickers else "Market"
+                    
+                    bias_emoji = "🟢" if bias == "positive" else "🔴" if bias == "negative" else "⚪"
+                    msg_parts.append(f"  {bias_emoji} [{ticker_str}] {summary}")
+                    if confidence:
+                        msg_parts.append(f"     Confidence: {confidence:.0%}")
+            
+            # Macro signals
+            if macro_signals:
+                msg_parts.append(f"\n**📈 MACRO DATA ({len(macro_signals)})**")
+                for sig in macro_signals[:4]:  # Top 4
+                    summary = sig.get("summary", "")[:80]
+                    raw_value = sig.get("raw_value", {})
+                    value = raw_value.get("value")
+                    change = raw_value.get("change")
+                    
+                    if value is not None:
+                        change_str = f" (Δ {change:+.2f})" if change else ""
+                        msg_parts.append(f"  • {summary}{change_str}")
+                    else:
+                        msg_parts.append(f"  • {summary}")
+            
+            # Prediction market signals
+            if prediction_signals:
+                msg_parts.append(f"\n**🎯 PREDICTIONS ({len(prediction_signals)})**")
+                # Sort by change magnitude to show most interesting
+                sorted_preds = sorted(
+                    prediction_signals,
+                    key=lambda x: abs(x.get("raw_value", {}).get("change") or 0),
+                    reverse=True
+                )
+                for sig in sorted_preds[:3]:  # Top 3 by change
+                    summary = sig.get("summary", "")[:80]
+                    raw_value = sig.get("raw_value", {})
+                    prob = raw_value.get("value")
+                    change = raw_value.get("change")
+                    
+                    if prob is not None:
+                        prob_pct = prob * 100 if prob <= 1 else prob
+                        change_str = f" (Δ {change:+.1%})" if change else ""
+                        msg_parts.append(f"  • {prob_pct:.0f}%{change_str}: {summary}")
+                    else:
+                        msg_parts.append(f"  • {summary}")
+        
+        # =====================================================================
+        # CLAUDE'S ANALYSIS
+        # =====================================================================
+        msg_parts.append("\n" + "-" * 35)
+        msg_parts.append("🧠 **CLAUDE'S ANALYSIS**")
+        
+        if analysis:
+            ticker = analysis.get("ticker")
+            recommendation = analysis.get("recommendation", "NONE")
+            conviction = analysis.get("conviction_score", 0)
+            thesis = analysis.get("thesis", "")
+            bull_case = analysis.get("bull_case", "")
+            bear_case = analysis.get("bear_case", "")
+            time_horizon = analysis.get("time_horizon", "unknown")
+            
+            # Decision header
+            if recommendation in ["BUY", "SELL"] and conviction >= 80:
+                decision_emoji = "🚨"
+                decision_text = f"**{recommendation} {ticker}**"
+            elif recommendation in ["BUY", "SELL"]:
+                decision_emoji = "👀"
+                decision_text = f"Watching {ticker} ({recommendation})"
+            else:
+                decision_emoji = "💤"
+                decision_text = "No actionable opportunity"
+            
+            msg_parts.append(f"\n{decision_emoji} **Decision: {decision_text}**")
+            msg_parts.append(f"**Conviction Score: {conviction}/100**")
+            
+            # Conviction bar visualization
+            filled = int(conviction / 10)
+            empty = 10 - filled
+            bar = "█" * filled + "░" * empty
+            threshold_note = " ← Threshold: 80" if conviction < 80 else " ✓ ACTIONABLE"
+            msg_parts.append(f"`[{bar}]`{threshold_note}")
+            
+            if ticker:
+                msg_parts.append(f"Ticker: {ticker}")
+                msg_parts.append(f"Time Horizon: {time_horizon}")
+            
+            # Thesis
+            if thesis:
+                msg_parts.append(f"\n**Thesis:**")
+                msg_parts.append(f"_{thesis[:300]}_")
+            
+            # Bull/Bear cases (abbreviated)
+            if bull_case:
+                msg_parts.append(f"\n**Bull Case:** {bull_case[:150]}...")
+            if bear_case:
+                msg_parts.append(f"\n**Bear Case:** {bear_case[:150]}...")
+            
+            # If there's a specific trade opportunity
+            if recommendation in ["BUY", "SELL"]:
+                entry_price = analysis.get("entry_price_target")
+                stop_loss = analysis.get("stop_loss_pct", 0.15)
+                position_size = analysis.get("position_size_pct", 0)
+                
+                msg_parts.append(f"\n**Trade Parameters:**")
+                if entry_price:
+                    msg_parts.append(f"  Entry Target: ${entry_price:.2f}")
+                msg_parts.append(f"  Stop Loss: {stop_loss:.0%}")
+                if position_size:
+                    msg_parts.append(f"  Position Size: {position_size:.0%} of portfolio")
+        else:
+            msg_parts.append("\n❌ No analysis generated")
+        
+        # =====================================================================
+        # PORTFOLIO CONTEXT (if provided)
+        # =====================================================================
+        if portfolio:
+            msg_parts.append("\n" + "-" * 35)
+            msg_parts.append("💰 **PORTFOLIO CONTEXT**")
+            
+            equity = portfolio.get("equity") or portfolio.get("total_value", 0)
+            cash = portfolio.get("cash", 0)
+            buying_power = portfolio.get("buying_power", 0)
+            position_count = portfolio.get("position_count", 0)
+            
+            msg_parts.append(f"  Equity: ${equity:,.2f}")
+            msg_parts.append(f"  Cash: ${cash:,.2f}")
+            msg_parts.append(f"  Buying Power: ${buying_power:,.2f}")
+            msg_parts.append(f"  Open Positions: {position_count}")
+        
+        # =====================================================================
+        # ERRORS (if any)
+        # =====================================================================
+        if errors or self._system_errors:
+            msg_parts.append("\n" + "-" * 35)
+            msg_parts.append("⚠️ **ERRORS**")
+            for err in errors:
+                msg_parts.append(f"  • Source error: {err}")
+            for err in self._system_errors[-3:]:
+                msg_parts.append(f"  • {err.get('component')}: {err.get('error', '')[:50]}")
+        
+        # Footer
+        msg_parts.append("\n" + "=" * 35)
+        next_scan = "~60 minutes"
+        msg_parts.append(f"_Next scan in {next_scan}_")
+        
+        # Join and send
+        message = "\n".join(msg_parts)
+        
+        # Telegram has a 4096 character limit - truncate if needed
+        if len(message) > 4000:
+            message = message[:3950] + "\n\n_[Message truncated]_"
+        
+        return await self.send_message(message)
     
     # =========================================================================
     # NOTIFICATION METHODS (called by agent)
@@ -383,7 +630,7 @@ Pending Trades: {pending_trades}
                 pnl = pos.get("unrealized_pnl", 0)
                 pnl_pct = pos.get("unrealized_pnl_pct", 0)
                 pos_emoji = "🟢" if pnl >= 0 else "🔴"
-                msg_parts.append(f"• {ticker}: {qty} shares | {pos_emoji} ${pnl:,.2f} ({pnl_pct:+.1f}%)")
+                msg_parts.append(f"  • {ticker}: {qty} shares | {pos_emoji} ${pnl:,.2f} ({pnl_pct:+.1f}%)")
             if len(positions) > 5:
                 msg_parts.append(f"  _...and {len(positions) - 5} more_")
         else:
@@ -407,10 +654,10 @@ Pending Trades: {pending_trades}
                     details = decision.get("trade_details", {})
                     ticker = details.get("ticker", "N/A")
                     side = details.get("side", "N/A")
-                    msg_parts.append(f"• {dtype}: {side} {ticker}")
+                    msg_parts.append(f"  • {dtype}: {side} {ticker}")
                 else:
                     rationale = decision.get("reasoning", {}).get("rationale", "")[:50]
-                    msg_parts.append(f"• {dtype}: {rationale}...")
+                    msg_parts.append(f"  • {dtype}: {rationale}...")
         
         # Pending approvals
         if pending_approvals:
@@ -419,7 +666,7 @@ Pending Trades: {pending_trades}
                 ticker = trade.get("ticker", "N/A")
                 side = trade.get("side", "N/A").upper()
                 trade_id = trade.get("id", "")[:8]
-                msg_parts.append(f"• {side} {ticker} (`{trade_id}`)")
+                msg_parts.append(f"  • {side} {ticker} (`{trade_id}`)")
         
         # System errors
         if self._system_errors:
@@ -427,7 +674,7 @@ Pending Trades: {pending_trades}
             for err in self._system_errors[-3:]:
                 component = err.get("component", "unknown")
                 error_msg = err.get("error", "")[:30]
-                msg_parts.append(f"• [{component}] {error_msg}...")
+                msg_parts.append(f"  • [{component}] {error_msg}...")
         
         message = "\n".join(msg_parts)
         
