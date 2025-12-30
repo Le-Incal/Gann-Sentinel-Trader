@@ -67,7 +67,10 @@ class GannSentinelAgent:
         self.analyst = ClaudeAnalyst()
         self.risk_engine = RiskEngine()
         self.executor = AlpacaExecutor()
-        self.telegram = TelegramBot()
+        self.telegram = TelegramBot(
+            token=Config.TELEGRAM_BOT_TOKEN,
+            chat_id=Config.TELEGRAM_CHAT_ID
+        )
         
         # Agent state
         self.running = False
