@@ -175,6 +175,9 @@ class Database:
                 logger.debug(f"Duplicate signal detected: {dedup_hash}")
                 return existing["id"]
             
+            tickers = signal_data.get("asset_scope", {}).get("tickers", [])
+            ticker = tickers[0] if tickers else None
+            
             cursor.execute("""
                 INSERT INTO signals (id, signal_type, source, ticker, data, timestamp_utc, staleness_seconds, dedup_hash)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -182,7 +185,7 @@ class Database:
                 signal_id,
                 signal_data.get("signal_type"),
                 signal_data.get("source"),
-                signal_data.get("asset_scope", {}).get("tickers", [None])[0],
+                ticker,
                 json.dumps(signal_data),
                 signal_data.get("timestamp_utc"),
                 signal_data.get("staleness_seconds"),
