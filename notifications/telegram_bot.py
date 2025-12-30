@@ -1,447 +1,531 @@
 """
-Telegram Bot for Gann Sentinel Trader
-Handles notifications and command processing for trade approvals and system control.
-
-This implementation is aligned with agent.py's expectations.
+Gann Sentinel Trader - Database
+SQLite storage for signals, analyses, trades, and portfolio state.
 """
 
-import os
+import sqlite3
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, List, Dict, Any
-from dataclasses import dataclass, field
+from contextlib import contextmanager
 
-import httpx
+from config import Config
 
 logger = logging.getLogger(__name__)
 
 
-class TelegramBot:
-    """
-    Telegram bot for Gann Sentinel Trader notifications and commands.
+class Database:
+    """SQLite database manager for Gann Sentinel Trader."""
     
-    Responsibilities:
-    - Send trade recommendation notifications
-    - Process approval/rejection commands (returns dicts for agent to handle)
-    - Provide system status updates
-    - Track digest data (scans, signals, decisions)
-    """
+    def __init__(self, db_path: Optional[Path] = None):
+        """Initialize database connection."""
+        self.db_path = db_path or Config.DATABASE_PATH
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_schema()
     
-    def __init__(
-        self,
-        token: Optional[str] = None,
-        chat_id: Optional[str] = None
-    ):
-        self.token = token or os.getenv("TELEGRAM_BOT_TOKEN")
-        self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
-        
-        if not self.token:
-            logger.warning("TELEGRAM_BOT_TOKEN not set - notifications disabled")
-        if not self.chat_id:
-            logger.warning("TELEGRAM_CHAT_ID not set - notifications disabled")
-        
-        self.base_url = f"https://api.telegram.org/bot{self.token}" if self.token else None
-        self.last_update_id = 0
-        
-        # Digest tracking state
-        self._scan_start_time: Optional[datetime] = None
-        self._source_queries: List[Dict[str, Any]] = []
-        self._signals: List[Dict[str, Any]] = []
-        self._decisions: List[Dict[str, Any]] = []
-        self._system_errors: List[Dict[str, Any]] = []
-        self._pending_approvals: List[str] = []  # trade_ids awaiting approval
-    
-    @property
-    def is_configured(self) -> bool:
-        """Check if bot is properly configured."""
-        return bool(self.token and self.chat_id)
-    
-    # =========================================================================
-    # CORE MESSAGING
-    # =========================================================================
-    
-    async def send_message(
-        self,
-        text: str,
-        chat_id: Optional[str] = None,
-        parse_mode: str = "Markdown",
-        disable_notification: bool = False
-    ) -> bool:
-        """Send a message to Telegram."""
-        if not self.is_configured:
-            logger.warning("Telegram not configured, skipping message")
-            return False
-        
-        target_chat = chat_id or self.chat_id
-        
+    @contextmanager
+    def _get_connection(self):
+        """Context manager for database connections."""
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/sendMessage",
-                    json={
-                        "chat_id": target_chat,
-                        "text": text,
-                        "parse_mode": parse_mode,
-                        "disable_notification": disable_notification
-                    }
-                )
-                
-                if response.status_code == 200:
-                    logger.debug(f"Message sent to {target_chat}")
-                    return True
-                else:
-                    logger.error(f"Failed to send message: {response.status_code} - {response.text}")
-                    return False
-                    
+            yield conn
+            conn.commit()
         except Exception as e:
-            logger.error(f"Error sending Telegram message: {e}")
-            return False
+            conn.rollback()
+            logger.error(f"Database error: {e}")
+            raise
+        finally:
+            conn.close()
     
-    # =========================================================================
-    # COMMAND PROCESSING
-    # =========================================================================
-    
-    async def get_updates(self) -> List[Dict[str, Any]]:
-        """Fetch new updates from Telegram."""
-        if not self.is_configured:
-            return []
-        
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/getUpdates",
-                    params={
-                        "offset": self.last_update_id + 1,
-                        "timeout": 5,
-                        "allowed_updates": ["message"]
-                    }
+    def _init_schema(self) -> None:
+        """Initialize database schema."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Signals table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS signals (
+                    id TEXT PRIMARY KEY,
+                    signal_type TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    ticker TEXT,
+                    data JSON NOT NULL,
+                    timestamp_utc TEXT NOT NULL,
+                    staleness_seconds INTEGER,
+                    dedup_hash TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("ok") and data.get("result"):
-                        updates = data["result"]
-                        if updates:
-                            self.last_update_id = updates[-1]["update_id"]
-                        return updates
-                return []
-                
-        except Exception as e:
-            logger.error(f"Error fetching Telegram updates: {e}")
-            return []
-    
-    async def process_commands(self) -> List[Dict[str, Any]]:
-        """
-        Fetch and parse any pending Telegram commands.
-        Returns list of command dicts for agent to handle.
-        
-        Returns dicts like:
-        - {"command": "status"}
-        - {"command": "approve", "trade_id": "abc123"}
-        - {"command": "reject", "trade_id": "abc123", "reason": "..."}
-        - {"command": "stop"}
-        - {"command": "resume"}
-        - {"command": "digest"}
-        - {"command": "help"}
-        - {"command": "pending"}
-        """
-        commands = []
-        updates = await self.get_updates()
-        
-        for update in updates:
-            message = update.get("message")
-            if not message:
-                continue
+            """)
             
-            # Only process messages from our chat
-            if str(message.get("chat", {}).get("id")) != str(self.chat_id):
-                logger.debug(f"Ignoring message from chat {message.get('chat', {}).get('id')}")
-                continue
+            # Analyses table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS analyses (
+                    id TEXT PRIMARY KEY,
+                    timestamp_utc TEXT NOT NULL,
+                    ticker TEXT,
+                    recommendation TEXT,
+                    conviction_score INTEGER,
+                    thesis TEXT,
+                    full_analysis JSON NOT NULL,
+                    signals_used JSON,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             
-            text = message.get("text", "")
-            if not text.startswith("/"):
-                continue
+            # Trades table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS trades (
+                    id TEXT PRIMARY KEY,
+                    analysis_id TEXT,
+                    ticker TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    order_type TEXT NOT NULL,
+                    limit_price REAL,
+                    status TEXT NOT NULL,
+                    alpaca_order_id TEXT,
+                    fill_price REAL,
+                    fill_quantity REAL,
+                    filled_at TEXT,
+                    thesis TEXT,
+                    conviction_score INTEGER,
+                    rejection_reason TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (analysis_id) REFERENCES analyses(id)
+                )
+            """)
             
-            # Parse command
-            parts = text.split()
-            cmd_text = parts[0][1:].lower()  # Remove leading /
-            args = parts[1:] if len(parts) > 1 else []
+            # Positions table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS positions (
+                    id TEXT PRIMARY KEY,
+                    ticker TEXT NOT NULL UNIQUE,
+                    quantity REAL NOT NULL,
+                    avg_entry_price REAL NOT NULL,
+                    current_price REAL,
+                    market_value REAL,
+                    unrealized_pnl REAL,
+                    unrealized_pnl_pct REAL,
+                    thesis TEXT,
+                    analysis_id TEXT,
+                    entry_date TEXT,
+                    stop_loss_price REAL,
+                    take_profit_price REAL,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             
-            # Handle commands with @botname suffix
-            if "@" in cmd_text:
-                cmd_text = cmd_text.split("@")[0]
+            # Portfolio snapshots table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                    id TEXT PRIMARY KEY,
+                    timestamp_utc TEXT NOT NULL,
+                    cash REAL NOT NULL,
+                    positions_value REAL NOT NULL,
+                    total_value REAL NOT NULL,
+                    daily_pnl REAL,
+                    daily_pnl_pct REAL,
+                    positions JSON,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             
-            # Build command dict based on command type
-            cmd_dict = {"command": cmd_text}
+            # Errors table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS errors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    error_type TEXT NOT NULL,
+                    component TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    stack_trace TEXT,
+                    context JSON,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             
-            if cmd_text == "approve" and args:
-                cmd_dict["trade_id"] = args[0]
+            # Create indices
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_timestamp ON signals(timestamp_utc)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_ticker ON signals(ticker)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_dedup ON signals(dedup_hash)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_ticker ON trades(ticker)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_analyses_ticker ON analyses(ticker)")
             
-            elif cmd_text == "reject" and args:
-                cmd_dict["trade_id"] = args[0]
-                cmd_dict["reason"] = " ".join(args[1:]) if len(args) > 1 else "Rejected by user"
-            
-            commands.append(cmd_dict)
-            logger.info(f"Parsed command: {cmd_dict}")
-        
-        return commands
+            logger.info(f"Database initialized at {self.db_path}")
     
     # =========================================================================
-    # DIGEST TRACKING (called by agent to track activity)
+    # SIGNALS
     # =========================================================================
     
-    def record_scan_start(self) -> None:
-        """Record when a scan cycle starts."""
-        self._scan_start_time = datetime.now(timezone.utc)
-        # Reset tracking for new scan
-        self._source_queries = []
-        self._signals = []
-        self._decisions = []
-        logger.debug("Scan start recorded")
+    def save_signal(self, signal_data: dict) -> str:
+        """Save a signal to the database."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            signal_id = signal_data.get("signal_id")
+            dedup_hash = signal_data.get("dedup_hash")
+            
+            # Check for duplicate
+            if dedup_hash:
+                cursor.execute("SELECT id FROM signals WHERE dedup_hash = ?", (dedup_hash,))
+                existing = cursor.fetchone()
+                if existing:
+                    logger.debug(f"Duplicate signal detected: {dedup_hash}")
+                    return existing["id"]
+            
+            # Safely extract ticker from asset_scope
+            tickers = signal_data.get("asset_scope", {}).get("tickers", [])
+            ticker = tickers[0] if tickers else None
+            
+            cursor.execute("""
+                INSERT INTO signals (id, signal_type, source, ticker, data, timestamp_utc, staleness_seconds, dedup_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                signal_id,
+                signal_data.get("signal_type") or signal_data.get("category"),
+                signal_data.get("source") or signal_data.get("source_type"),
+                ticker,
+                json.dumps(signal_data),
+                signal_data.get("timestamp_utc"),
+                signal_data.get("staleness_seconds"),
+                dedup_hash
+            ))
+            
+            logger.info(f"Saved signal: {signal_id}")
+            return signal_id
     
-    def record_source_query(
+    def get_signals(
         self,
-        source: str,
-        query: str,
-        signals_returned: int,
-        error: Optional[str] = None
+        ticker: Optional[str] = None,
+        signal_type: Optional[str] = None,
+        since: Optional[datetime] = None,
+        limit: int = 100
+    ) -> List[dict]:
+        """Retrieve signals with optional filters."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            query = "SELECT data FROM signals WHERE 1=1"
+            params = []
+            
+            if ticker:
+                query += " AND ticker = ?"
+                params.append(ticker)
+            
+            if signal_type:
+                query += " AND signal_type = ?"
+                params.append(signal_type)
+            
+            if since:
+                query += " AND timestamp_utc >= ?"
+                params.append(since.isoformat())
+            
+            query += " ORDER BY timestamp_utc DESC LIMIT ?"
+            params.append(limit)
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            
+            return [json.loads(row["data"]) for row in rows]
+    
+    # =========================================================================
+    # ANALYSES
+    # =========================================================================
+    
+    def save_analysis(self, analysis_data: dict) -> str:
+        """Save an analysis to the database."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            analysis_id = analysis_data.get("analysis_id")
+            
+            cursor.execute("""
+                INSERT INTO analyses (id, timestamp_utc, ticker, recommendation, conviction_score, thesis, full_analysis, signals_used)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                analysis_id,
+                analysis_data.get("timestamp_utc"),
+                analysis_data.get("ticker"),
+                analysis_data.get("recommendation"),
+                analysis_data.get("conviction_score"),
+                analysis_data.get("thesis"),
+                json.dumps(analysis_data),
+                json.dumps(analysis_data.get("signals_used", []))
+            ))
+            
+            logger.info(f"Saved analysis: {analysis_id}")
+            return analysis_id
+    
+    def get_analyses(
+        self,
+        ticker: Optional[str] = None,
+        min_conviction: Optional[int] = None,
+        limit: int = 50
+    ) -> List[dict]:
+        """Retrieve analyses with optional filters."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            query = "SELECT full_analysis FROM analyses WHERE 1=1"
+            params = []
+            
+            if ticker:
+                query += " AND ticker = ?"
+                params.append(ticker)
+            
+            if min_conviction:
+                query += " AND conviction_score >= ?"
+                params.append(min_conviction)
+            
+            query += " ORDER BY timestamp_utc DESC LIMIT ?"
+            params.append(limit)
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            
+            return [json.loads(row["full_analysis"]) for row in rows]
+    
+    # =========================================================================
+    # TRADES
+    # =========================================================================
+    
+    def save_trade(self, trade_data: dict) -> str:
+        """Save a trade to the database."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            trade_id = trade_data.get("trade_id") or trade_data.get("id")
+            
+            # Check if trade exists
+            cursor.execute("SELECT id FROM trades WHERE id = ?", (trade_id,))
+            existing = cursor.fetchone()
+            
+            if existing:
+                # Update existing trade
+                cursor.execute("""
+                    UPDATE trades SET
+                        status = ?,
+                        alpaca_order_id = ?,
+                        fill_price = ?,
+                        fill_quantity = ?,
+                        filled_at = ?,
+                        rejection_reason = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                """, (
+                    trade_data.get("status"),
+                    trade_data.get("alpaca_order_id"),
+                    trade_data.get("fill_price"),
+                    trade_data.get("fill_quantity"),
+                    trade_data.get("filled_at"),
+                    trade_data.get("rejection_reason"),
+                    datetime.now(timezone.utc).isoformat(),
+                    trade_id
+                ))
+            else:
+                # Insert new trade
+                cursor.execute("""
+                    INSERT INTO trades (id, analysis_id, ticker, side, quantity, order_type, limit_price, status, thesis, conviction_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    trade_id,
+                    trade_data.get("analysis_id"),
+                    trade_data.get("ticker"),
+                    trade_data.get("side"),
+                    trade_data.get("quantity"),
+                    trade_data.get("order_type"),
+                    trade_data.get("limit_price"),
+                    trade_data.get("status"),
+                    trade_data.get("thesis"),
+                    trade_data.get("conviction_score")
+                ))
+            
+            logger.info(f"Saved trade: {trade_id}")
+            return trade_id
+    
+    def get_trade(self, trade_id: str) -> Optional[dict]:
+        """Get a specific trade by ID (supports partial ID match)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM trades WHERE id = ? OR id LIKE ?", (trade_id, f"{trade_id}%"))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def get_pending_trades(self) -> List[dict]:
+        """Get all trades pending approval."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM trades WHERE status = 'pending_approval' ORDER BY created_at DESC")
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    
+    def get_recent_trades(self, limit: int = 10) -> List[dict]:
+        """Get recent trades ordered by creation date."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM trades ORDER BY created_at DESC LIMIT ?",
+                (limit,)
+            )
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    
+    def update_trade_status(self, trade_id: str, status: str, **kwargs) -> bool:
+        """Update trade status and optional fields."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            updates = ["status = ?", "updated_at = ?"]
+            params = [status, datetime.now(timezone.utc).isoformat()]
+            
+            for key, value in kwargs.items():
+                updates.append(f"{key} = ?")
+                params.append(value)
+            
+            params.append(trade_id)
+            
+            cursor.execute(f"""
+                UPDATE trades SET {', '.join(updates)}
+                WHERE id = ? OR id LIKE ?
+            """, params + [f"{trade_id}%"])
+            
+            return cursor.rowcount > 0
+    
+    # =========================================================================
+    # POSITIONS
+    # =========================================================================
+    
+    def save_position(self, position_data: dict) -> str:
+        """Save or update a position."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            ticker = position_data.get("ticker")
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO positions 
+                (id, ticker, quantity, avg_entry_price, current_price, market_value, 
+                 unrealized_pnl, unrealized_pnl_pct, thesis, analysis_id, entry_date,
+                 stop_loss_price, take_profit_price, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                position_data.get("position_id"),
+                ticker,
+                position_data.get("quantity"),
+                position_data.get("avg_entry_price"),
+                position_data.get("current_price"),
+                position_data.get("market_value"),
+                position_data.get("unrealized_pnl"),
+                position_data.get("unrealized_pnl_pct"),
+                position_data.get("thesis"),
+                position_data.get("analysis_id"),
+                position_data.get("entry_date"),
+                position_data.get("stop_loss_price"),
+                position_data.get("take_profit_price"),
+                datetime.now(timezone.utc).isoformat()
+            ))
+            
+            logger.info(f"Saved position: {ticker}")
+            return ticker
+    
+    def get_positions(self) -> List[dict]:
+        """Get all current positions."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM positions WHERE quantity > 0")
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    
+    def get_position(self, ticker: str) -> Optional[dict]:
+        """Get a specific position."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM positions WHERE ticker = ?", (ticker,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def delete_position(self, ticker: str) -> bool:
+        """Delete a position (when fully closed)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
+            return cursor.rowcount > 0
+    
+    # =========================================================================
+    # PORTFOLIO SNAPSHOTS
+    # =========================================================================
+    
+    def save_snapshot(self, snapshot_data: dict) -> str:
+        """Save a portfolio snapshot."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            snapshot_id = snapshot_data.get("snapshot_id")
+            
+            cursor.execute("""
+                INSERT INTO portfolio_snapshots (id, timestamp_utc, cash, positions_value, total_value, daily_pnl, daily_pnl_pct, positions)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                snapshot_id,
+                snapshot_data.get("timestamp_utc"),
+                snapshot_data.get("cash"),
+                snapshot_data.get("positions_value"),
+                snapshot_data.get("total_value"),
+                snapshot_data.get("daily_pnl"),
+                snapshot_data.get("daily_pnl_pct"),
+                json.dumps(snapshot_data.get("positions", []))
+            ))
+            
+            logger.info(f"Saved portfolio snapshot: {snapshot_id}")
+            return snapshot_id
+    
+    def get_latest_snapshot(self) -> Optional[dict]:
+        """Get the most recent portfolio snapshot."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM portfolio_snapshots ORDER BY timestamp_utc DESC LIMIT 1")
+            row = cursor.fetchone()
+            if row:
+                result = dict(row)
+                result["positions"] = json.loads(result.get("positions", "[]"))
+                return result
+            return None
+    
+    # =========================================================================
+    # ERRORS
+    # =========================================================================
+    
+    def log_error(
+        self,
+        error_type: str,
+        component: str,
+        message: str,
+        stack_trace: Optional[str] = None,
+        context: Optional[dict] = None
     ) -> None:
-        """Record a source query for digest."""
-        self._source_queries.append({
-            "source": source,
-            "query": query,
-            "signals_returned": signals_returned,
-            "error": error,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-        logger.debug(f"Source query recorded: {source} -> {signals_returned} signals")
+        """Log an error to the database."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO errors (error_type, component, message, stack_trace, context)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                error_type,
+                component,
+                message,
+                stack_trace,
+                json.dumps(context) if context else None
+            ))
+            logger.error(f"[{component}] {error_type}: {message}")
     
-    def record_signal(self, signal: Dict[str, Any]) -> None:
-        """Record a signal for digest."""
-        self._signals.append(signal)
-        logger.debug(f"Signal recorded: {signal.get('signal_id', 'unknown')[:8]}")
-    
-    def record_decision(self, decision: Dict[str, Any]) -> None:
-        """Record a decision for digest."""
-        self._decisions.append({
-            **decision,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-        logger.debug(f"Decision recorded: {decision.get('decision_type', 'unknown')}")
-    
-    def record_system_error(self, component: str, error: str) -> None:
-        """Record a system error for digest."""
-        self._system_errors.append({
-            "component": component,
-            "error": error,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-        logger.debug(f"System error recorded: {component}")
-    
-    def remove_pending_approval(self, trade_id: str) -> None:
-        """Remove a trade from pending approvals list."""
-        if trade_id in self._pending_approvals:
-            self._pending_approvals.remove(trade_id)
-            logger.debug(f"Removed pending approval: {trade_id}")
-    
-    # =========================================================================
-    # NOTIFICATION METHODS (called by agent)
-    # =========================================================================
-    
-    async def send_error_alert(self, component: str, error: str) -> bool:
-        """Send error notification."""
-        message = f"""
-⚠️ **ERROR: {component}**
-
-{error[:500]}
-"""
-        return await self.send_message(message)
-    
-    async def send_trade_alert(
-        self,
-        trade_id: str,
-        ticker: str,
-        side: str,
-        quantity: int,
-        conviction: int,
-        thesis: str
-    ) -> bool:
-        """Send trade recommendation for approval."""
-        short_id = trade_id[:8]
-        
-        # Track pending approval
-        if short_id not in self._pending_approvals:
-            self._pending_approvals.append(short_id)
-        
-        message = f"""
-🔔 **TRADE RECOMMENDATION**
-
-**Ticker:** {ticker}
-**Action:** {side.upper()}
-**Quantity:** {quantity} shares
-**Conviction:** {conviction}/100
-
-📈 **THESIS**
-{thesis[:500]}
-
-To approve: `/approve {short_id}`
-To reject: `/reject {short_id}`
-"""
-        return await self.send_message(message)
-    
-    async def send_execution_alert(
-        self,
-        ticker: str,
-        side: str,
-        quantity: float,
-        price: float,
-        total: float
-    ) -> bool:
-        """Send notification when trade is executed."""
-        message = f"""
-✅ **TRADE EXECUTED**
-
-**{side.upper()} {ticker}**
-Quantity: {quantity}
-Price: ${price:.2f}
-Total: ${total:.2f}
-"""
-        return await self.send_message(message)
-    
-    async def send_stop_loss_alert(
-        self,
-        ticker: str,
-        trigger_price: float,
-        loss_pct: float
-    ) -> bool:
-        """Send notification when stop loss is triggered."""
-        message = f"""
-🛑 **STOP LOSS TRIGGERED**
-
-**{ticker}**
-Trigger Price: ${trigger_price:.2f}
-Loss: {loss_pct:.1f}%
-
-Position is being closed.
-"""
-        return await self.send_message(message)
-    
-    async def send_system_status(
-        self,
-        status: str,
-        mode: str,
-        approval_gate: bool,
-        positions_count: int,
-        pending_trades: int
-    ) -> bool:
-        """Send system status update."""
-        gate_status = "ON" if approval_gate else "OFF"
-        
-        message = f"""
-📊 **SYSTEM STATUS**
-
-Status: {status}
-Mode: {mode}
-Approval Gate: {gate_status}
-Open Positions: {positions_count}
-Pending Trades: {pending_trades}
-"""
-        return await self.send_message(message)
-    
-    async def send_daily_digest(
-        self,
-        positions: List[Dict[str, Any]],
-        portfolio: Dict[str, Any],
-        pending_approvals: List[Dict[str, Any]]
-    ) -> bool:
-        """Send the daily digest summary."""
-        now = datetime.now(timezone.utc)
-        
-        # Build digest message
-        msg_parts = ["📊 **DAILY DIGEST**\n"]
-        msg_parts.append(f"_{now.strftime('%Y-%m-%d %H:%M UTC')}_\n")
-        
-        # Portfolio summary
-        msg_parts.append("\n**💰 PORTFOLIO**")
-        total_value = portfolio.get("total_value") or portfolio.get("equity", 0)
-        cash = portfolio.get("cash", 0)
-        daily_pnl = portfolio.get("daily_pnl", 0)
-        daily_pnl_pct = portfolio.get("daily_pnl_pct", 0)
-        
-        pnl_emoji = "🟢" if daily_pnl >= 0 else "🔴"
-        msg_parts.append(f"Total Value: ${total_value:,.2f}")
-        msg_parts.append(f"Cash: ${cash:,.2f}")
-        msg_parts.append(f"Daily P&L: {pnl_emoji} ${daily_pnl:,.2f} ({daily_pnl_pct:+.2f}%)")
-        
-        # Positions
-        if positions:
-            msg_parts.append(f"\n**📈 POSITIONS ({len(positions)})**")
-            for pos in positions[:5]:  # Limit to 5
-                ticker = pos.get("ticker", "N/A")
-                qty = pos.get("quantity", 0)
-                pnl = pos.get("unrealized_pnl", 0)
-                pnl_pct = pos.get("unrealized_pnl_pct", 0)
-                pos_emoji = "🟢" if pnl >= 0 else "🔴"
-                msg_parts.append(f"• {ticker}: {qty} shares | {pos_emoji} ${pnl:,.2f} ({pnl_pct:+.1f}%)")
-            if len(positions) > 5:
-                msg_parts.append(f"  _...and {len(positions) - 5} more_")
-        else:
-            msg_parts.append("\n**📈 POSITIONS**\nNo open positions")
-        
-        # Scan activity (from tracked data)
-        msg_parts.append(f"\n**🔍 SCAN ACTIVITY**")
-        msg_parts.append(f"Sources queried: {len(self._source_queries)}")
-        total_signals = sum(q.get("signals_returned", 0) for q in self._source_queries)
-        msg_parts.append(f"Signals gathered: {total_signals}")
-        errors = [q for q in self._source_queries if q.get("error")]
-        if errors:
-            msg_parts.append(f"Errors: {len(errors)}")
-        
-        # Decisions
-        if self._decisions:
-            msg_parts.append(f"\n**📋 DECISIONS**")
-            for decision in self._decisions[-3:]:  # Last 3
-                dtype = decision.get("decision_type", "UNKNOWN")
-                if dtype == "TRADE":
-                    details = decision.get("trade_details", {})
-                    ticker = details.get("ticker", "N/A")
-                    side = details.get("side", "N/A")
-                    msg_parts.append(f"• {dtype}: {side} {ticker}")
-                else:
-                    rationale = decision.get("reasoning", {}).get("rationale", "")[:50]
-                    msg_parts.append(f"• {dtype}: {rationale}...")
-        
-        # Pending approvals
-        if pending_approvals:
-            msg_parts.append(f"\n**⏳ PENDING APPROVALS ({len(pending_approvals)})**")
-            for trade in pending_approvals[:3]:
-                ticker = trade.get("ticker", "N/A")
-                side = trade.get("side", "N/A").upper()
-                trade_id = trade.get("id", "")[:8]
-                msg_parts.append(f"• {side} {ticker} (`{trade_id}`)")
-        
-        # System errors
-        if self._system_errors:
-            msg_parts.append(f"\n**⚠️ ERRORS ({len(self._system_errors)})**")
-            for err in self._system_errors[-3:]:
-                component = err.get("component", "unknown")
-                error_msg = err.get("error", "")[:30]
-                msg_parts.append(f"• [{component}] {error_msg}...")
-        
-        message = "\n".join(msg_parts)
-        
-        # Reset tracking after sending digest
-        self._source_queries = []
-        self._signals = []
-        self._decisions = []
-        self._system_errors = []
-        
-        return await self.send_message(message)
-
-
-# Convenience function for quick notifications
-async def send_telegram_message(text: str) -> bool:
-    """Quick helper to send a Telegram message."""
-    bot = TelegramBot()
-    return await bot.send_message(text)
+    def get_recent_errors(self, limit: int = 50) -> List[dict]:
+        """Get recent errors."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM errors ORDER BY created_at DESC LIMIT ?", (limit,))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
