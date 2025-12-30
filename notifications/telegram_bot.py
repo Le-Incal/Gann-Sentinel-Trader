@@ -80,13 +80,19 @@ class TelegramBot:
         "Dark pool activity not tracked",
     ]
     
-    def __init__(self, token: str, chat_id: str):
-        self.token = token
-        self.chat_id = chat_id
-        self.base_url = f"https://api.telegram.org/bot{token}"
+    def __init__(self, token: str = None, chat_id: str = None):
+        # Auto-read from environment if not provided
+        self.token = token or os.getenv("TELEGRAM_BOT_TOKEN")
+        self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
+        
+        if not self.token or not self.chat_id:
+            raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set")
+        
+        self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.last_update_id = 0
         self.digest_data = DigestData()
         self._last_digest_date: Optional[str] = None
+        self.pending_approvals: Dict[str, Any] = {}  # Track pending approvals
         
     async def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
         """Send a message to the configured chat."""
@@ -730,15 +736,151 @@ Use /resume to manually restart.
         arg = parts[1] if len(parts) > 1 else None
         
         return command, arg
+    
+    async def process_commands(self) -> List[Dict[str, Any]]:
+        """Process incoming commands and return parsed command list."""
+        commands = []
+        updates = await self.get_updates()
+        
+        for update in updates:
+            message = update.get("message", {})
+            text = message.get("text", "")
+            chat_id = message.get("chat", {}).get("id")
+            
+            # Only process messages from our configured chat
+            if str(chat_id) != str(self.chat_id):
+                continue
+            
+            command, arg = self.parse_command(text)
+            
+            if command:
+                cmd_data = {"command": command}
+                
+                if command == "approve" and arg:
+                    # Try to match partial trade ID
+                    trade_id = self._resolve_trade_id(arg)
+                    cmd_data["trade_id"] = trade_id
+                
+                elif command == "reject" and arg:
+                    parts = arg.split(maxsplit=1)
+                    trade_id = self._resolve_trade_id(parts[0])
+                    cmd_data["trade_id"] = trade_id
+                    cmd_data["reason"] = parts[1] if len(parts) > 1 else "Rejected by user"
+                
+                commands.append(cmd_data)
+        
+        return commands
+    
+    def _resolve_trade_id(self, partial_id: str) -> str:
+        """Resolve a partial trade ID to full ID from pending approvals."""
+        # Check if it matches any pending approval
+        for full_id in self.pending_approvals:
+            if full_id.startswith(partial_id) or partial_id in full_id:
+                return full_id
+        return partial_id
+    
+    def remove_pending_approval(self, trade_id: str) -> None:
+        """Remove a trade from pending approvals."""
+        # Remove by partial match
+        to_remove = None
+        for full_id in self.pending_approvals:
+            if trade_id in full_id or full_id.startswith(trade_id):
+                to_remove = full_id
+                break
+        if to_remove:
+            del self.pending_approvals[to_remove]
+    
+    async def send_trade_alert(
+        self,
+        trade_id: str,
+        ticker: str,
+        side: str,
+        quantity: float,
+        conviction: int,
+        thesis: str
+    ) -> bool:
+        """Send a trade alert for approval."""
+        # Store in pending approvals
+        self.pending_approvals[trade_id] = {
+            "ticker": ticker,
+            "side": side,
+            "quantity": quantity,
+            "conviction": conviction
+        }
+        
+        message = f"""
+🔔 **TRADE ALERT**
+
+**{side.upper()}** {ticker}
+Shares: {quantity}
+Conviction: {conviction}/100
+
+**Thesis:**
+{thesis[:500]}{'...' if len(thesis) > 500 else ''}
+
+`/approve {trade_id[:8]}`
+`/reject {trade_id[:8]}`
+"""
+        return await self.send_message(message.strip())
+    
+    async def send_execution_alert(
+        self,
+        ticker: str,
+        side: str,
+        quantity: float,
+        price: float,
+        total: float
+    ) -> bool:
+        """Send trade execution confirmation."""
+        message = f"""
+✅ **TRADE EXECUTED**
+
+**{side.upper()}** {quantity} {ticker}
+Price: ${price:.2f}
+Total: ${total:.2f}
+"""
+        return await self.send_message(message.strip())
+    
+    async def send_system_status(
+        self,
+        status: str,
+        mode: str,
+        approval_gate: bool,
+        positions_count: int,
+        pending_trades: int
+    ) -> bool:
+        """Send system status message."""
+        gate_status = "ON" if approval_gate else "OFF"
+        message = f"""
+📊 **SYSTEM STATUS**
+
+Status: {status}
+Mode: {mode}
+Approval Gate: {gate_status}
+Positions: {positions_count}
+Pending Trades: {pending_trades}
+"""
+        return await self.send_message(message.strip())
+    
+    async def send_stop_loss_alert(
+        self,
+        ticker: str,
+        trigger_price: float,
+        loss_pct: float
+    ) -> bool:
+        """Send stop loss triggered alert."""
+        message = f"""
+🛑 **STOP LOSS TRIGGERED**
+
+{ticker} @ ${trigger_price:.2f}
+Loss: {loss_pct:.1f}%
+
+Position closed automatically.
+"""
+        return await self.send_message(message.strip())
 
 
-# Factory function
+# Factory function (optional, for backward compatibility)
 def create_telegram_bot() -> TelegramBot:
     """Create a TelegramBot instance from environment variables."""
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    
-    if not token or not chat_id:
-        raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set")
-    
-    return TelegramBot(token, chat_id)
+    return TelegramBot()
