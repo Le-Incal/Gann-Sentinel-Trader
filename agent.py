@@ -74,6 +74,10 @@ class GannSentinelAgent:
         self.last_scan_time: Optional[datetime] = None
         self.watchlist: List[str] = []
         
+        # Daily digest scheduling
+        self.last_digest_time: Optional[datetime] = None
+        self.digest_hour_utc = 21  # 9 PM UTC = 4 PM ET / 1 PM PT
+        
         # Default watchlist (can be customized)
         self.default_watchlist = [
             "SPY", "QQQ", "IWM",  # Index ETFs
@@ -135,6 +139,9 @@ class GannSentinelAgent:
         # Process any pending Telegram commands
         await self._process_commands()
         
+        # Check if it's time for daily digest
+        await self._maybe_send_daily_digest(now)
+        
         # Check if it's time for a full scan
         should_scan = (
             self.last_scan_time is None or
@@ -152,9 +159,55 @@ class GannSentinelAgent:
         # Process any approved trades
         await self._process_approved_trades()
     
+    async def _maybe_send_daily_digest(self, now: datetime) -> None:
+        """Send daily digest if it's time."""
+        
+        # Check if we should send digest
+        should_send = False
+        
+        if self.last_digest_time is None:
+            # First run - check if we're past digest hour today
+            if now.hour >= self.digest_hour_utc:
+                should_send = True
+        else:
+            # Check if it's a new day and past digest hour
+            if (now.date() > self.last_digest_time.date() and 
+                now.hour >= self.digest_hour_utc):
+                should_send = True
+        
+        if should_send:
+            try:
+                await self._send_daily_digest()
+                self.last_digest_time = now
+                logger.info("Daily digest sent successfully")
+            except Exception as e:
+                logger.error(f"Failed to send daily digest: {e}")
+                self.telegram.record_system_error("daily_digest", str(e))
+    
+    async def _send_daily_digest(self) -> None:
+        """Generate and send the daily digest."""
+        # Get current positions and portfolio from Alpaca
+        positions = await self.executor.get_positions()
+        portfolio = await self.executor.get_portfolio_snapshot()
+        pending = self.db.get_pending_trades()
+        
+        # Convert to dict format for telegram
+        positions_data = [p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
+        portfolio_data = portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio
+        
+        # Send digest
+        await self.telegram.send_daily_digest(
+            positions=positions_data,
+            portfolio=portfolio_data,
+            pending_approvals=pending
+        )
+    
     async def _full_scan_cycle(self) -> None:
         """Run a full signal scan and analysis cycle."""
         signals: List[Signal] = []
+        
+        # Record scan start for digest tracking
+        self.telegram.record_scan_start()
         
         # 1. Gather signals from all sources
         logger.info("Gathering signals...")
@@ -164,41 +217,110 @@ class GannSentinelAgent:
             sentiment_signals = await self.grok.scan_sentiment(self.watchlist[:5])  # Limit to save API calls
             signals.extend(sentiment_signals)
             logger.info(f"Got {len(sentiment_signals)} sentiment signals from Grok")
+            
+            # Record for digest
+            self.telegram.record_source_query(
+                source="Grok X Search",
+                query=f"sentiment: {', '.join(self.watchlist[:5])}",
+                signals_returned=len(sentiment_signals),
+                error=None
+            )
+            for signal in sentiment_signals:
+                self.telegram.record_signal(signal.to_dict() if hasattr(signal, 'to_dict') else signal)
+                
         except Exception as e:
             logger.error(f"Error in Grok sentiment scan: {e}")
             self.db.log_error("scan_error", "grok_sentiment", str(e))
+            self.telegram.record_source_query(
+                source="Grok X Search",
+                query=f"sentiment: {', '.join(self.watchlist[:5])}",
+                signals_returned=0,
+                error=str(type(e).__name__)
+            )
         
         # Grok market overview
         try:
             overview_signals = await self.grok.scan_market_overview()
             signals.extend(overview_signals)
             logger.info(f"Got {len(overview_signals)} overview signals from Grok")
+            
+            # Record for digest
+            self.telegram.record_source_query(
+                source="Grok Web Search",
+                query="market overview",
+                signals_returned=len(overview_signals),
+                error=None
+            )
+            for signal in overview_signals:
+                self.telegram.record_signal(signal.to_dict() if hasattr(signal, 'to_dict') else signal)
+                
         except Exception as e:
             logger.error(f"Error in Grok overview scan: {e}")
             self.db.log_error("scan_error", "grok_overview", str(e))
+            self.telegram.record_source_query(
+                source="Grok Web Search",
+                query="market overview",
+                signals_returned=0,
+                error=str(type(e).__name__)
+            )
         
         # FRED macro data
         try:
             macro_signals = await self.fred.scan_all_series()
             signals.extend(macro_signals)
             logger.info(f"Got {len(macro_signals)} macro signals from FRED")
+            
+            # Record for digest
+            fred_series = ["DGS10", "DGS2", "UNRATE", "CPIAUCSL", "GDP", "FEDFUNDS", "T10Y2Y"]
+            self.telegram.record_source_query(
+                source="FRED",
+                query=", ".join(fred_series),
+                signals_returned=len(macro_signals),
+                error=None
+            )
+            for signal in macro_signals:
+                self.telegram.record_signal(signal.to_dict() if hasattr(signal, 'to_dict') else signal)
+                
         except Exception as e:
             logger.error(f"Error in FRED scan: {e}")
             self.db.log_error("scan_error", "fred", str(e))
+            self.telegram.record_source_query(
+                source="FRED",
+                query="macro series",
+                signals_returned=0,
+                error=str(type(e).__name__)
+            )
         
         # Polymarket predictions
         try:
             prediction_signals = await self.polymarket.scan_all_markets()
             signals.extend(prediction_signals)
             logger.info(f"Got {len(prediction_signals)} prediction signals from Polymarket")
+            
+            # Record for digest
+            self.telegram.record_source_query(
+                source="Polymarket",
+                query="fed rates, economic events",
+                signals_returned=len(prediction_signals),
+                error=None
+            )
+            for signal in prediction_signals:
+                self.telegram.record_signal(signal.to_dict() if hasattr(signal, 'to_dict') else signal)
+                
         except Exception as e:
             logger.error(f"Error in Polymarket scan: {e}")
             self.db.log_error("scan_error", "polymarket", str(e))
+            self.telegram.record_source_query(
+                source="Polymarket",
+                query="fed rates, economic events",
+                signals_returned=0,
+                error=str(type(e).__name__)
+            )
         
         # 2. Save all signals
         for signal in signals:
             try:
-                self.db.save_signal(signal.to_dict())
+                self.db.save_signal(signal.to_dict() if hasattr(signal, 'to_dict') else signal)
             except Exception as e:
                 logger.error(f"Error saving signal: {e}")
         
@@ -206,6 +328,11 @@ class GannSentinelAgent:
         
         if not signals:
             logger.warning("No signals gathered - skipping analysis")
+            # Record no-trade decision for digest
+            self.telegram.record_decision({
+                "decision_type": "NO_TRADE",
+                "reasoning": {"rationale": "No signals gathered"}
+            })
             return
         
         # 3. Get portfolio context
@@ -213,30 +340,60 @@ class GannSentinelAgent:
         positions = await self.executor.get_positions()
         
         # Save portfolio snapshot
-        self.db.save_snapshot(portfolio.to_dict())
+        self.db.save_snapshot(portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio)
         
         # 4. Run Claude analysis
         logger.info("Running Claude analysis...")
         try:
             analysis = await self.analyst.analyze_signals(
                 signals=signals,
-                portfolio_context=portfolio.to_dict(),
+                portfolio_context=portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio,
                 watchlist=self.watchlist
             )
             
             # Save analysis
-            self.db.save_analysis(analysis.to_dict())
+            self.db.save_analysis(analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis)
             
             # 5. Check if we have an actionable trade
             if analysis.is_actionable:
                 logger.info(f"Actionable trade identified: {analysis.ticker} - {analysis.recommendation.value}")
+                
+                # Record trade decision for digest
+                self.telegram.record_decision({
+                    "decision_type": "TRADE",
+                    "trade_details": {
+                        "ticker": analysis.ticker,
+                        "side": analysis.recommendation.value,
+                        "conviction_score": analysis.conviction_score
+                    },
+                    "reasoning": {"rationale": analysis.thesis},
+                    "status": "pending_approval" if Config.APPROVAL_GATE else "approved"
+                })
+                
                 await self._handle_trade_recommendation(analysis, portfolio, positions)
             else:
                 logger.info(f"No actionable trade. Conviction: {analysis.conviction_score}")
                 
+                # Record no-trade decision for digest
+                self.telegram.record_decision({
+                    "decision_type": "NO_TRADE",
+                    "trade_details": {
+                        "ticker": getattr(analysis, 'ticker', None),
+                        "conviction_score": analysis.conviction_score
+                    },
+                    "reasoning": {"rationale": f"Conviction {analysis.conviction_score} below threshold"}
+                })
+                
         except Exception as e:
             logger.error(f"Error in Claude analysis: {e}")
             self.db.log_error("analysis_error", "claude", str(e), traceback.format_exc())
+            self.telegram.record_system_error("claude_analyst", str(e))
+            
+            # Record failed analysis for digest
+            self.telegram.record_decision({
+                "decision_type": "NO_TRADE",
+                "reasoning": {"rationale": f"Analysis error: {str(e)[:50]}"}
+            })
     
     async def _handle_trade_recommendation(
         self,
@@ -431,6 +588,12 @@ class GannSentinelAgent:
             
             elif command == "resume":
                 await self._handle_resume_command()
+            
+            elif command == "digest":
+                await self._handle_digest_command()
+            
+            elif command == "help":
+                await self._handle_help_command()
     
     async def _handle_status_command(self) -> None:
         """Handle /status command."""
@@ -537,6 +700,36 @@ class GannSentinelAgent:
         )
         
         logger.info("Trading resumed via Telegram command")
+    
+    async def _handle_digest_command(self) -> None:
+        """Handle /digest command - send daily digest immediately."""
+        logger.info("Manual digest requested via Telegram")
+        
+        try:
+            await self._send_daily_digest()
+            logger.info("Manual digest sent successfully")
+        except Exception as e:
+            logger.error(f"Failed to send manual digest: {e}")
+            await self.telegram.send_message(f"❌ Failed to generate digest: {str(e)[:100]}")
+    
+    async def _handle_help_command(self) -> None:
+        """Handle /help command."""
+        help_text = """
+**Gann Sentinel Commands:**
+
+/status - Portfolio & system status
+/pending - List pending trade approvals
+/approve [id] - Approve a pending trade
+/reject [id] - Reject a pending trade
+/digest - Send daily digest now
+/stop - Emergency halt (cancels all orders)
+/resume - Resume trading after stop
+/help - Show this message
+
+**Digest Schedule:**
+Daily at 4 PM ET (9 PM UTC)
+"""
+        await self.telegram.send_message(help_text)
 
 
 async def main():
