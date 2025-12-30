@@ -75,6 +75,9 @@ class TelegramBot:
         self.last_update_id = 0
         self._command_handlers: Dict[CommandType, Callable] = {}
         self._setup_handlers()
+        
+        # Flag for manual scan requests
+        self.scan_requested = False
     
     def _setup_handlers(self):
         """Register command handlers."""
@@ -246,15 +249,15 @@ class TelegramBot:
                 is_halted = getattr(self.risk_engine, 'is_halted', False)
                 status_parts.append(f"Trading: {'🔴 HALTED' if is_halted else '🟢 ACTIVE'}")
             
-            # Portfolio summary
+            # Portfolio summary - uses get_latest_snapshot()
             if self.database:
-                snapshot = self.database.get_latest_portfolio_snapshot()
+                snapshot = self.database.get_latest_snapshot()
                 if snapshot:
                     status_parts.append(f"\n💰 <b>Portfolio</b>")
                     status_parts.append(f"Total Value: ${snapshot.get('total_value', 0):,.2f}")
                     status_parts.append(f"Cash: ${snapshot.get('cash', 0):,.2f}")
-                    daily_pnl = snapshot.get('daily_pnl', 0)
-                    daily_pnl_pct = snapshot.get('daily_pnl_pct', 0)
+                    daily_pnl = snapshot.get('daily_pnl', 0) or 0
+                    daily_pnl_pct = snapshot.get('daily_pnl_pct', 0) or 0
                     pnl_emoji = "🟢" if daily_pnl >= 0 else "🔴"
                     status_parts.append(f"Daily P&L: {pnl_emoji} ${daily_pnl:,.2f} ({daily_pnl_pct:+.2f}%)")
             
@@ -289,11 +292,12 @@ class TelegramBot:
                 ticker = trade.get("ticker", "N/A")
                 side = trade.get("side", "N/A").upper()
                 conviction = trade.get("conviction_score", "N/A")
-                thesis = trade.get("thesis", "No thesis")[:100]
+                thesis = trade.get("thesis", "No thesis")
+                thesis_preview = thesis[:100] if thesis else "No thesis"
                 
                 msg_parts.append(f"\n<b>{side} {ticker}</b> (ID: {trade_id})")
                 msg_parts.append(f"Conviction: {conviction}/100")
-                msg_parts.append(f"Thesis: {thesis}...")
+                msg_parts.append(f"Thesis: {thesis_preview}...")
                 msg_parts.append(f"/approve {trade_id}  |  /reject {trade_id}")
             
             await self.send_message("\n".join(msg_parts))
@@ -312,8 +316,8 @@ class TelegramBot:
         
         try:
             if self.database:
-                # Find trade by partial ID match
-                trade = self.database.get_trade_by_partial_id(trade_id)
+                # Find trade by partial ID match - uses get_trade()
+                trade = self.database.get_trade(trade_id)
                 
                 if not trade:
                     await self.send_message(f"❌ Trade not found: {trade_id}")
@@ -349,7 +353,8 @@ class TelegramBot:
         
         try:
             if self.database:
-                trade = self.database.get_trade_by_partial_id(trade_id)
+                # Uses get_trade() which handles partial IDs
+                trade = self.database.get_trade(trade_id)
                 
                 if not trade:
                     await self.send_message(f"❌ Trade not found: {trade_id}")
@@ -371,9 +376,8 @@ class TelegramBot:
     
     async def _handle_scan(self, command: TelegramCommand) -> None:
         """Handle /scan command - triggers manual scan cycle."""
+        self.scan_requested = True
         await self.send_message("🔍 Manual scan triggered. Running analysis cycle...")
-        # The actual scan is handled by the agent loop which checks for this flag
-        # We just acknowledge here - agent.py should check for scan requests
     
     async def _handle_stop(self, command: TelegramCommand) -> None:
         """Handle /stop command - emergency halt."""
@@ -430,7 +434,8 @@ class TelegramBot:
                 await self.send_message("Database not connected")
                 return
             
-            positions = self.database.get_all_positions()
+            # Uses get_positions()
+            positions = self.database.get_positions()
             
             if not positions:
                 await self.send_message("📭 No open positions")
@@ -445,10 +450,10 @@ class TelegramBot:
                 ticker = pos.get("ticker", "N/A")
                 qty = pos.get("quantity", 0)
                 entry = pos.get("avg_entry_price", 0)
-                current = pos.get("current_price", entry)
-                pnl = pos.get("unrealized_pnl", 0)
-                pnl_pct = pos.get("unrealized_pnl_pct", 0)
-                market_value = pos.get("market_value", 0)
+                current = pos.get("current_price") or entry
+                pnl = pos.get("unrealized_pnl") or 0
+                pnl_pct = pos.get("unrealized_pnl_pct") or 0
+                market_value = pos.get("market_value") or 0
                 
                 total_value += market_value
                 total_pnl += pnl
@@ -483,6 +488,7 @@ class TelegramBot:
                 await self.send_message("Database not connected")
                 return
             
+            # Uses get_recent_trades() - we need to add this to database.py
             trades = self.database.get_recent_trades(n)
             
             if not trades:
@@ -625,9 +631,9 @@ class TelegramBot:
         try:
             ticker = trade.get("ticker", "N/A")
             side = trade.get("side", "N/A").upper()
-            quantity = trade.get("fill_quantity", trade.get("quantity", 0))
+            quantity = trade.get("fill_quantity") or trade.get("quantity", 0)
             price = trade.get("fill_price", "N/A")
-            thesis = trade.get("thesis", "")[:100]
+            thesis = (trade.get("thesis") or "")[:100]
             
             message = f"""
 ✅ <b>TRADE EXECUTED</b>
