@@ -39,6 +39,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# EMOJI CONSTANTS - Using Unicode escape sequences to prevent encoding issues
+# =============================================================================
+EMOJI_ROCKET = "\U0001F680"      # 🚀
+EMOJI_STOP = "\U0001F6D1"        # 🛑
+EMOJI_WARNING = "\U000026A0"     # ⚠
+EMOJI_CHECK = "\U00002705"       # ✅
+EMOJI_CROSS = "\U0000274C"       # ❌
+EMOJI_BULLET = "\U00002022"      # •
+
+
 class GannSentinelAgent:
     """
     Main trading agent that orchestrates all components.
@@ -98,10 +109,11 @@ class GannSentinelAgent:
         
         # Send startup notification
         await self.telegram.send_message(
-            "ðŸš€ **Gann Sentinel Trader Started**\n\n"
+            f"{EMOJI_ROCKET} Gann Sentinel Trader Started\n\n"
             f"Mode: {Config.MODE}\n"
             f"Approval Gate: {'ON' if Config.APPROVAL_GATE else 'OFF'}\n\n"
-            "Use /help for commands"
+            "Use /help for commands",
+            parse_mode=None
         )
         
         self.running = True
@@ -131,8 +143,9 @@ class GannSentinelAgent:
         self.running = False
         
         await self.telegram.send_message(
-            "ðŸ›‘ **Gann Sentinel Trader Stopped**\n\n"
-            "Trading halted. Use /resume to restart."
+            f"{EMOJI_STOP} Gann Sentinel Trader Stopped\n\n"
+            "Trading halted. Use /resume to restart.",
+            parse_mode=None
         )
     
     async def _run_cycle(self) -> None:
@@ -449,9 +462,10 @@ class GannSentinelAgent:
             reasons = "; ".join([r.message for r in failed_checks])
             
             await self.telegram.send_message(
-                f"âš ï¸ **Trade Rejected by Risk Engine**\n\n"
+                f"{EMOJI_WARNING} Trade Rejected by Risk Engine\n\n"
                 f"Ticker: {analysis.ticker}\n"
-                f"Reason: {reasons}"
+                f"Reason: {reasons}",
+                parse_mode=None
             )
             return
         
@@ -625,9 +639,6 @@ class GannSentinelAgent:
             elif command == "digest":
                 await self._handle_digest_command()
             
-            elif command in ["catalyst", "whatif"]:
-                await self._handle_catalyst_command(cmd.get("description"))
-            
             elif command == "help":
                 await self._handle_help_command()
     
@@ -645,42 +656,45 @@ class GannSentinelAgent:
         )
         
         # Also send portfolio status
-        await self.telegram.send_message(portfolio.to_telegram_message())
+        await self.telegram.send_message(portfolio.to_telegram_message(), parse_mode=None)
     
     async def _handle_pending_command(self) -> None:
         """Handle /pending command."""
         pending = self.db.get_pending_trades()
         
         if not pending:
-            await self.telegram.send_message("No pending trades.")
+            await self.telegram.send_message("No pending trades.", parse_mode=None)
             return
         
-        msg = "**Pending Trades:**\n\n"
+        msg = "Pending Trades:\n\n"
         for trade in pending:
-            msg += f"â€¢ `{trade['id'][:8]}` - {trade['side'].upper()} {trade['ticker']} ({trade['quantity']} shares)\n"
+            msg += f"{EMOJI_BULLET} {trade['id'][:8]} - {trade['side'].upper()} {trade['ticker']} ({trade['quantity']} shares)\n"
         
-        await self.telegram.send_message(msg)
+        await self.telegram.send_message(msg, parse_mode=None)
     
     async def _handle_approve_command(self, trade_id: str) -> None:
         """Handle /approve command."""
         if not trade_id:
-            await self.telegram.send_message("Usage: `/approve [trade_id]`")
+            await self.telegram.send_message("Usage: /approve [trade_id]", parse_mode=None)
             return
         
         # Find trade
         trade_data = self.db.get_trade(trade_id)
         
         if not trade_data:
-            await self.telegram.send_message(f"Trade not found: {trade_id}")
+            await self.telegram.send_message(f"Trade not found: {trade_id}", parse_mode=None)
             return
         
         if trade_data["status"] != "pending_approval":
-            await self.telegram.send_message(f"Trade {trade_id} is not pending approval (status: {trade_data['status']})")
+            await self.telegram.send_message(
+                f"Trade {trade_id} is not pending approval (status: {trade_data['status']})",
+                parse_mode=None
+            )
             return
         
         # Approve
         self.db.update_trade_status(trade_id, "approved")
-        await self.telegram.send_message(f"âœ… Trade approved: {trade_id[:8]}")
+        await self.telegram.send_message(f"{EMOJI_CHECK} Trade approved: {trade_id[:8]}", parse_mode=None)
         
         # Remove from pending approvals
         self.telegram.remove_pending_approval(trade_id[:8])
@@ -690,19 +704,22 @@ class GannSentinelAgent:
     async def _handle_reject_command(self, trade_id: str, reason: str) -> None:
         """Handle /reject command."""
         if not trade_id:
-            await self.telegram.send_message("Usage: `/reject [trade_id] [reason]`")
+            await self.telegram.send_message("Usage: /reject [trade_id] [reason]", parse_mode=None)
             return
         
         # Find trade
         trade_data = self.db.get_trade(trade_id)
         
         if not trade_data:
-            await self.telegram.send_message(f"Trade not found: {trade_id}")
+            await self.telegram.send_message(f"Trade not found: {trade_id}", parse_mode=None)
             return
         
         # Reject
         self.db.update_trade_status(trade_id, "rejected", rejection_reason=reason)
-        await self.telegram.send_message(f"âŒ Trade rejected: {trade_id[:8]}\nReason: {reason}")
+        await self.telegram.send_message(
+            f"{EMOJI_CROSS} Trade rejected: {trade_id[:8]}\nReason: {reason}",
+            parse_mode=None
+        )
         
         # Remove from pending approvals
         self.telegram.remove_pending_approval(trade_id[:8])
@@ -720,10 +737,11 @@ class GannSentinelAgent:
         cancelled = await self.executor.cancel_all_orders()
         
         await self.telegram.send_message(
-            f"ðŸ›‘ **EMERGENCY STOP**\n\n"
+            f"{EMOJI_STOP} EMERGENCY STOP\n\n"
             f"Trading halted.\n"
             f"Cancelled {cancelled} orders.\n\n"
-            f"Use /resume to restart."
+            f"Use /resume to restart.",
+            parse_mode=None
         )
     
     async def _handle_resume_command(self) -> None:
@@ -731,8 +749,9 @@ class GannSentinelAgent:
         self.risk_engine.resume_trading()
         
         await self.telegram.send_message(
-            "âœ… **Trading Resumed**\n\n"
-            "System is active again."
+            f"{EMOJI_CHECK} Trading Resumed\n\n"
+            "System is active again.",
+            parse_mode=None
         )
         
         logger.info("Trading resumed via Telegram command")
@@ -746,128 +765,42 @@ class GannSentinelAgent:
             logger.info("Manual digest sent successfully")
         except Exception as e:
             logger.error(f"Failed to send manual digest: {e}")
-            await self.telegram.send_message(f"âŒ Failed to generate digest: {str(e)[:100]}")
-    
-    async def _handle_catalyst_command(self, description: str) -> None:
-        """
-        Handle /catalyst or /whatif command.
-        
-        This is the manual query interface for forward-predictive analysis.
-        User can ask: "/catalyst SpaceX IPO expected H2 2026"
-        And get back Claude's second-order analysis of that catalyst.
-        """
-        if not description:
             await self.telegram.send_message(
-                "**Usage:**\n"
-                "`/catalyst <description>`\n\n"
-                "**Examples:**\n"
-                "• `/catalyst SpaceX IPO expected H2 2026`\n"
-                "• `/catalyst Fed cuts rates by 50bps in March`\n"
-                "• `/whatif NVIDIA beats earnings by 20%`\n"
-                "• `/whatif China announces new chip restrictions`"
-            )
-            return
-        
-        logger.info(f"Catalyst query: {description}")
-        
-        # Send thinking indicator
-        await self.telegram.send_message(
-            f"🧠 **Analyzing catalyst...**\n\n"
-            f"_\"{description}\"_\n\n"
-            f"Applying second-order thinking..."
-        )
-        
-        try:
-            # Get portfolio context
-            portfolio = await self.executor.get_portfolio_snapshot()
-            portfolio_dict = portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio
-            
-            # Run the catalyst analysis through Claude
-            analysis = await self.analyst.analyze_specific_catalyst(
-                catalyst_description=description,
-                catalyst_date=None,  # Let Claude infer from description
-                portfolio_context=portfolio_dict
-            )
-            
-            # Convert to dict for telegram
-            analysis_dict = analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis
-            
-            # Save analysis to database
-            self.db.save_analysis(analysis_dict)
-            
-            # Send the formatted response
-            await self.telegram.send_catalyst_analysis(
-                analysis=analysis_dict,
-                catalyst_query=description
-            )
-            
-            logger.info(f"Catalyst analysis complete: {analysis.ticker} @ {analysis.conviction_score}")
-            
-        except Exception as e:
-            logger.error(f"Error in catalyst analysis: {e}")
-            await self.telegram.send_message(
-                f"❌ **Error analyzing catalyst**\n\n"
-                f"_{str(e)[:200]}_\n\n"
-                f"Please try again."
+                f"{EMOJI_CROSS} Failed to generate digest: {str(e)[:100]}",
+                parse_mode=None
             )
     
     async def _handle_help_command(self) -> None:
         """Handle /help command."""
-        help_text = """
-**Gann Sentinel Commands:**
+        help_text = """Gann Sentinel Commands:
 
-**📊 Status & Monitoring:**
 /status - Portfolio & system status
 /pending - List pending trade approvals
-/digest - Send daily digest now
-
-**✅ Trade Approval:**
 /approve [id] - Approve a pending trade
 /reject [id] - Reject a pending trade
-
-**🎯 Catalyst Analysis (NEW!):**
-/catalyst <description> - Analyze any catalyst
-/whatif <scenario> - Same as /catalyst
-
-**Examples:**
-• `/catalyst SpaceX IPO H2 2026`
-• `/whatif Fed cuts 50bps in March`
-• `/catalyst NVIDIA beats earnings`
-
-**🛑 System Control:**
+/digest - Send daily digest now
 /stop - Emergency halt (cancels all orders)
 /resume - Resume trading after stop
 /help - Show this message
 
-**Automatic Features:**
-• Hourly scan summaries
-• Daily digest at 4 PM ET (9 PM UTC)
-"""
-        await self.telegram.send_message(help_text)
+Scan Summaries:
+Automatic after every scan cycle (~hourly)
+
+Digest Schedule:
+Daily at 4 PM ET (9 PM UTC)"""
+        await self.telegram.send_message(help_text, parse_mode=None)
 
 
 async def main():
     """Main entry point."""
     print("""
-    â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—
-    â•‘                                                               â•‘
-    â•‘   â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•—                       â•‘
-    â•‘  â–ˆâ–ˆâ•”â•â•â•â•â• â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘                       â•‘
-    â•‘  â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘                       â•‘
-    â•‘  â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘                       â•‘
-    â•‘  â•šâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘                       â•‘
-    â•‘   â•šâ•â•â•â•â•â• â•šâ•â•  â•šâ•â•â•šâ•â•  â•šâ•â•â•â•â•šâ•â•  â•šâ•â•â•â•                       â•‘
-    â•‘                                                               â•‘
-    â•‘   â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•— â•‘
-    â•‘   â–ˆâ–ˆâ•”â•â•â•â•â•â–ˆâ–ˆâ•”â•â•â•â•â•â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘â•šâ•â•â–ˆâ–ˆâ•”â•â•â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•â•â•â–ˆâ–ˆâ•‘ â•‘
-    â•‘   â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ•‘ â•‘
-    â•‘   â•šâ•â•â•â•â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•  â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â•šâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â•â•â•  â–ˆâ–ˆâ•‘ â•‘
-    â•‘   â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘   â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ•—â•‘
-    â•‘   â•šâ•â•â•â•â•â•â•â•šâ•â•â•â•â•â•â•â•šâ•â•  â•šâ•â•â•â•   â•šâ•â•   â•šâ•â•â•šâ•â•  â•šâ•â•â•â•â•šâ•â•â•â•â•â•â•â•šâ•â•â•â•‘
-    â•‘                                                               â•‘
-    â•‘               AUTONOMOUS TRADING AGENT                        â•‘
-    â•‘                                                               â•‘
-    â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    ================================================================
+                                                                   
+       GANN SENTINEL TRADER                                        
+                                                                   
+       AUTONOMOUS TRADING AGENT                                    
+                                                                   
+    ================================================================
     
     DISCLAIMER: Trading involves substantial risk of loss. This is an 
     experimental system. Nothing here constitutes financial advice.
