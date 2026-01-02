@@ -230,9 +230,10 @@ No other text, just the JSON."""
         }
         
         if use_search:
+            # xAI API uses "live_search" for real-time web and X/Twitter search
+            # Note: As of Jan 2026, xAI deprecated web_search/x_search in favor of live_search
             request_body["tools"] = [
-                {"type": "web_search"},
-                {"type": "x_search"},
+                {"type": "live_search"},
             ]
         
         try:
