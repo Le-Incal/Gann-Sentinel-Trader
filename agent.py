@@ -2,6 +2,8 @@
 Gann Sentinel Trader - Main Agent
 Orchestrates the trading system: scan signals, analyze, approve, execute.
 
+Version: 1.1.0 - Added /check command for on-demand stock analysis
+
 DISCLAIMER: Trading involves substantial risk of loss. This is an experimental
 system and nothing here constitutes financial advice. Only trade what you can
 afford to lose.
@@ -48,6 +50,7 @@ EMOJI_WARNING = "\U000026A0"     # ⚠
 EMOJI_CHECK = "\U00002705"       # ✅
 EMOJI_CROSS = "\U0000274C"       # ❌
 EMOJI_BULLET = "\U00002022"      # •
+EMOJI_SEARCH = "\U0001F50D"      # 🔍
 
 
 class GannSentinelAgent:
@@ -613,6 +616,8 @@ class GannSentinelAgent:
                 await self._handle_resume_command()
             elif command == "digest":
                 await self._handle_digest_command()
+            elif command == "check":
+                await self._handle_check_command(cmd.get("ticker"))
             elif command == "help":
                 await self._handle_help_command()
     
@@ -746,10 +751,191 @@ class GannSentinelAgent:
                 parse_mode=None
             )
     
+    async def _handle_check_command(self, ticker: str) -> None:
+        """
+        Handle /check [ticker] command - on-demand analysis.
+        
+        Runs full Grok + Claude analysis on any ticker (including pre-IPO)
+        and generates a trade recommendation with approval prompt if actionable.
+        """
+        if not ticker:
+            await self.telegram.send_message(
+                "Usage: /check [TICKER]\n\nExamples:\n  /check NVDA\n  /check TSLA\n  /check SPACEX",
+                parse_mode=None
+            )
+            return
+        
+        ticker = ticker.upper().strip()
+        logger.info(f"On-demand check requested for: {ticker}")
+        
+        # Acknowledge the request
+        await self.telegram.send_message(
+            f"{EMOJI_SEARCH} Analyzing {ticker}...\n\nGathering signals and running analysis.",
+            parse_mode=None
+        )
+        
+        try:
+            # Run the analysis
+            result = await self._run_ticker_analysis(ticker)
+            
+            # Send formatted result
+            await self.telegram.send_check_result(result)
+            
+            logger.info(f"Check command completed for {ticker}: conviction={result.get('conviction', 0)}")
+            
+        except Exception as e:
+            logger.error(f"Error in check command for {ticker}: {e}")
+            logger.error(traceback.format_exc())
+            await self.telegram.send_message(
+                f"{EMOJI_CROSS} Analysis failed for {ticker}\n\nError: {str(e)[:100]}",
+                parse_mode=None
+            )
+    
+    async def _run_ticker_analysis(self, ticker: str) -> Dict[str, Any]:
+        """
+        Run full analysis on a single ticker.
+        
+        Returns a dict with:
+        - ticker: The ticker symbol
+        - is_tradeable: Whether we can execute trades
+        - current_price: Current price (if available)
+        - signals_count: Number of signals gathered
+        - conviction: Conviction score (0-100)
+        - recommendation: BUY/SELL/HOLD/NONE
+        - thesis: Analysis thesis
+        - historical_context: Historical pattern match (if found)
+        - pending_trade_id: Trade ID if trade was created
+        - risk_rejection: Reason if risk check failed
+        """
+        signals = []
+        
+        # Gather Grok sentiment for this ticker
+        try:
+            sentiment_signals = await self.grok.scan_sentiment([ticker])
+            signals.extend(sentiment_signals)
+            logger.info(f"Got {len(sentiment_signals)} sentiment signals for {ticker}")
+        except Exception as e:
+            logger.error(f"Grok sentiment error for {ticker}: {e}")
+        
+        # Gather Grok catalysts for this ticker
+        try:
+            catalyst_signals = await self.grok.scan_catalysts(ticker)
+            signals.extend(catalyst_signals)
+            logger.info(f"Got {len(catalyst_signals)} catalyst signals for {ticker}")
+        except Exception as e:
+            logger.error(f"Grok catalyst error for {ticker}: {e}")
+        
+        # Check if ticker is tradeable (has price data from Alpaca)
+        is_tradeable = False
+        current_price = None
+        price_error = None
+        
+        try:
+            quote = await self.executor.get_quote(ticker)
+            if "error" not in quote and quote.get("mid"):
+                is_tradeable = True
+                current_price = quote.get("mid")
+                logger.info(f"{ticker} is tradeable @ ${current_price:.2f}")
+            else:
+                price_error = quote.get("error", "No price data")
+                logger.info(f"{ticker} not tradeable: {price_error}")
+        except Exception as e:
+            price_error = str(e)
+            logger.info(f"{ticker} not tradeable: {e}")
+        
+        # Get portfolio context
+        portfolio = await self.executor.get_portfolio_snapshot()
+        positions = await self.executor.get_positions()
+        portfolio_dict = portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio
+        
+        # Run Claude analysis
+        analysis = None
+        analysis_dict = None
+        
+        if signals:
+            try:
+                analysis = await self.analyst.analyze_signals(
+                    signals=signals,
+                    portfolio_context=portfolio_dict,
+                    watchlist=[ticker]  # Focus analysis on this ticker
+                )
+                analysis_dict = analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis
+                logger.info(f"Claude analysis complete: conviction={analysis.conviction_score}")
+            except Exception as e:
+                logger.error(f"Claude analysis error for {ticker}: {e}")
+        
+        # Build result dict
+        result = {
+            "ticker": ticker,
+            "is_tradeable": is_tradeable,
+            "current_price": current_price,
+            "price_error": price_error,
+            "signals_count": len(signals),
+            "signals": [s.to_dict() if hasattr(s, 'to_dict') else s for s in signals],
+            "analysis": analysis_dict,
+            "conviction": analysis.conviction_score if analysis else 0,
+            "recommendation": analysis.recommendation.value if analysis else "NONE",
+            "thesis": analysis.thesis if analysis else "Insufficient signals for analysis. Try again later or check if ticker is valid.",
+            "historical_context": getattr(analysis, 'historical_context', None) if analysis else None,
+            "pending_trade_id": None,
+            "risk_rejection": None,
+        }
+        
+        # Attempt to create trade if actionable
+        if (analysis and 
+            analysis.is_actionable and 
+            is_tradeable and 
+            analysis.conviction_score >= Config.MIN_CONVICTION):
+            
+            logger.info(f"Trade criteria met for {ticker}, running risk checks...")
+            
+            # Run risk checks
+            passed, risk_results = self.risk_engine.validate_trade(
+                analysis=analysis,
+                portfolio=portfolio,
+                current_positions=positions
+            )
+            
+            if passed:
+                # Calculate position size
+                sizing = self.risk_engine.calculate_position_size(
+                    analysis=analysis,
+                    portfolio=portfolio,
+                    current_price=current_price
+                )
+                
+                if sizing["shares"] >= 1:
+                    # Create trade
+                    trade = Trade(
+                        analysis_id=analysis.analysis_id,
+                        ticker=ticker,
+                        side=OrderSide.BUY if analysis.recommendation == Recommendation.BUY else OrderSide.SELL,
+                        quantity=sizing["shares"],
+                        order_type=OrderType.MARKET,
+                        limit_price=None,
+                        status=TradeStatus.PENDING_APPROVAL,
+                        thesis=analysis.thesis,
+                        conviction_score=analysis.conviction_score
+                    )
+                    
+                    self.db.save_trade(trade.to_dict())
+                    result["pending_trade_id"] = trade.trade_id[:8]
+                    logger.info(f"Trade created for {ticker}: {trade.trade_id[:8]}")
+                else:
+                    logger.info(f"Position size too small for {ticker}: {sizing['shares']} shares")
+            else:
+                # Risk check failed
+                failed_checks = [r for r in risk_results if not r.passed]
+                result["risk_rejection"] = "; ".join([r.message for r in failed_checks])
+                logger.info(f"Risk check failed for {ticker}: {result['risk_rejection']}")
+        
+        return result
+    
     async def _handle_help_command(self) -> None:
         """Handle /help command."""
         help_text = """Gann Sentinel Commands:
 
+/check [TICKER] - Analyze any stock
 /status - System status
 /pending - Pending trades
 /approve [id] - Approve trade
@@ -758,6 +944,11 @@ class GannSentinelAgent:
 /stop - Emergency halt
 /resume - Resume trading
 /help - This message
+
+Examples:
+  /check NVDA
+  /check TSLA
+  /check SPACEX (pre-IPO)
 
 Scans run every ~60 minutes
 Digest at 4 PM ET daily"""
