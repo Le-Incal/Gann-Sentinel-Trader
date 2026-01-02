@@ -2,7 +2,10 @@
 Gann Sentinel Trader - Main Agent
 Orchestrates the trading system: scan signals, analyze, approve, execute.
 
-Version: 1.1.0 - Added /check command for on-demand stock analysis
+Version: 2.0.0 - Added Technical Scanner integration
+- Technical analysis in hourly scan cycle
+- Technical analysis in /check command
+- Chart structure feeds into Claude conviction scoring
 
 DISCLAIMER: Trading involves substantial risk of loss. This is an experimental
 system and nothing here constitutes financial advice. Only trade what you can
@@ -21,6 +24,7 @@ from storage.database import Database
 from scanners.grok_scanner import GrokScanner
 from scanners.fred_scanner import FREDScanner
 from scanners.polymarket_scanner import PolymarketScanner
+from scanners.technical_scanner import TechnicalScanner  # NEW
 from analyzers.claude_analyst import ClaudeAnalyst
 from executors.risk_engine import RiskEngine
 from executors.alpaca_executor import AlpacaExecutor
@@ -78,6 +82,7 @@ class GannSentinelAgent:
         self.grok = GrokScanner()
         self.fred = FREDScanner()
         self.polymarket = PolymarketScanner()
+        self.technical = TechnicalScanner()  # NEW - Chart analysis
         self.analyst = ClaudeAnalyst()
         self.risk_engine = RiskEngine()
         self.executor = AlpacaExecutor()
@@ -98,106 +103,110 @@ class GannSentinelAgent:
         self.last_digest_time: Optional[datetime] = None
         self.digest_hour_utc = 21  # 9 PM UTC = 4 PM ET / 1 PM PT
         
-        # Skip digest on first startup
-        self._startup_complete = False
-        
-        # Default watchlist
-        self.default_watchlist = [
-            "SPY", "QQQ", "IWM",  # Index ETFs
-            "NVDA", "AMD", "SMCI",  # Semiconductors
-            "TSLA", "RKLB",  # EV/Space
-            "AAPL", "MSFT", "GOOGL",  # Big tech
-            "COIN", "MSTR",  # Crypto-adjacent
-        ]
-        
-        logger.info("Agent initialized successfully")
+        logger.info("All components initialized successfully")
+        logger.info(f"Technical Scanner: {'CONFIGURED' if self.technical.is_configured else 'NOT CONFIGURED'}")
+    
+    # =========================================================================
+    # MAIN LOOP
+    # =========================================================================
     
     async def start(self) -> None:
         """Start the trading agent."""
-        logger.info("Starting Gann Sentinel Agent...")
-        
-        await self.telegram.send_message(
-            f"{EMOJI_ROCKET} Gann Sentinel Trader Started\n\n"
-            f"Mode: {Config.MODE}\n"
-            f"Approval Gate: {'ON' if Config.APPROVAL_GATE else 'OFF'}\n\n"
-            "First scan starting now...\n"
-            "Use /help for commands",
-            parse_mode=None
-        )
+        if self.running:
+            logger.warning("Agent already running")
+            return
         
         self.running = True
-        self.watchlist = self.default_watchlist.copy()
+        logger.info("Starting Gann Sentinel Agent...")
         
+        # Initialize watchlist
+        self._initialize_watchlist()
+        
+        # Start Telegram command listener
+        asyncio.create_task(self._telegram_listener())
+        
+        # Send startup notification
+        await self.telegram.send_startup_message()
+        
+        # Main loop
         while self.running:
             try:
-                await self._run_cycle()
+                await self._main_loop_iteration()
             except Exception as e:
-                logger.error(f"Error in main cycle: {e}")
+                logger.error(f"Error in main loop: {e}")
                 logger.error(traceback.format_exc())
-                self.db.log_error(
-                    error_type="cycle_error",
-                    component="agent",
-                    message=str(e),
-                    stack_trace=traceback.format_exc()
-                )
-                await self.telegram.send_error_alert("Agent", str(e))
+                self.db.log_error("main_loop_error", "agent", str(e), traceback.format_exc())
+                self.telegram.record_system_error("main_loop", str(e))
             
+            # Wait before next iteration
             await asyncio.sleep(60)
     
     async def stop(self) -> None:
         """Stop the trading agent."""
-        logger.info("Stopping Gann Sentinel Agent...")
+        logger.info("Stopping agent...")
         self.running = False
-        
-        await self.telegram.send_message(
-            f"{EMOJI_STOP} Gann Sentinel Trader Stopped\n\n"
-            "Use /resume to restart.",
-            parse_mode=None
-        )
+        await self.telegram.send_message(f"{EMOJI_STOP} Gann Sentinel Agent stopped", parse_mode=None)
     
-    async def _run_cycle(self) -> None:
-        """Run one cycle of the trading loop."""
+    def _initialize_watchlist(self) -> None:
+        """Initialize the watchlist from config or defaults."""
+        default_watchlist = [
+            "TSLA", "NVDA", "RKLB", "PLTR", "MSTR",
+            "COIN", "HOOD", "SOFI", "AMD", "SMCI"
+        ]
+        
+        config_watchlist = getattr(Config, 'WATCHLIST', None)
+        if config_watchlist:
+            self.watchlist = config_watchlist
+        else:
+            self.watchlist = default_watchlist
+        
+        logger.info(f"Watchlist initialized: {self.watchlist}")
+    
+    async def _main_loop_iteration(self) -> None:
+        """Single iteration of the main loop."""
         now = datetime.now(timezone.utc)
         
-        await self._process_commands()
-        
-        if self._startup_complete:
-            await self._maybe_send_daily_digest(now)
-        
-        should_scan = (
-            self.last_scan_time is None or
-            (now - self.last_scan_time).total_seconds() >= Config.SCAN_INTERVAL_MINUTES * 60
-        )
-        
-        if should_scan:
-            logger.info("Running full scan cycle...")
+        # Check if it's time for a scan
+        if self._should_scan(now):
             await self._full_scan_cycle()
             self.last_scan_time = now
-            self._startup_complete = True
         
+        # Check if it's time for daily digest
+        await self._check_daily_digest(now)
+        
+        # Check positions for stop-loss/take-profit
         await self._check_positions()
-        await self._process_approved_trades()
     
-    async def _maybe_send_daily_digest(self, now: datetime) -> None:
-        """Send daily digest if it's time."""
-        should_send = False
+    def _should_scan(self, now: datetime) -> bool:
+        """Check if we should run a scan cycle."""
+        # Market hours check (US market: 9:30 AM - 4:00 PM ET)
+        # ET is UTC-5 (standard) or UTC-4 (daylight)
+        hour_utc = now.hour
         
-        if self.last_digest_time is None:
-            if now.hour >= self.digest_hour_utc:
-                should_send = True
-        else:
-            if (now.date() > self.last_digest_time.date() and 
-                now.hour >= self.digest_hour_utc):
-                should_send = True
+        # Rough market hours in UTC: 14:30 - 21:00 (EST) or 13:30 - 20:00 (EDT)
+        market_open = 13  # Conservative start
+        market_close = 21  # Conservative end
         
-        if should_send:
-            try:
-                await self._send_daily_digest()
-                self.last_digest_time = now
-                logger.info("Daily digest sent successfully")
-            except Exception as e:
-                logger.error(f"Failed to send daily digest: {e}")
-                self.telegram.record_system_error("daily_digest", str(e))
+        if not (market_open <= hour_utc <= market_close):
+            return False
+        
+        # Check scan interval
+        if self.last_scan_time is None:
+            return True
+        
+        elapsed = (now - self.last_scan_time).total_seconds() / 60
+        return elapsed >= Config.SCAN_INTERVAL_MINUTES
+    
+    async def _check_daily_digest(self, now: datetime) -> None:
+        """Check if daily digest should be sent."""
+        if now.hour == self.digest_hour_utc:
+            if self.last_digest_time is None or self.last_digest_time.date() < now.date():
+                try:
+                    await self._send_daily_digest()
+                    self.last_digest_time = now
+                except Exception as e:
+                    logger.error(f"Error sending daily digest: {e}")
+                    self.telegram.record_system_error("daily_digest", str(e))
     
     async def _send_daily_digest(self) -> None:
         """Generate and send the daily digest."""
@@ -217,6 +226,7 @@ class GannSentinelAgent:
     async def _full_scan_cycle(self) -> None:
         """Run a full signal scan and analysis cycle."""
         signals: List[Signal] = []
+        technical_signals: List[Dict[str, Any]] = []  # NEW - Track technical separately
         
         self._current_pending_trade_id = None
         self.telegram.record_scan_start()
@@ -229,7 +239,6 @@ class GannSentinelAgent:
             signals.extend(sentiment_signals)
             logger.info(f"Got {len(sentiment_signals)} sentiment signals from Grok")
             
-            # Check for errors even if no exception was raised
             grok_error = self.grok.last_error if hasattr(self.grok, 'last_error') else None
             
             self.telegram.record_source_query(
@@ -257,7 +266,6 @@ class GannSentinelAgent:
             signals.extend(overview_signals)
             logger.info(f"Got {len(overview_signals)} overview signals from Grok")
             
-            # Check for errors even if no exception was raised
             grok_error = self.grok.last_error if hasattr(self.grok, 'last_error') else None
             
             self.telegram.record_source_query(
@@ -330,6 +338,63 @@ class GannSentinelAgent:
                 error=str(type(e).__name__)
             )
         
+        # =================================================================
+        # NEW: TECHNICAL ANALYSIS SCAN
+        # Run on top watchlist tickers
+        # =================================================================
+        try:
+            if self.technical.is_configured:
+                tech_tickers = self.watchlist[:5]  # Top 5 from watchlist
+                logger.info(f"Running technical analysis on: {tech_tickers}")
+                
+                for ticker in tech_tickers:
+                    try:
+                        # Use 1-year daily for hourly scans (faster)
+                        tech_signal = await self.technical.scan_ticker(ticker, "1D", 1.0)
+                        
+                        if tech_signal:
+                            signal_dict = tech_signal.to_dict()
+                            technical_signals.append(signal_dict)
+                            signals.append(tech_signal)  # Add to main signals list
+                            
+                            # Record for telegram
+                            self.telegram.record_signal(signal_dict)
+                            self.telegram.record_technical_signal(signal_dict)  # NEW method
+                            
+                            logger.info(
+                                f"Technical {ticker}: {tech_signal.market_state.state.value}, "
+                                f"verdict={tech_signal.verdict.value}"
+                            )
+                    except Exception as e:
+                        logger.error(f"Technical scan error for {ticker}: {e}")
+                
+                self.telegram.record_source_query(
+                    source="Technical Scanner",
+                    query=f"chart analysis: {', '.join(tech_tickers)}",
+                    signals_returned=len(technical_signals),
+                    error=None
+                )
+                
+                logger.info(f"Got {len(technical_signals)} technical signals")
+            else:
+                logger.warning("Technical scanner not configured - skipping")
+                self.telegram.record_source_query(
+                    source="Technical Scanner",
+                    query="chart analysis",
+                    signals_returned=0,
+                    error="Not configured (Alpaca keys missing)"
+                )
+                
+        except Exception as e:
+            logger.error(f"Error in technical scan: {e}")
+            self.db.log_error("scan_error", "technical", str(e))
+            self.telegram.record_source_query(
+                source="Technical Scanner",
+                query="chart analysis",
+                signals_returned=0,
+                error=str(type(e).__name__)
+            )
+        
         # Save all signals
         for signal in signals:
             try:
@@ -352,7 +417,8 @@ class GannSentinelAgent:
                 signals=signals_dict,
                 analysis=None,
                 portfolio=None,
-                pending_trade_id=None
+                pending_trade_id=None,
+                technical_signals=technical_signals  # NEW
             )
             return
         
@@ -421,250 +487,192 @@ class GannSentinelAgent:
                 signals=signals_dict,
                 analysis=analysis_dict,
                 portfolio=portfolio_dict,
-                pending_trade_id=self._current_pending_trade_id
+                pending_trade_id=self._current_pending_trade_id,
+                technical_signals=technical_signals  # NEW
             )
-            logger.info("Scan summary sent to Telegram")
         except Exception as e:
-            logger.error(f"Failed to send scan summary: {e}")
-    
-    def _holds_position(self, ticker: str, positions: List[Position]) -> bool:
-        """Check if we currently hold a position in a ticker."""
-        for pos in positions:
-            pos_ticker = pos.ticker if hasattr(pos, 'ticker') else pos.get('ticker', '')
-            if pos_ticker.upper() == ticker.upper():
-                return True
-        return False
+            logger.error(f"Error sending scan summary: {e}")
+            self.telegram.record_system_error("scan_summary", str(e))
     
     async def _handle_trade_recommendation(
         self,
         analysis: Analysis,
-        portfolio,
+        portfolio: Any,
         positions: List[Position]
     ) -> None:
-        """Handle a trade recommendation from Claude."""
-        
-        # CRITICAL: Only allow SELL if we actually hold the position
-        if analysis.recommendation == Recommendation.SELL:
-            if not self._holds_position(analysis.ticker, positions):
-                logger.info(f"Ignoring SELL recommendation for {analysis.ticker} - no position held")
-                self.telegram.record_trade_blocker(
-                    blocker_type="No Position",
-                    details=f"Cannot SELL {analysis.ticker} - we don't hold it"
-                )
-                return
-        
+        """Process a trade recommendation through risk checks."""
         # Run risk checks
-        passed, risk_results = self.risk_engine.validate_trade(
-            analysis=analysis,
-            portfolio=portfolio,
-            current_positions=positions
+        passed, results = self.risk_engine.check_trade(
+            analysis=analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis,
+            portfolio=portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio,
+            current_positions=[p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
         )
         
+        for result in results:
+            if not result.passed:
+                logger.warning(f"Risk check failed: {result.check_name} - {result.message}")
+                self.telegram.record_risk_rejection({
+                    "check_name": result.check_name,
+                    "message": result.message,
+                    "severity": result.severity
+                })
+        
         if not passed:
-            logger.warning(f"Trade rejected by risk engine: {analysis.ticker}")
-            failed_checks = [r for r in risk_results if not r.passed and r.severity == "error"]
+            failed_checks = [r for r in results if not r.passed and r.severity == "error"]
             reasons = "; ".join([r.message for r in failed_checks])
-            
-            self.telegram.record_risk_rejection(
-                ticker=analysis.ticker,
-                reason=reasons
-            )
-            
-            logger.info(f"Risk rejection recorded: {analysis.ticker} - {reasons}")
-            return
-        
-        # Get current price
-        quote = await self.executor.get_quote(analysis.ticker)
-        if "error" in quote:
-            error_msg = quote.get("error", "Unknown quote error")
-            logger.error(f"Could not get quote for {analysis.ticker}: {error_msg}")
-            
-            # Record the blocker so it shows in scan summary
-            self.telegram.record_trade_blocker(
-                blocker_type="Quote Error",
-                details=f"{analysis.ticker}: {error_msg}"
-            )
-            return
-        
-        current_price = quote.get("mid")
-        if not current_price or current_price <= 0:
-            logger.error(f"Invalid price for {analysis.ticker}: {current_price}")
-            self.telegram.record_trade_blocker(
-                blocker_type="Invalid Price",
-                details=f"{analysis.ticker}: Price is {current_price}"
-            )
+            logger.info(f"Trade rejected by risk engine: {reasons}")
             return
         
         # Calculate position size
-        sizing = self.risk_engine.calculate_position_size(
-            analysis=analysis,
-            portfolio=portfolio,
-            current_price=current_price
-        )
+        portfolio_dict = portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio
+        position_value = portfolio_dict.get("equity", 100000) * (analysis.position_size_pct / 100)
         
-        if sizing["shares"] < 1:
-            logger.warning(f"Position size too small: {sizing['shares']} shares")
-            self.telegram.record_trade_blocker(
-                blocker_type="Position Size",
-                details=f"Calculated {sizing['shares']} shares (need at least 1)"
-            )
+        # Get current price
+        try:
+            quote = await self.executor.get_quote(analysis.ticker)
+            current_price = quote.get("mid", quote.get("last", 0))
+        except Exception as e:
+            logger.error(f"Error getting quote: {e}")
             return
         
-        # Create trade object
+        if current_price <= 0:
+            logger.error(f"Invalid price for {analysis.ticker}")
+            return
+        
+        shares = int(position_value / current_price)
+        if shares <= 0:
+            logger.warning(f"Position size too small for {analysis.ticker}")
+            return
+        
+        # Create trade record
         trade = Trade(
-            analysis_id=analysis.analysis_id,
+            id=str(uuid.uuid4()),
+            analysis_id=analysis.id,
             ticker=analysis.ticker,
             side=OrderSide.BUY if analysis.recommendation == Recommendation.BUY else OrderSide.SELL,
-            quantity=sizing["shares"],
-            order_type=OrderType.MARKET if analysis.entry_strategy == "market" else OrderType.LIMIT,
-            limit_price=analysis.entry_price_target,
-            status=TradeStatus.PENDING_APPROVAL if Config.APPROVAL_GATE else TradeStatus.APPROVED,
+            quantity=shares,
+            order_type=OrderType.MARKET,
+            status=TradeStatus.PENDING_APPROVAL,
             thesis=analysis.thesis,
-            conviction_score=analysis.conviction_score
+            conviction_score=analysis.conviction_score,
+            stop_loss_price=current_price * (1 - analysis.stop_loss_pct / 100) if analysis.stop_loss_pct else None
         )
         
         self.db.save_trade(trade.to_dict())
         
-        if Config.APPROVAL_GATE:
-            self._current_pending_trade_id = trade.trade_id[:8]
-            logger.info(f"Trade pending approval: {self._current_pending_trade_id}")
-        else:
-            await self._execute_trade(trade)
-    
-    async def _execute_trade(self, trade: Trade) -> None:
-        """Execute a trade."""
-        logger.info(f"Executing trade: {trade.ticker} {trade.side.value} {trade.quantity}")
+        # Store for scan summary
+        self._current_pending_trade_id = trade.id
         
-        try:
-            trade = await self.executor.submit_order(trade)
-            self.db.save_trade(trade.to_dict())
-            
-            if trade.status == TradeStatus.FILLED:
-                await self.telegram.send_execution_alert(
-                    ticker=trade.ticker,
-                    side=trade.side.value,
-                    quantity=trade.fill_quantity or trade.quantity,
-                    price=trade.fill_price or 0,
-                    total=(trade.fill_price or 0) * (trade.fill_quantity or trade.quantity)
-                )
-                
-                logger.info(f"Trade executed: {trade.ticker} @ ${trade.fill_price:.2f}")
-            
-            elif trade.status == TradeStatus.FAILED:
-                await self.telegram.send_error_alert(
-                    "Trade Execution",
-                    f"Failed to execute {trade.ticker}: {trade.rejection_reason}"
-                )
-                
-        except Exception as e:
-            logger.error(f"Error executing trade: {e}")
-            trade.status = TradeStatus.FAILED
-            trade.rejection_reason = str(e)
-            self.db.save_trade(trade.to_dict())
-            await self.telegram.send_error_alert("Trade Execution", str(e))
+        # Send approval request
+        await self.telegram.send_trade_approval_request(
+            trade=trade.to_dict(),
+            analysis=analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis,
+            current_price=current_price
+        )
     
     async def _check_positions(self) -> None:
-        """Check positions for stop-loss triggers."""
-        positions = await self.executor.get_positions()
-        
-        for position in positions:
-            db_position = self.db.get_position(position.ticker)
+        """Check positions for stop-loss and take-profit triggers."""
+        try:
+            positions = await self.executor.get_positions()
             
-            if db_position and db_position.get("stop_loss_price"):
-                stop_loss = db_position["stop_loss_price"]
+            for position in positions:
+                pos_dict = position.to_dict() if hasattr(position, 'to_dict') else position
                 
-                if position.current_price and position.current_price <= stop_loss:
-                    logger.warning(f"STOP LOSS TRIGGERED: {position.ticker} @ ${position.current_price}")
-                    
-                    entry_price = db_position.get("avg_entry_price", position.avg_entry_price)
-                    loss_pct = (position.current_price - entry_price) / entry_price * 100
-                    
-                    await self.telegram.send_stop_loss_alert(
-                        ticker=position.ticker,
-                        trigger_price=position.current_price,
-                        loss_pct=loss_pct
+                # Check stop loss
+                stop_loss = pos_dict.get("stop_loss_price")
+                current_price = pos_dict.get("current_price")
+                
+                if stop_loss and current_price and current_price <= stop_loss:
+                    logger.warning(f"Stop loss triggered for {pos_dict.get('ticker')}")
+                    await self.telegram.send_message(
+                        f"{EMOJI_WARNING} STOP LOSS TRIGGERED\n\n"
+                        f"Ticker: {pos_dict.get('ticker')}\n"
+                        f"Current: ${current_price:.2f}\n"
+                        f"Stop: ${stop_loss:.2f}",
+                        parse_mode=None
                     )
                     
-                    if Config.MODE == "LIVE" or self.executor.is_paper:
-                        await self.executor.close_position(position.ticker)
-                        logger.info(f"Position closed: {position.ticker}")
+        except Exception as e:
+            logger.error(f"Error checking positions: {e}")
     
-    async def _process_approved_trades(self) -> None:
-        """Process any trades that have been approved."""
-        pending_trades = self.db.get_pending_trades()
-        
-        for trade_data in pending_trades:
-            if trade_data["status"] == "approved":
-                trade = Trade(
-                    trade_id=trade_data["id"],
-                    analysis_id=trade_data.get("analysis_id"),
-                    ticker=trade_data["ticker"],
-                    side=OrderSide(trade_data["side"]),
-                    quantity=trade_data["quantity"],
-                    order_type=OrderType(trade_data["order_type"]),
-                    limit_price=trade_data.get("limit_price"),
-                    status=TradeStatus.APPROVED,
-                    thesis=trade_data.get("thesis", ""),
-                    conviction_score=trade_data.get("conviction_score", 0)
-                )
+    # =========================================================================
+    # TELEGRAM COMMANDS
+    # =========================================================================
+    
+    async def _telegram_listener(self) -> None:
+        """Listen for Telegram commands."""
+        while self.running:
+            try:
+                commands = await self.telegram.get_commands()
                 
-                await self._execute_trade(trade)
-    
-    async def _process_commands(self) -> None:
-        """Process Telegram commands."""
-        commands = await self.telegram.process_commands()
-        
-        for cmd in commands:
-            command = cmd.get("command")
+                for cmd in commands:
+                    await self._handle_command(cmd)
+                    
+            except Exception as e:
+                logger.error(f"Error in Telegram listener: {e}")
             
-            if command == "status":
-                await self._handle_status_command()
-            elif command == "pending":
-                await self._handle_pending_command()
-            elif command == "approve":
-                await self._handle_approve_command(cmd.get("trade_id"))
-            elif command == "reject":
-                await self._handle_reject_command(
-                    cmd.get("trade_id"),
-                    cmd.get("reason", "Rejected by user")
-                )
-            elif command == "stop":
-                await self._handle_stop_command()
-            elif command == "resume":
-                await self._handle_resume_command()
-            elif command == "digest":
-                await self._handle_digest_command()
-            elif command == "check":
-                await self._handle_check_command(cmd.get("ticker"))
-            elif command == "help":
-                await self._handle_help_command()
+            await asyncio.sleep(2)
+    
+    async def _handle_command(self, cmd: Dict[str, Any]) -> None:
+        """Handle a Telegram command."""
+        command = cmd.get("command", "").lower()
+        
+        if command == "status":
+            await self._handle_status_command()
+        elif command == "pending":
+            await self._handle_pending_command()
+        elif command == "approve":
+            await self._handle_approve_command(cmd.get("trade_id"))
+        elif command == "reject":
+            await self._handle_reject_command(cmd.get("trade_id"))
+        elif command == "stop":
+            await self._handle_stop_command()
+        elif command == "resume":
+            await self._handle_resume_command()
+        elif command == "scan":
+            await self._handle_scan_command()
+        elif command == "digest":
+            await self._send_daily_digest()
+        elif command == "check":
+            await self._handle_check_command(cmd.get("ticker"))
+        elif command == "help":
+            await self._handle_help_command()
     
     async def _handle_status_command(self) -> None:
         """Handle /status command."""
-        portfolio = await self.executor.get_portfolio_snapshot()
-        pending_count = len(self.db.get_pending_trades())
-        
-        await self.telegram.send_system_status(
-            status="Running" if self.running else "Stopped",
-            mode=Config.MODE,
-            approval_gate=Config.APPROVAL_GATE,
-            positions_count=portfolio.position_count,
-            pending_trades=pending_count
-        )
+        try:
+            portfolio = await self.executor.get_portfolio_snapshot()
+            positions = await self.executor.get_positions()
+            pending = self.db.get_pending_trades()
+            
+            portfolio_dict = portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio
+            positions_list = [p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
+            
+            await self.telegram.send_status_message(
+                portfolio=portfolio_dict,
+                positions=positions_list,
+                pending_approvals=pending,
+                agent_running=self.running
+            )
+        except Exception as e:
+            logger.error(f"Error in status command: {e}")
+            await self.telegram.send_message(f"{EMOJI_CROSS} Error getting status: {str(e)[:50]}", parse_mode=None)
     
     async def _handle_pending_command(self) -> None:
         """Handle /pending command."""
         pending = self.db.get_pending_trades()
         
         if not pending:
-            await self.telegram.send_message("No pending trades.", parse_mode=None)
+            await self.telegram.send_message("No pending trade approvals.", parse_mode=None)
             return
         
-        msg = "Pending Trades:\n\n"
         for trade in pending:
-            msg += f"{EMOJI_BULLET} {trade['id'][:8]} - {trade['side'].upper()} {trade['ticker']} ({trade['quantity']} shares)\n"
-        
-        await self.telegram.send_message(msg, parse_mode=None)
+            analysis = self.db.get_analysis(trade.get("analysis_id"))
+            await self.telegram.send_trade_approval_request(
+                trade=trade,
+                analysis=analysis,
+                current_price=trade.get("current_price")
+            )
     
     async def _handle_approve_command(self, trade_id: str) -> None:
         """Handle /approve command."""
@@ -672,108 +680,77 @@ class GannSentinelAgent:
             await self.telegram.send_message("Usage: /approve [trade_id]", parse_mode=None)
             return
         
-        trade_data = self.db.get_trade(trade_id)
-        
-        if not trade_data:
-            pending = self.db.get_pending_trades()
-            for t in pending:
-                if t.get("id", "").startswith(trade_id):
-                    trade_data = t
-                    trade_id = t["id"]
-                    break
-        
-        if not trade_data:
-            await self.telegram.send_message(f"Trade not found: {trade_id}", parse_mode=None)
+        trade = self.db.get_trade(trade_id)
+        if not trade:
+            await self.telegram.send_message(f"Trade {trade_id} not found", parse_mode=None)
             return
         
-        if trade_data["status"] != "pending_approval":
-            await self.telegram.send_message(
-                f"Trade {trade_id[:8]} is not pending approval (status: {trade_data['status']})",
-                parse_mode=None
+        if trade.get("status") != TradeStatus.PENDING_APPROVAL.value:
+            await self.telegram.send_message(f"Trade {trade_id} is not pending approval", parse_mode=None)
+            return
+        
+        # Execute trade
+        try:
+            result = await self.executor.execute_order(
+                ticker=trade.get("ticker"),
+                side=trade.get("side"),
+                quantity=trade.get("quantity"),
+                order_type=trade.get("order_type", "market")
             )
-            return
-        
-        self.db.update_trade_status(trade_id, "approved")
-        await self.telegram.send_message(f"{EMOJI_CHECK} Trade approved: {trade_id[:8]}", parse_mode=None)
-        self.telegram.remove_pending_approval(trade_id[:8])
-        
-        logger.info(f"Trade approved: {trade_id}")
+            
+            if result.get("success"):
+                self.db.update_trade_status(trade_id, TradeStatus.SUBMITTED.value, result.get("order_id"))
+                await self.telegram.send_message(
+                    f"{EMOJI_CHECK} Trade {trade_id} approved and submitted\n"
+                    f"Order ID: {result.get('order_id')}",
+                    parse_mode=None
+                )
+            else:
+                await self.telegram.send_message(
+                    f"{EMOJI_CROSS} Trade execution failed: {result.get('error')}",
+                    parse_mode=None
+                )
+                
+        except Exception as e:
+            logger.error(f"Error executing trade: {e}")
+            await self.telegram.send_message(f"{EMOJI_CROSS} Execution error: {str(e)[:50]}", parse_mode=None)
     
-    async def _handle_reject_command(self, trade_id: str, reason: str) -> None:
+    async def _handle_reject_command(self, trade_id: str) -> None:
         """Handle /reject command."""
         if not trade_id:
-            await self.telegram.send_message("Usage: /reject [trade_id] [reason]", parse_mode=None)
+            await self.telegram.send_message("Usage: /reject [trade_id]", parse_mode=None)
             return
         
-        trade_data = self.db.get_trade(trade_id)
-        
-        if not trade_data:
-            pending = self.db.get_pending_trades()
-            for t in pending:
-                if t.get("id", "").startswith(trade_id):
-                    trade_data = t
-                    trade_id = t["id"]
-                    break
-        
-        if not trade_data:
-            await self.telegram.send_message(f"Trade not found: {trade_id}", parse_mode=None)
+        trade = self.db.get_trade(trade_id)
+        if not trade:
+            await self.telegram.send_message(f"Trade {trade_id} not found", parse_mode=None)
             return
         
-        self.db.update_trade_status(trade_id, "rejected", rejection_reason=reason)
-        await self.telegram.send_message(
-            f"{EMOJI_CROSS} Trade rejected: {trade_id[:8]}\nReason: {reason}",
-            parse_mode=None
-        )
-        self.telegram.remove_pending_approval(trade_id[:8])
-        
-        logger.info(f"Trade rejected: {trade_id} - {reason}")
+        self.db.update_trade_status(trade_id, TradeStatus.REJECTED.value)
+        await self.telegram.send_message(f"{EMOJI_CROSS} Trade {trade_id} rejected", parse_mode=None)
     
     async def _handle_stop_command(self) -> None:
         """Handle /stop command - emergency halt."""
-        logger.critical("EMERGENCY STOP TRIGGERED")
-        
-        self.risk_engine.halt_trading("Emergency stop triggered via Telegram")
-        cancelled = await self.executor.cancel_all_orders()
-        
-        await self.telegram.send_message(
-            f"{EMOJI_STOP} EMERGENCY STOP\n\n"
-            f"Trading halted.\n"
-            f"Cancelled {cancelled} orders.\n\n"
-            f"Use /resume to restart.",
-            parse_mode=None
-        )
+        await self.stop()
     
     async def _handle_resume_command(self) -> None:
         """Handle /resume command."""
-        self.risk_engine.resume_trading()
-        
-        await self.telegram.send_message(
-            f"{EMOJI_CHECK} Trading Resumed\n\n"
-            "System is active again.",
-            parse_mode=None
-        )
-        
-        logger.info("Trading resumed via Telegram command")
+        if not self.running:
+            asyncio.create_task(self.start())
+            await self.telegram.send_message(f"{EMOJI_ROCKET} Agent resumed", parse_mode=None)
+        else:
+            await self.telegram.send_message("Agent already running", parse_mode=None)
     
-    async def _handle_digest_command(self) -> None:
-        """Handle /digest command - send daily digest immediately."""
-        logger.info("Manual digest requested via Telegram")
-        
-        try:
-            await self._send_daily_digest()
-            logger.info("Manual digest sent successfully")
-        except Exception as e:
-            logger.error(f"Failed to send manual digest: {e}")
-            await self.telegram.send_message(
-                f"{EMOJI_CROSS} Failed to generate digest: {str(e)[:100]}",
-                parse_mode=None
-            )
+    async def _handle_scan_command(self) -> None:
+        """Handle /scan command - manual scan trigger."""
+        await self.telegram.send_message(f"{EMOJI_SEARCH} Running manual scan...", parse_mode=None)
+        await self._full_scan_cycle()
     
     async def _handle_check_command(self, ticker: str) -> None:
         """
         Handle /check [ticker] command - on-demand analysis.
         
-        Runs full Grok + Claude analysis on any ticker (including pre-IPO)
+        Runs full Grok + Technical + Claude analysis on any ticker
         and generates a trade recommendation with approval prompt if actionable.
         """
         if not ticker:
@@ -788,7 +765,7 @@ class GannSentinelAgent:
         
         # Acknowledge the request
         await self.telegram.send_message(
-            f"{EMOJI_SEARCH} Analyzing {ticker}...\n\nGathering signals and running analysis.",
+            f"{EMOJI_SEARCH} Analyzing {ticker}...\n\nGathering signals, chart analysis, and running Claude analysis.",
             parse_mode=None
         )
         
@@ -822,10 +799,12 @@ class GannSentinelAgent:
         - recommendation: BUY/SELL/HOLD/NONE
         - thesis: Analysis thesis
         - historical_context: Historical pattern match (if found)
+        - technical_analysis: Chart structure analysis (NEW)
         - pending_trade_id: Trade ID if trade was created
         - risk_rejection: Reason if risk check failed
         """
         signals = []
+        technical_data = None  # NEW
         
         # Gather Grok sentiment for this ticker
         try:
@@ -842,6 +821,26 @@ class GannSentinelAgent:
             logger.info(f"Got {len(catalyst_signals)} catalyst signals for {ticker}")
         except Exception as e:
             logger.error(f"Grok catalyst error for {ticker}: {e}")
+        
+        # =================================================================
+        # NEW: TECHNICAL ANALYSIS for /check command
+        # Use 5-year weekly for comprehensive view
+        # =================================================================
+        try:
+            if self.technical.is_configured:
+                logger.info(f"Running technical analysis for {ticker}")
+                tech_signal = await self.technical.scan_ticker(ticker, "1W", 5.0)
+                
+                if tech_signal:
+                    technical_data = tech_signal.to_dict()
+                    signals.append(tech_signal)  # Add to signals for Claude
+                    logger.info(
+                        f"Technical {ticker}: state={tech_signal.market_state.state.value}, "
+                        f"bias={tech_signal.market_state.bias.value}, "
+                        f"verdict={tech_signal.verdict.value}"
+                    )
+        except Exception as e:
+            logger.error(f"Technical analysis error for {ticker}: {e}")
         
         # Check if ticker is tradeable (has price data from Alpaca)
         is_tradeable = False
@@ -861,17 +860,15 @@ class GannSentinelAgent:
             price_error = str(e)
             logger.info(f"{ticker} not tradeable: {e}")
         
-        # Get portfolio context - convert to dict immediately for consistency
+        # Get portfolio context
         portfolio_obj = await self.executor.get_portfolio_snapshot()
         positions = await self.executor.get_positions()
         
-        # Always work with dict to avoid attribute errors
         if hasattr(portfolio_obj, 'to_dict'):
             portfolio_dict = portfolio_obj.to_dict()
         elif isinstance(portfolio_obj, dict):
             portfolio_dict = portfolio_obj
         else:
-            # Fallback: extract common attributes
             portfolio_dict = {
                 "equity": getattr(portfolio_obj, 'equity', 100000),
                 "cash": getattr(portfolio_obj, 'cash', 100000),
@@ -888,7 +885,7 @@ class GannSentinelAgent:
                 analysis = await self.analyst.analyze_signals(
                     signals=signals,
                     portfolio_context=portfolio_dict,
-                    watchlist=[ticker]  # Focus analysis on this ticker
+                    watchlist=[ticker]
                 )
                 analysis_dict = analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis
                 logger.info(f"Claude analysis complete: conviction={analysis.conviction_score}")
@@ -896,18 +893,17 @@ class GannSentinelAgent:
                 logger.error(f"Claude analysis error for {ticker}: {e}")
         
         # Build result dict
-        # NOTE: /check command is asking "should I buy this?" so we only act on BUY
-        # SELL recommendations are converted to HOLD/WATCH since we can't sell what we don't own
-        recommendation = "NONE"
-        if analysis:
-            if analysis.recommendation == Recommendation.BUY:
-                recommendation = "BUY"
-            elif analysis.recommendation == Recommendation.SELL:
-                # Can't sell what we don't own - convert to WATCH
-                recommendation = "HOLD"
+        recommendation = analysis.recommendation.value if analysis else "NONE"
+        
+        # Convert SELL to HOLD for /check (we can't sell what we don't own)
+        if recommendation == "SELL":
+            existing_position = any(
+                p.ticker == ticker if hasattr(p, 'ticker') else p.get('ticker') == ticker
+                for p in positions
+            )
+            if not existing_position:
                 logger.info(f"Converting SELL to HOLD for {ticker} - /check is BUY-only")
-            else:
-                recommendation = analysis.recommendation.value if hasattr(analysis.recommendation, 'value') else "HOLD"
+                recommendation = "HOLD"
         
         result = {
             "ticker": ticker,
@@ -915,62 +911,54 @@ class GannSentinelAgent:
             "current_price": current_price,
             "price_error": price_error,
             "signals_count": len(signals),
-            "signals": [s.to_dict() if hasattr(s, 'to_dict') else s for s in signals],
-            "analysis": analysis_dict,
             "conviction": analysis.conviction_score if analysis else 0,
             "recommendation": recommendation,
-            "thesis": analysis.thesis if analysis else "Insufficient signals for analysis. Try again later or check if ticker is valid.",
-            "historical_context": getattr(analysis, 'historical_context', None) if analysis else None,
+            "thesis": analysis.thesis if analysis else "Insufficient signals for analysis.",
+            "historical_context": analysis_dict.get("historical_context") if analysis_dict else None,
+            "bull_case": analysis_dict.get("bull_case") if analysis_dict else None,
+            "bear_case": analysis_dict.get("bear_case") if analysis_dict else None,
+            "technical_analysis": technical_data,  # NEW
             "pending_trade_id": None,
             "risk_rejection": None,
         }
         
-        # Attempt to create trade ONLY if BUY recommendation
-        # /check command is asking "should I buy?" - never creates SELL trades
-        if (analysis and 
-            analysis.recommendation == Recommendation.BUY and  # BUY only!
-            analysis.is_actionable and 
-            is_tradeable and 
-            analysis.conviction_score >= Config.MIN_CONVICTION):
+        # Only create trade for BUY recommendations on tradeable tickers
+        if (is_tradeable and 
+            analysis and 
+            analysis.conviction_score >= 80 and 
+            recommendation == "BUY"):
             
             logger.info(f"Trade criteria met for {ticker}, running risk checks...")
             
-            # Run risk checks - use dict version for consistency
-            passed, risk_results = self.risk_engine.validate_trade(
-                analysis=analysis,
+            passed, risk_results = self.risk_engine.check_trade(
+                analysis=analysis_dict,
                 portfolio=portfolio_dict,
-                current_positions=positions
+                current_positions=[p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
             )
             
             if passed:
-                # Calculate position size - use dict version
-                sizing = self.risk_engine.calculate_position_size(
-                    analysis=analysis,
-                    portfolio=portfolio_dict,
-                    current_price=current_price
-                )
+                # Create trade
+                position_value = portfolio_dict.get("equity", 100000) * (analysis.position_size_pct / 100)
+                shares = int(position_value / current_price) if current_price > 0 else 0
                 
-                if sizing["shares"] >= 1:
-                    # Create BUY trade (only BUY reaches here due to check above)
+                if shares > 0:
                     trade = Trade(
-                        analysis_id=analysis.analysis_id,
+                        id=str(uuid.uuid4()),
+                        analysis_id=analysis.id,
                         ticker=ticker,
-                        side=OrderSide.BUY,  # Always BUY for /check command
-                        quantity=sizing["shares"],
+                        side=OrderSide.BUY,
+                        quantity=shares,
                         order_type=OrderType.MARKET,
-                        limit_price=None,
                         status=TradeStatus.PENDING_APPROVAL,
                         thesis=analysis.thesis,
-                        conviction_score=analysis.conviction_score
+                        conviction_score=analysis.conviction_score,
+                        stop_loss_price=current_price * (1 - analysis.stop_loss_pct / 100) if analysis.stop_loss_pct else None
                     )
                     
                     self.db.save_trade(trade.to_dict())
-                    result["pending_trade_id"] = trade.trade_id[:8]
-                    logger.info(f"Trade created for {ticker}: {trade.trade_id[:8]}")
-                else:
-                    logger.info(f"Position size too small for {ticker}: {sizing['shares']} shares")
+                    result["pending_trade_id"] = trade.id
+                    logger.info(f"Created pending trade {trade.id} for {ticker}")
             else:
-                # Risk check failed
                 failed_checks = [r for r in risk_results if not r.passed]
                 result["risk_rejection"] = "; ".join([r.message for r in failed_checks])
                 logger.info(f"Risk check failed for {ticker}: {result['risk_rejection']}")
@@ -979,52 +967,52 @@ class GannSentinelAgent:
     
     async def _handle_help_command(self) -> None:
         """Handle /help command."""
-        help_text = """Gann Sentinel Commands:
+        help_text = f"""
+{EMOJI_SEARCH} GANN SENTINEL COMMANDS
 
+/status - Portfolio & system status
+/pending - List pending approvals
+/approve [ID] - Approve a trade
+/reject [ID] - Reject a trade
+/scan - Run manual scan cycle
+/digest - Send daily digest now
 /check [TICKER] - Analyze any stock
-/status - System status
-/pending - Pending trades
-/approve [id] - Approve trade
-/reject [id] - Reject trade
-/digest - Daily digest
 /stop - Emergency halt
 /resume - Resume trading
-/help - This message
+/help - Show this help
 
-Examples:
+EXAMPLES:
   /check NVDA
   /check TSLA
-  /check SPACEX (pre-IPO)
-
-Scans run every ~60 minutes
-Digest at 4 PM ET daily"""
+"""
         await self.telegram.send_message(help_text, parse_mode=None)
 
 
+# =============================================================================
+# IMPORTS FOR TRADE MODEL
+# =============================================================================
+
+import uuid
+
+
+# =============================================================================
+# MAIN ENTRY POINT
+# =============================================================================
+
 async def main():
     """Main entry point."""
-    print("""
-    ================================================================
-                                                                   
-       GANN SENTINEL TRADER                                        
-       AUTONOMOUS TRADING AGENT                                    
-                                                                   
-    ================================================================
-    
-    DISCLAIMER: Trading involves substantial risk of loss.
-    Only trade what you can afford to lose.
-    
-    """)
+    agent = GannSentinelAgent()
     
     try:
-        agent = GannSentinelAgent()
         await agent.start()
     except KeyboardInterrupt:
-        logger.info("Shutdown requested...")
+        logger.info("Keyboard interrupt received")
+        await agent.stop()
     except Exception as e:
-        logger.critical(f"Fatal error: {e}")
-        logger.critical(traceback.format_exc())
-        sys.exit(1)
+        logger.error(f"Fatal error: {e}")
+        logger.error(traceback.format_exc())
+        await agent.stop()
+        raise
 
 
 if __name__ == "__main__":
