@@ -95,10 +95,10 @@ class GannSentinelAgent:
         self.last_digest_time: Optional[datetime] = None
         self.digest_hour_utc = 21  # 9 PM UTC = 4 PM ET / 1 PM PT
         
-        # Skip digest on first startup (will send after first scan completes)
+        # Skip digest on first startup
         self._startup_complete = False
         
-        # Default watchlist (can be customized)
+        # Default watchlist
         self.default_watchlist = [
             "SPY", "QQQ", "IWM",  # Index ETFs
             "NVDA", "AMD", "SMCI",  # Semiconductors
@@ -113,7 +113,6 @@ class GannSentinelAgent:
         """Start the trading agent."""
         logger.info("Starting Gann Sentinel Agent...")
         
-        # Send startup notification
         await self.telegram.send_message(
             f"{EMOJI_ROCKET} Gann Sentinel Trader Started\n\n"
             f"Mode: {Config.MODE}\n"
@@ -126,7 +125,6 @@ class GannSentinelAgent:
         self.running = True
         self.watchlist = self.default_watchlist.copy()
         
-        # Main loop
         while self.running:
             try:
                 await self._run_cycle()
@@ -141,8 +139,7 @@ class GannSentinelAgent:
                 )
                 await self.telegram.send_error_alert("Agent", str(e))
             
-            # Wait before next cycle
-            await asyncio.sleep(60)  # Check every minute
+            await asyncio.sleep(60)
     
     async def stop(self) -> None:
         """Stop the trading agent."""
@@ -151,7 +148,7 @@ class GannSentinelAgent:
         
         await self.telegram.send_message(
             f"{EMOJI_STOP} Gann Sentinel Trader Stopped\n\n"
-            "Trading halted. Use /resume to restart.",
+            "Use /resume to restart.",
             parse_mode=None
         )
     
@@ -159,14 +156,11 @@ class GannSentinelAgent:
         """Run one cycle of the trading loop."""
         now = datetime.now(timezone.utc)
         
-        # Process any pending Telegram commands
         await self._process_commands()
         
-        # Check if it's time for daily digest (but not on first startup)
         if self._startup_complete:
             await self._maybe_send_daily_digest(now)
         
-        # Check if it's time for a full scan
         should_scan = (
             self.last_scan_time is None or
             (now - self.last_scan_time).total_seconds() >= Config.SCAN_INTERVAL_MINUTES * 60
@@ -176,26 +170,19 @@ class GannSentinelAgent:
             logger.info("Running full scan cycle...")
             await self._full_scan_cycle()
             self.last_scan_time = now
-            self._startup_complete = True  # Mark startup complete after first scan
+            self._startup_complete = True
         
-        # Always check positions for stop-loss triggers
         await self._check_positions()
-        
-        # Process any approved trades
         await self._process_approved_trades()
     
     async def _maybe_send_daily_digest(self, now: datetime) -> None:
         """Send daily digest if it's time."""
-        
-        # Check if we should send digest
         should_send = False
         
         if self.last_digest_time is None:
-            # First run - check if we're past digest hour today
             if now.hour >= self.digest_hour_utc:
                 should_send = True
         else:
-            # Check if it's a new day and past digest hour
             if (now.date() > self.last_digest_time.date() and 
                 now.hour >= self.digest_hour_utc):
                 should_send = True
@@ -211,16 +198,13 @@ class GannSentinelAgent:
     
     async def _send_daily_digest(self) -> None:
         """Generate and send the daily digest."""
-        # Get current positions and portfolio from Alpaca
         positions = await self.executor.get_positions()
         portfolio = await self.executor.get_portfolio_snapshot()
         pending = self.db.get_pending_trades()
         
-        # Convert to dict format for telegram
         positions_data = [p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
         portfolio_data = portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio
         
-        # Send digest
         await self.telegram.send_daily_digest(
             positions=positions_data,
             portfolio=portfolio_data,
@@ -231,22 +215,17 @@ class GannSentinelAgent:
         """Run a full signal scan and analysis cycle."""
         signals: List[Signal] = []
         
-        # Reset pending trade tracker
         self._current_pending_trade_id = None
-        
-        # Record scan start for digest tracking
         self.telegram.record_scan_start()
         
-        # 1. Gather signals from all sources
         logger.info("Gathering signals...")
         
         # Grok sentiment scan
         try:
-            sentiment_signals = await self.grok.scan_sentiment(self.watchlist[:5])  # Limit to save API calls
+            sentiment_signals = await self.grok.scan_sentiment(self.watchlist[:5])
             signals.extend(sentiment_signals)
             logger.info(f"Got {len(sentiment_signals)} sentiment signals from Grok")
             
-            # Record for digest
             self.telegram.record_source_query(
                 source="Grok X Search",
                 query=f"sentiment: {', '.join(self.watchlist[:5])}",
@@ -272,7 +251,6 @@ class GannSentinelAgent:
             signals.extend(overview_signals)
             logger.info(f"Got {len(overview_signals)} overview signals from Grok")
             
-            # Record for digest
             self.telegram.record_source_query(
                 source="Grok Web Search",
                 query="market overview",
@@ -298,7 +276,6 @@ class GannSentinelAgent:
             signals.extend(macro_signals)
             logger.info(f"Got {len(macro_signals)} macro signals from FRED")
             
-            # Record for digest
             fred_series = ["DGS10", "DGS2", "UNRATE", "CPIAUCSL", "GDP", "FEDFUNDS", "T10Y2Y"]
             self.telegram.record_source_query(
                 source="FRED",
@@ -325,7 +302,6 @@ class GannSentinelAgent:
             signals.extend(prediction_signals)
             logger.info(f"Got {len(prediction_signals)} prediction signals from Polymarket")
             
-            # Record for digest
             self.telegram.record_source_query(
                 source="Polymarket",
                 query="fed rates, economic events",
@@ -345,7 +321,7 @@ class GannSentinelAgent:
                 error=str(type(e).__name__)
             )
         
-        # 2. Save all signals
+        # Save all signals
         for signal in signals:
             try:
                 self.db.save_signal(signal.to_dict() if hasattr(signal, 'to_dict') else signal)
@@ -354,18 +330,15 @@ class GannSentinelAgent:
         
         logger.info(f"Total signals gathered: {len(signals)}")
         
-        # Convert signals to dict for summary
         signals_dict = [s.to_dict() if hasattr(s, 'to_dict') else s for s in signals]
         
         if not signals:
             logger.warning("No signals gathered - skipping analysis")
-            # Record no-trade decision for digest
             self.telegram.record_decision({
                 "decision_type": "NO_TRADE",
                 "reasoning": {"rationale": "No signals gathered"}
             })
             
-            # Still send scan summary even with no signals
             await self.telegram.send_scan_summary(
                 signals=signals_dict,
                 analysis=None,
@@ -374,15 +347,14 @@ class GannSentinelAgent:
             )
             return
         
-        # 3. Get portfolio context
+        # Get portfolio context
         portfolio = await self.executor.get_portfolio_snapshot()
         positions = await self.executor.get_positions()
         
-        # Save portfolio snapshot
         portfolio_dict = portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio
         self.db.save_snapshot(portfolio_dict)
         
-        # 4. Run Claude analysis
+        # Run Claude analysis
         logger.info("Running Claude analysis...")
         analysis = None
         analysis_dict = None
@@ -394,17 +366,12 @@ class GannSentinelAgent:
                 watchlist=self.watchlist
             )
             
-            # Convert to dict for summary
             analysis_dict = analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis
-            
-            # Save analysis
             self.db.save_analysis(analysis_dict)
             
-            # 5. Check if we have an actionable trade
             if analysis.is_actionable:
                 logger.info(f"Actionable trade identified: {analysis.ticker} - {analysis.recommendation.value}")
                 
-                # Record trade decision for digest
                 self.telegram.record_decision({
                     "decision_type": "TRADE",
                     "trade_details": {
@@ -420,7 +387,6 @@ class GannSentinelAgent:
             else:
                 logger.info(f"No actionable trade. Conviction: {analysis.conviction_score}")
                 
-                # Record no-trade decision for digest
                 self.telegram.record_decision({
                     "decision_type": "NO_TRADE",
                     "trade_details": {
@@ -435,14 +401,12 @@ class GannSentinelAgent:
             self.db.log_error("analysis_error", "claude", str(e), traceback.format_exc())
             self.telegram.record_system_error("claude_analyst", str(e))
             
-            # Record failed analysis for digest
             self.telegram.record_decision({
                 "decision_type": "NO_TRADE",
                 "reasoning": {"rationale": f"Analysis error: {str(e)[:50]}"}
             })
         
-        # 6. SEND SINGLE CONSOLIDATED SCAN SUMMARY
-        # This replaces all the separate messages with ONE comprehensive message
+        # Send consolidated scan summary
         try:
             await self.telegram.send_scan_summary(
                 signals=signals_dict,
@@ -453,7 +417,6 @@ class GannSentinelAgent:
             logger.info("Scan summary sent to Telegram")
         except Exception as e:
             logger.error(f"Failed to send scan summary: {e}")
-            # Don't let summary failure break the cycle
     
     async def _handle_trade_recommendation(
         self,
@@ -463,7 +426,7 @@ class GannSentinelAgent:
     ) -> None:
         """Handle a trade recommendation from Claude."""
         
-        # 1. Run risk checks
+        # Run risk checks
         passed, risk_results = self.risk_engine.validate_trade(
             analysis=analysis,
             portfolio=portfolio,
@@ -475,16 +438,16 @@ class GannSentinelAgent:
             failed_checks = [r for r in risk_results if not r.passed and r.severity == "error"]
             reasons = "; ".join([r.message for r in failed_checks])
             
-            # Record rejection for inclusion in scan summary (NOT separate message)
+            # Record rejection for scan summary (NOT separate message)
             self.telegram.record_risk_rejection(
                 ticker=analysis.ticker,
                 reason=reasons
             )
             
             logger.info(f"Risk rejection recorded: {analysis.ticker} - {reasons}")
-            return  # Don't create trade, info will be in scan summary
+            return
         
-        # 2. Get current price
+        # Get current price
         quote = await self.executor.get_quote(analysis.ticker)
         if "error" in quote:
             logger.error(f"Could not get quote for {analysis.ticker}: {quote['error']}")
@@ -492,7 +455,7 @@ class GannSentinelAgent:
         
         current_price = quote["mid"]
         
-        # 3. Calculate position size
+        # Calculate position size
         sizing = self.risk_engine.calculate_position_size(
             analysis=analysis,
             portfolio=portfolio,
@@ -503,7 +466,7 @@ class GannSentinelAgent:
             logger.warning(f"Position size too small: {sizing['shares']} shares")
             return
         
-        # 4. Create trade object
+        # Create trade object
         trade = Trade(
             analysis_id=analysis.analysis_id,
             ticker=analysis.ticker,
@@ -516,17 +479,12 @@ class GannSentinelAgent:
             conviction_score=analysis.conviction_score
         )
         
-        # 5. Save trade
         self.db.save_trade(trade.to_dict())
         
-        # 6. Handle based on approval gate setting
         if Config.APPROVAL_GATE:
-            # Track pending trade ID for scan summary
             self._current_pending_trade_id = trade.trade_id[:8]
             logger.info(f"Trade pending approval: {self._current_pending_trade_id}")
-            # Don't send separate trade alert - info will be in scan summary
         else:
-            # Auto-execute
             await self._execute_trade(trade)
     
     async def _execute_trade(self, trade: Trade) -> None:
@@ -534,14 +492,10 @@ class GannSentinelAgent:
         logger.info(f"Executing trade: {trade.ticker} {trade.side.value} {trade.quantity}")
         
         try:
-            # Submit to Alpaca
             trade = await self.executor.submit_order(trade)
-            
-            # Update in database
             self.db.save_trade(trade.to_dict())
             
             if trade.status == TradeStatus.FILLED:
-                # Send success notification
                 await self.telegram.send_execution_alert(
                     ticker=trade.ticker,
                     side=trade.side.value,
@@ -570,7 +524,6 @@ class GannSentinelAgent:
         positions = await self.executor.get_positions()
         
         for position in positions:
-            # Get stop loss from database if stored
             db_position = self.db.get_position(position.ticker)
             
             if db_position and db_position.get("stop_loss_price"):
@@ -579,18 +532,15 @@ class GannSentinelAgent:
                 if position.current_price and position.current_price <= stop_loss:
                     logger.warning(f"STOP LOSS TRIGGERED: {position.ticker} @ ${position.current_price}")
                     
-                    # Calculate loss percentage
                     entry_price = db_position.get("avg_entry_price", position.avg_entry_price)
                     loss_pct = (position.current_price - entry_price) / entry_price * 100
                     
-                    # Send alert
                     await self.telegram.send_stop_loss_alert(
                         ticker=position.ticker,
                         trigger_price=position.current_price,
                         loss_pct=loss_pct
                     )
                     
-                    # Close position
                     if Config.MODE == "LIVE" or self.executor.is_paper:
                         await self.executor.close_position(position.ticker)
                         logger.info(f"Position closed: {position.ticker}")
@@ -601,7 +551,6 @@ class GannSentinelAgent:
         
         for trade_data in pending_trades:
             if trade_data["status"] == "approved":
-                # Reconstruct trade object
                 trade = Trade(
                     trade_id=trade_data["id"],
                     analysis_id=trade_data.get("analysis_id"),
@@ -626,28 +575,21 @@ class GannSentinelAgent:
             
             if command == "status":
                 await self._handle_status_command()
-            
             elif command == "pending":
                 await self._handle_pending_command()
-            
             elif command == "approve":
                 await self._handle_approve_command(cmd.get("trade_id"))
-            
             elif command == "reject":
                 await self._handle_reject_command(
                     cmd.get("trade_id"),
                     cmd.get("reason", "Rejected by user")
                 )
-            
             elif command == "stop":
                 await self._handle_stop_command()
-            
             elif command == "resume":
                 await self._handle_resume_command()
-            
             elif command == "digest":
                 await self._handle_digest_command()
-            
             elif command == "help":
                 await self._handle_help_command()
     
@@ -663,9 +605,6 @@ class GannSentinelAgent:
             positions_count=portfolio.position_count,
             pending_trades=pending_count
         )
-        
-        # Also send portfolio status
-        await self.telegram.send_message(portfolio.to_telegram_message(), parse_mode=None)
     
     async def _handle_pending_command(self) -> None:
         """Handle /pending command."""
@@ -687,10 +626,8 @@ class GannSentinelAgent:
             await self.telegram.send_message("Usage: /approve [trade_id]", parse_mode=None)
             return
         
-        # Find trade (support both full ID and short ID)
         trade_data = self.db.get_trade(trade_id)
         
-        # If not found, try searching by prefix
         if not trade_data:
             pending = self.db.get_pending_trades()
             for t in pending:
@@ -710,11 +647,8 @@ class GannSentinelAgent:
             )
             return
         
-        # Approve
         self.db.update_trade_status(trade_id, "approved")
         await self.telegram.send_message(f"{EMOJI_CHECK} Trade approved: {trade_id[:8]}", parse_mode=None)
-        
-        # Remove from pending approvals
         self.telegram.remove_pending_approval(trade_id[:8])
         
         logger.info(f"Trade approved: {trade_id}")
@@ -725,10 +659,8 @@ class GannSentinelAgent:
             await self.telegram.send_message("Usage: /reject [trade_id] [reason]", parse_mode=None)
             return
         
-        # Find trade (support both full ID and short ID)
         trade_data = self.db.get_trade(trade_id)
         
-        # If not found, try searching by prefix
         if not trade_data:
             pending = self.db.get_pending_trades()
             for t in pending:
@@ -741,14 +673,11 @@ class GannSentinelAgent:
             await self.telegram.send_message(f"Trade not found: {trade_id}", parse_mode=None)
             return
         
-        # Reject
         self.db.update_trade_status(trade_id, "rejected", rejection_reason=reason)
         await self.telegram.send_message(
             f"{EMOJI_CROSS} Trade rejected: {trade_id[:8]}\nReason: {reason}",
             parse_mode=None
         )
-        
-        # Remove from pending approvals
         self.telegram.remove_pending_approval(trade_id[:8])
         
         logger.info(f"Trade rejected: {trade_id} - {reason}")
@@ -757,10 +686,7 @@ class GannSentinelAgent:
         """Handle /stop command - emergency halt."""
         logger.critical("EMERGENCY STOP TRIGGERED")
         
-        # Halt risk engine
         self.risk_engine.halt_trading("Emergency stop triggered via Telegram")
-        
-        # Cancel all open orders
         cancelled = await self.executor.cancel_all_orders()
         
         await self.telegram.send_message(
@@ -801,20 +727,17 @@ class GannSentinelAgent:
         """Handle /help command."""
         help_text = """Gann Sentinel Commands:
 
-/status - Portfolio & system status
-/pending - List pending trade approvals
-/approve [id] - Approve a pending trade
-/reject [id] - Reject a pending trade
-/digest - Send daily digest now
-/stop - Emergency halt (cancels all orders)
-/resume - Resume trading after stop
-/help - Show this message
+/status - System status
+/pending - Pending trades
+/approve [id] - Approve trade
+/reject [id] - Reject trade
+/digest - Daily digest
+/stop - Emergency halt
+/resume - Resume trading
+/help - This message
 
-Scan Summaries:
-Automatic after every scan cycle (~hourly)
-
-Digest Schedule:
-Daily at 4 PM ET (9 PM UTC)"""
+Scans run every ~60 minutes
+Digest at 4 PM ET daily"""
         await self.telegram.send_message(help_text, parse_mode=None)
 
 
@@ -824,13 +747,11 @@ async def main():
     ================================================================
                                                                    
        GANN SENTINEL TRADER                                        
-                                                                   
        AUTONOMOUS TRADING AGENT                                    
                                                                    
     ================================================================
     
-    DISCLAIMER: Trading involves substantial risk of loss. This is an 
-    experimental system. Nothing here constitutes financial advice.
+    DISCLAIMER: Trading involves substantial risk of loss.
     Only trade what you can afford to lose.
     
     """)
