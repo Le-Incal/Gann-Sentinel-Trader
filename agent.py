@@ -226,11 +226,14 @@ class GannSentinelAgent:
             signals.extend(sentiment_signals)
             logger.info(f"Got {len(sentiment_signals)} sentiment signals from Grok")
             
+            # Check for errors even if no exception was raised
+            grok_error = self.grok.last_error if hasattr(self.grok, 'last_error') else None
+            
             self.telegram.record_source_query(
                 source="Grok X Search",
                 query=f"sentiment: {', '.join(self.watchlist[:5])}",
                 signals_returned=len(sentiment_signals),
-                error=None
+                error=grok_error if len(sentiment_signals) == 0 else None
             )
             for signal in sentiment_signals:
                 self.telegram.record_signal(signal.to_dict() if hasattr(signal, 'to_dict') else signal)
@@ -242,7 +245,7 @@ class GannSentinelAgent:
                 source="Grok X Search",
                 query=f"sentiment: {', '.join(self.watchlist[:5])}",
                 signals_returned=0,
-                error=str(type(e).__name__)
+                error=str(e)[:50]
             )
         
         # Grok market overview
@@ -251,11 +254,14 @@ class GannSentinelAgent:
             signals.extend(overview_signals)
             logger.info(f"Got {len(overview_signals)} overview signals from Grok")
             
+            # Check for errors even if no exception was raised
+            grok_error = self.grok.last_error if hasattr(self.grok, 'last_error') else None
+            
             self.telegram.record_source_query(
                 source="Grok Web Search",
                 query="market overview",
                 signals_returned=len(overview_signals),
-                error=None
+                error=grok_error if len(overview_signals) == 0 else None
             )
             for signal in overview_signals:
                 self.telegram.record_signal(signal.to_dict() if hasattr(signal, 'to_dict') else signal)
@@ -267,7 +273,7 @@ class GannSentinelAgent:
                 source="Grok Web Search",
                 query="market overview",
                 signals_returned=0,
-                error=str(type(e).__name__)
+                error=str(e)[:50]
             )
         
         # FRED macro data
