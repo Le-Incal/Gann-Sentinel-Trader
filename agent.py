@@ -843,10 +843,23 @@ class GannSentinelAgent:
             price_error = str(e)
             logger.info(f"{ticker} not tradeable: {e}")
         
-        # Get portfolio context
-        portfolio = await self.executor.get_portfolio_snapshot()
+        # Get portfolio context - convert to dict immediately for consistency
+        portfolio_obj = await self.executor.get_portfolio_snapshot()
         positions = await self.executor.get_positions()
-        portfolio_dict = portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio
+        
+        # Always work with dict to avoid attribute errors
+        if hasattr(portfolio_obj, 'to_dict'):
+            portfolio_dict = portfolio_obj.to_dict()
+        elif isinstance(portfolio_obj, dict):
+            portfolio_dict = portfolio_obj
+        else:
+            # Fallback: extract common attributes
+            portfolio_dict = {
+                "equity": getattr(portfolio_obj, 'equity', 100000),
+                "cash": getattr(portfolio_obj, 'cash', 100000),
+                "daily_pnl": getattr(portfolio_obj, 'daily_pnl', 0),
+                "position_count": getattr(portfolio_obj, 'position_count', 0),
+            }
         
         # Run Claude analysis
         analysis = None
@@ -889,18 +902,18 @@ class GannSentinelAgent:
             
             logger.info(f"Trade criteria met for {ticker}, running risk checks...")
             
-            # Run risk checks
+            # Run risk checks - use dict version for consistency
             passed, risk_results = self.risk_engine.validate_trade(
                 analysis=analysis,
-                portfolio=portfolio,
+                portfolio=portfolio_dict,
                 current_positions=positions
             )
             
             if passed:
-                # Calculate position size
+                # Calculate position size - use dict version
                 sizing = self.risk_engine.calculate_position_size(
                     analysis=analysis,
-                    portfolio=portfolio,
+                    portfolio=portfolio_dict,
                     current_price=current_price
                 )
                 
