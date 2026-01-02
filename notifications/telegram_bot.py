@@ -2,8 +2,7 @@
 Telegram Bot for Gann Sentinel Trader
 Handles notifications and command processing for trade approvals and system control.
 
-This implementation uses Unicode escape sequences for all emojis to prevent
-encoding issues across different environments.
+Uses Unicode escape sequences for all emojis and special characters.
 """
 
 import os
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# EMOJI CONSTANTS - Using Unicode escape sequences to prevent encoding issues
+# EMOJI & CHARACTER CONSTANTS
 # =============================================================================
 EMOJI_ROCKET = "\U0001F680"      # 🚀
 EMOJI_STOP = "\U0001F6D1"        # 🛑
@@ -43,6 +42,11 @@ EMOJI_BULLET = "\U00002022"      # •
 EMOJI_KEYBOARD = "\U00002328"    # ⌨
 EMOJI_BEAR = "\U0001F43B"        # 🐻
 EMOJI_BULL = "\U0001F402"        # 🐂
+EMOJI_ZZZ = "\U0001F4A4"         # 💤
+
+# Progress bar characters (Unicode block elements)
+BAR_FILLED = "\U00002588"        # Full block
+BAR_EMPTY = "\U00002591"         # Light shade
 
 
 class TelegramBot:
@@ -74,6 +78,7 @@ class TelegramBot:
         self._system_errors: List[Dict[str, Any]] = []
         self._pending_approvals: List[str] = []
         self._risk_rejections: List[Dict[str, Any]] = []
+        self._trade_blockers: List[Dict[str, Any]] = []  # NEW: Track why trade wasn't created
     
     @property
     def is_configured(self) -> bool:
@@ -215,6 +220,7 @@ class TelegramBot:
         self._signals = []
         self._decisions = []
         self._risk_rejections = []
+        self._trade_blockers = []
         logger.debug("Scan start recorded")
     
     def record_source_query(
@@ -253,6 +259,20 @@ class TelegramBot:
         })
         logger.debug(f"Risk rejection recorded: {ticker} - {reason}")
     
+    def record_trade_blocker(self, blocker_type: str, details: str) -> None:
+        """
+        Record why a trade wasn't created (after risk checks passed).
+        
+        blocker_type: "quote_error", "sizing_error", "market_closed", etc.
+        details: Human-readable explanation
+        """
+        self._trade_blockers.append({
+            "type": blocker_type,
+            "details": details,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+        logger.debug(f"Trade blocker recorded: {blocker_type} - {details}")
+    
     def record_system_error(self, component: str, error: str) -> None:
         """Record a system error for digest."""
         self._system_errors.append({
@@ -267,7 +287,21 @@ class TelegramBot:
             self._pending_approvals.remove(trade_id)
     
     # =========================================================================
-    # COMPREHENSIVE SCAN SUMMARY (SINGLE CONSOLIDATED MESSAGE)
+    # CONVICTION BAR HELPER
+    # =========================================================================
+    
+    def _build_conviction_bar(self, conviction: int, width: int = 10) -> str:
+        """
+        Build a visual conviction bar using Unicode block characters.
+        
+        Uses full block and light shade Unicode characters for visual display.
+        """
+        filled = int(conviction / (100 / width))
+        empty = width - filled
+        return f"[{BAR_FILLED * filled}{BAR_EMPTY * empty}]"
+    
+    # =========================================================================
+    # COMPREHENSIVE SCAN SUMMARY
     # =========================================================================
     
     async def send_scan_summary(
@@ -279,7 +313,6 @@ class TelegramBot:
     ) -> bool:
         """
         Send a comprehensive scan summary after each scan cycle.
-        This is the ONE message sent after each scan.
         """
         now = datetime.now(timezone.utc)
         scan_duration = None
@@ -319,7 +352,7 @@ class TelegramBot:
         lines.append(f"\nTotal: {total_signals} signals")
         
         # =====================================================================
-        # KEY SIGNALS BY CATEGORY (condensed)
+        # KEY SIGNALS BY CATEGORY
         # =====================================================================
         if signals:
             lines.append("\n" + "-" * 40)
@@ -364,7 +397,7 @@ class TelegramBot:
                     lines.append(f"  {EMOJI_BULLET} {summary}")
         
         # =====================================================================
-        # CLAUDE'S ANALYSIS (with Bull/Bear cases restored)
+        # CLAUDE'S ANALYSIS
         # =====================================================================
         lines.append("\n" + "-" * 40)
         lines.append(f"{EMOJI_BRAIN} CLAUDE'S ANALYSIS")
@@ -378,43 +411,33 @@ class TelegramBot:
             bear_case = analysis.get("bear_case", "")
             time_horizon = analysis.get("time_horizon", "unknown")
             
-            # Conviction bar with threshold marker
-            filled = int(conviction / 10)
-            empty = 10 - filled
-            bar = "#" * filled + "-" * empty
-            
-            # Determine actionability
+            # Conviction bar with Unicode blocks
+            bar = self._build_conviction_bar(conviction)
             is_actionable = conviction >= 80 and recommendation in ["BUY", "SELL"]
             
             lines.append(f"\nConviction: {conviction}/100")
-            lines.append(f"[{bar}] {'<-- 80 threshold' if conviction < 80 else ''}")
-            
             if is_actionable:
-                lines.append(f"{EMOJI_GREEN_CIRCLE} ACTIONABLE (80+)")
+                lines.append(f"{bar} {EMOJI_GREEN_CIRCLE} ACTIONABLE")
             else:
-                lines.append(f"{EMOJI_WHITE_CIRCLE} Below threshold")
+                lines.append(f"{bar} {EMOJI_WHITE_CIRCLE} Threshold: 80")
             
             if ticker and recommendation in ["BUY", "SELL"]:
                 lines.append(f"\nRecommendation: {recommendation} {ticker}")
                 lines.append(f"Time Horizon: {time_horizon}")
                 
-                # Thesis
                 if thesis:
                     lines.append(f"\nThesis: {thesis[:250]}...")
                 
-                # Bull Case (restored)
                 if bull_case:
                     lines.append(f"\n{EMOJI_BULL} Bull: {bull_case[:150]}...")
                 
-                # Bear Case (restored)
                 if bear_case:
                     lines.append(f"\n{EMOJI_BEAR} Bear: {bear_case[:150]}...")
                 
-                # Trade Parameters - normalize display
+                # Trade Parameters
                 position_size = analysis.get("position_size_pct", 0)
                 stop_loss = analysis.get("stop_loss_pct", 0)
                 
-                # Normalize for display
                 if position_size > 1:
                     position_display = f"{position_size:.0f}%"
                 else:
@@ -429,7 +452,13 @@ class TelegramBot:
                 lines.append(f"  Stop Loss: {stop_display}")
                 lines.append(f"  Position Size: {position_display}")
             else:
-                lines.append(f"\nNo trade recommendation")
+                lines.append(f"\n{EMOJI_ZZZ} No actionable opportunity")
+                if thesis:
+                    lines.append(f"\nThesis: {thesis[:200]}...")
+                if bull_case:
+                    lines.append(f"\n{EMOJI_BULL} Bull: {bull_case[:120]}...")
+                if bear_case:
+                    lines.append(f"\n{EMOJI_BEAR} Bear: {bear_case[:120]}...")
         else:
             lines.append(f"\n{EMOJI_CROSS} Analysis not generated")
         
@@ -440,20 +469,33 @@ class TelegramBot:
         lines.append(f"{EMOJI_WARNING} TRADE STATUS")
         
         if self._risk_rejections:
+            # Risk engine blocked the trade
             for rejection in self._risk_rejections:
                 lines.append(f"\n{EMOJI_RED_CIRCLE} REJECTED BY RISK ENGINE")
                 lines.append(f"Ticker: {rejection['ticker']}")
                 lines.append(f"Reason: {rejection['reason']}")
             lines.append(f"\n{EMOJI_BULLET} Trade blocked - no approval needed")
+        
+        elif self._trade_blockers:
+            # Trade passed risk but failed downstream
+            lines.append(f"\n{EMOJI_RED_CIRCLE} TRADE NOT CREATED")
+            for blocker in self._trade_blockers:
+                lines.append(f"{EMOJI_BULLET} {blocker['type']}: {blocker['details']}")
+        
         elif pending_trade_id:
+            # Trade created and awaiting approval
             lines.append(f"\n{EMOJI_BELL} TRADE PENDING APPROVAL")
             lines.append(f"Trade ID: {pending_trade_id}")
             lines.append(f"\n{EMOJI_CHECK} /approve {pending_trade_id}")
             lines.append(f"{EMOJI_CROSS} /reject {pending_trade_id}")
+        
         elif analysis and analysis.get("conviction_score", 0) >= 80:
-            lines.append(f"\n{EMOJI_WHITE_CIRCLE} Conviction met but trade not created")
-            lines.append("(Check logs for sizing/quote issues)")
+            # Conviction met but no trade and no recorded reason
+            lines.append(f"\n{EMOJI_WHITE_CIRCLE} Conviction met, no trade created")
+            lines.append("(Unknown issue - check logs)")
+        
         else:
+            # Conviction below threshold
             lines.append(f"\n{EMOJI_WHITE_CIRCLE} No trade - conviction below 80")
         
         # =====================================================================
@@ -518,12 +560,15 @@ class TelegramBot:
         if short_id not in self._pending_approvals:
             self._pending_approvals.append(short_id)
         
+        bar = self._build_conviction_bar(conviction)
+        
         message = (
             f"{EMOJI_BELL} TRADE PENDING APPROVAL\n\n"
             f"Ticker: {ticker}\n"
             f"Action: {side.upper()}\n"
             f"Quantity: {quantity} shares\n"
-            f"Conviction: {conviction}/100\n\n"
+            f"Conviction: {conviction}/100\n"
+            f"{bar}\n\n"
             f"Thesis: {thesis[:300]}...\n\n"
             f"/approve {short_id}\n"
             f"/reject {short_id}"
