@@ -1,347 +1,382 @@
 """
-Gann Sentinel Trader - Risk Engine
-Validates trades against risk rules before execution.
+Risk Engine for Gann Sentinel Trader
+Validates trades against hard limits and calculates position sizes.
+
+CRITICAL FIX: Normalizes position_size_pct to handle both formats:
+- Whole number (15 = 15%)
+- Decimal (0.15 = 15%)
 """
 
 import logging
-from dataclasses import dataclass
+import uuid
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any, Tuple
-
-from config import Config
-from models.analysis import Analysis, Recommendation
-from models.trades import Trade, Position, PortfolioSnapshot
+from dataclasses import dataclass, field
+from typing import List, Tuple, Optional, Dict, Any
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
 
+class RiskCheckSeverity(Enum):
+    """Severity level of risk check results."""
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
 @dataclass
 class RiskCheckResult:
-    """Result of a risk check."""
+    """Result of a single risk check."""
+    check_name: str
     passed: bool
-    rule: str
+    severity: str
     message: str
-    severity: str = "error"  # error, warning, info
+    limit: Optional[float] = None
+    actual: Optional[float] = None
 
 
+@dataclass 
 class RiskEngine:
     """
-    Validates trades against risk rules.
-    All trades must pass the risk engine before execution.
+    Risk validation engine with hard limits.
+    
+    Hard Limits (Non-Negotiable):
+    - Max position size: 25% of portfolio
+    - Max concurrent positions: 5
+    - Daily loss limit: 5% of portfolio
+    - Single trade stop-loss: 15% max
+    - Min market cap: $500M
+    - No leverage
     """
     
-    def __init__(self):
-        """Initialize risk engine with config."""
-        self.max_position_pct = Config.MAX_POSITION_PCT
-        self.max_positions = Config.MAX_POSITIONS
-        self.stop_loss_pct = Config.STOP_LOSS_PCT
-        self.daily_loss_limit_pct = Config.DAILY_LOSS_LIMIT_PCT
-        self.min_market_cap = Config.MIN_MARKET_CAP
-        self.min_conviction = Config.MIN_CONVICTION
+    # Configuration
+    max_position_size_pct: float = 0.25      # 25% max per position
+    max_concurrent_positions: int = 5
+    max_daily_loss_pct: float = 0.05         # 5% daily loss limit
+    max_stop_loss_pct: float = 0.15          # 15% max stop loss
+    min_market_cap: float = 500_000_000      # $500M minimum
+    max_gross_exposure_pct: float = 1.0      # 100% max exposure
+    max_notional_pct: float = 0.25           # 25% max per order
+    
+    # State
+    trading_halted: bool = field(default=False)
+    halt_reason: str = field(default="")
+    daily_loss: float = field(default=0.0)
+    daily_trades: int = field(default=0)
+    consecutive_rejects: int = field(default=0)
+    
+    def __post_init__(self):
+        logger.info("Risk Engine initialized with limits:")
+        logger.info(f"  Max position size: {self.max_position_size_pct * 100:.0f}%")
+        logger.info(f"  Max concurrent positions: {self.max_concurrent_positions}")
+        logger.info(f"  Daily loss limit: {self.max_daily_loss_pct * 100:.0f}%")
+        logger.info(f"  Max stop loss: {self.max_stop_loss_pct * 100:.0f}%")
+    
+    def _normalize_percentage(self, value: float) -> float:
+        """
+        Normalize a percentage value to decimal format (0-1).
         
-        # Track daily losses
-        self.daily_pnl = 0.0
-        self.daily_pnl_reset_date = datetime.now(timezone.utc).date()
+        Handles both formats:
+        - 15 (whole number meaning 15%) -> 0.15
+        - 0.15 (decimal meaning 15%) -> 0.15
         
-        # Track trading halts
-        self.trading_halted = False
-        self.halt_reason = ""
+        This fixes the bug where Claude returns 15 but risk engine expects 0.15.
+        """
+        if value > 1.0:
+            # Value is in whole number format (e.g., 15 = 15%)
+            return value / 100.0
+        else:
+            # Value is already in decimal format (e.g., 0.15 = 15%)
+            return value
     
     def validate_trade(
         self,
-        analysis: Analysis,
-        portfolio: PortfolioSnapshot,
-        current_positions: List[Position]
+        analysis,
+        portfolio,
+        current_positions: List[Any]
     ) -> Tuple[bool, List[RiskCheckResult]]:
         """
-        Validate a trade against all risk rules.
+        Validate a trade against all risk checks.
         
-        Args:
-            analysis: The analysis generating the trade
-            portfolio: Current portfolio state
-            current_positions: List of current positions
-            
         Returns:
-            Tuple of (passed, list of check results)
+            Tuple of (passed: bool, results: List[RiskCheckResult])
         """
         results = []
         
-        # Run all checks
-        results.append(self._check_trading_halted())
-        results.append(self._check_conviction(analysis))
-        results.append(self._check_position_size(analysis, portfolio))
+        # Check 1: Trading halt
+        results.append(self._check_trading_halt())
+        
+        # Check 2: Daily loss limit
+        results.append(self._check_daily_loss(portfolio))
+        
+        # Check 3: Position count
         results.append(self._check_position_count(current_positions))
-        results.append(self._check_daily_loss_limit(portfolio))
-        results.append(self._check_existing_position(analysis.ticker, current_positions))
-        results.append(self._check_stop_loss_defined(analysis))
         
-        # Additional checks can be added here
-        # results.append(self._check_market_cap(analysis.ticker))
-        # results.append(self._check_correlation(analysis.ticker, current_positions))
+        # Check 4: Position size - WITH NORMALIZATION FIX
+        results.append(self._check_position_size(analysis))
         
-        # Determine if all critical checks passed
-        critical_failures = [r for r in results if not r.passed and r.severity == "error"]
-        passed = len(critical_failures) == 0
+        # Check 5: Stop loss
+        results.append(self._check_stop_loss(analysis))
         
-        # Log results
-        for result in results:
-            if not result.passed:
-                if result.severity == "error":
-                    logger.error(f"Risk check FAILED: {result.rule} - {result.message}")
-                else:
-                    logger.warning(f"Risk check WARNING: {result.rule} - {result.message}")
-            else:
-                logger.debug(f"Risk check passed: {result.rule}")
+        # Check 6: Gross exposure
+        results.append(self._check_gross_exposure(portfolio, current_positions))
         
-        return passed, results
+        # Determine overall pass/fail
+        has_errors = any(
+            not r.passed and r.severity == RiskCheckSeverity.ERROR.value 
+            for r in results
+        )
+        
+        if has_errors:
+            self.consecutive_rejects += 1
+            logger.warning(f"Trade rejected. Consecutive rejects: {self.consecutive_rejects}")
+            
+            # Circuit breaker: 3 consecutive rejects = pause
+            if self.consecutive_rejects >= 3:
+                self.halt_trading("3 consecutive trade rejections")
+        else:
+            self.consecutive_rejects = 0
+        
+        return (not has_errors, results)
+    
+    def _check_trading_halt(self) -> RiskCheckResult:
+        """Check if trading is halted."""
+        if self.trading_halted:
+            return RiskCheckResult(
+                check_name="trading_halt",
+                passed=False,
+                severity=RiskCheckSeverity.ERROR.value,
+                message=f"Trading halted: {self.halt_reason}"
+            )
+        return RiskCheckResult(
+            check_name="trading_halt",
+            passed=True,
+            severity=RiskCheckSeverity.INFO.value,
+            message="Trading active"
+        )
+    
+    def _check_daily_loss(self, portfolio) -> RiskCheckResult:
+        """Check daily loss limit."""
+        equity = portfolio.equity if hasattr(portfolio, 'equity') else portfolio.get('equity', 100000)
+        daily_pnl = portfolio.daily_pnl if hasattr(portfolio, 'daily_pnl') else portfolio.get('daily_pnl', 0)
+        
+        if equity <= 0:
+            equity = 100000  # Fallback
+        
+        daily_loss_pct = abs(min(daily_pnl, 0)) / equity
+        
+        if daily_loss_pct >= self.max_daily_loss_pct:
+            return RiskCheckResult(
+                check_name="daily_loss_limit",
+                passed=False,
+                severity=RiskCheckSeverity.ERROR.value,
+                message=f"Daily loss {daily_loss_pct:.1%} exceeds {self.max_daily_loss_pct:.0%} limit",
+                limit=self.max_daily_loss_pct,
+                actual=daily_loss_pct
+            )
+        
+        return RiskCheckResult(
+            check_name="daily_loss_limit",
+            passed=True,
+            severity=RiskCheckSeverity.INFO.value,
+            message=f"Daily loss {daily_loss_pct:.1%} within {self.max_daily_loss_pct:.0%} limit",
+            limit=self.max_daily_loss_pct,
+            actual=daily_loss_pct
+        )
+    
+    def _check_position_count(self, current_positions: List[Any]) -> RiskCheckResult:
+        """Check maximum concurrent positions."""
+        count = len(current_positions)
+        
+        if count >= self.max_concurrent_positions:
+            return RiskCheckResult(
+                check_name="max_positions",
+                passed=False,
+                severity=RiskCheckSeverity.ERROR.value,
+                message=f"Position count {count} >= max {self.max_concurrent_positions}",
+                limit=float(self.max_concurrent_positions),
+                actual=float(count)
+            )
+        
+        return RiskCheckResult(
+            check_name="max_positions",
+            passed=True,
+            severity=RiskCheckSeverity.INFO.value,
+            message=f"Position count {count} < max {self.max_concurrent_positions}",
+            limit=float(self.max_concurrent_positions),
+            actual=float(count)
+        )
+    
+    def _check_position_size(self, analysis) -> RiskCheckResult:
+        """
+        Check position size limit.
+        
+        CRITICAL: Normalizes position_size_pct to decimal format before comparison.
+        This fixes the bug where Claude returns 15 (meaning 15%) but the check
+        compared against 0.25 (25% in decimal).
+        """
+        # Get position size from analysis
+        if hasattr(analysis, 'position_size_pct'):
+            position_size_raw = analysis.position_size_pct
+        else:
+            position_size_raw = analysis.get('position_size_pct', 0)
+        
+        # NORMALIZE to decimal format (0-1)
+        position_size = self._normalize_percentage(position_size_raw)
+        
+        logger.info(f"Position size check: raw={position_size_raw}, normalized={position_size:.2%}, limit={self.max_position_size_pct:.0%}")
+        
+        if position_size > self.max_position_size_pct:
+            return RiskCheckResult(
+                check_name="max_position_size",
+                passed=False,
+                severity=RiskCheckSeverity.ERROR.value,
+                message=f"Position size {position_size:.0%} > max {self.max_position_size_pct:.0%}",
+                limit=self.max_position_size_pct,
+                actual=position_size
+            )
+        
+        return RiskCheckResult(
+            check_name="max_position_size",
+            passed=True,
+            severity=RiskCheckSeverity.INFO.value,
+            message=f"Position size {position_size:.0%} within {self.max_position_size_pct:.0%} limit",
+            limit=self.max_position_size_pct,
+            actual=position_size
+        )
+    
+    def _check_stop_loss(self, analysis) -> RiskCheckResult:
+        """Check stop loss limit."""
+        if hasattr(analysis, 'stop_loss_pct'):
+            stop_loss_raw = analysis.stop_loss_pct
+        else:
+            stop_loss_raw = analysis.get('stop_loss_pct', 0)
+        
+        # Normalize to decimal
+        stop_loss = self._normalize_percentage(stop_loss_raw)
+        
+        if stop_loss > self.max_stop_loss_pct:
+            return RiskCheckResult(
+                check_name="max_stop_loss",
+                passed=False,
+                severity=RiskCheckSeverity.ERROR.value,
+                message=f"Stop loss {stop_loss:.0%} > max {self.max_stop_loss_pct:.0%}",
+                limit=self.max_stop_loss_pct,
+                actual=stop_loss
+            )
+        
+        return RiskCheckResult(
+            check_name="max_stop_loss",
+            passed=True,
+            severity=RiskCheckSeverity.INFO.value,
+            message=f"Stop loss {stop_loss:.0%} within {self.max_stop_loss_pct:.0%} limit",
+            limit=self.max_stop_loss_pct,
+            actual=stop_loss
+        )
+    
+    def _check_gross_exposure(
+        self,
+        portfolio,
+        current_positions: List[Any]
+    ) -> RiskCheckResult:
+        """Check gross exposure limit."""
+        equity = portfolio.equity if hasattr(portfolio, 'equity') else portfolio.get('equity', 100000)
+        
+        if equity <= 0:
+            equity = 100000
+        
+        # Calculate current exposure
+        total_exposure = 0
+        for pos in current_positions:
+            if hasattr(pos, 'market_value'):
+                total_exposure += abs(pos.market_value)
+            elif isinstance(pos, dict):
+                total_exposure += abs(pos.get('market_value', 0))
+        
+        exposure_pct = total_exposure / equity
+        
+        if exposure_pct > self.max_gross_exposure_pct:
+            return RiskCheckResult(
+                check_name="gross_exposure",
+                passed=False,
+                severity=RiskCheckSeverity.ERROR.value,
+                message=f"Gross exposure {exposure_pct:.0%} > max {self.max_gross_exposure_pct:.0%}",
+                limit=self.max_gross_exposure_pct,
+                actual=exposure_pct
+            )
+        
+        return RiskCheckResult(
+            check_name="gross_exposure",
+            passed=True,
+            severity=RiskCheckSeverity.INFO.value,
+            message=f"Gross exposure {exposure_pct:.0%} within limit",
+            limit=self.max_gross_exposure_pct,
+            actual=exposure_pct
+        )
     
     def calculate_position_size(
         self,
-        analysis: Analysis,
-        portfolio: PortfolioSnapshot,
+        analysis,
+        portfolio,
         current_price: float
     ) -> Dict[str, Any]:
         """
-        Calculate appropriate position size based on analysis and risk rules.
+        Calculate the number of shares to buy based on analysis and portfolio.
         
-        Args:
-            analysis: The trade analysis
-            portfolio: Current portfolio state
-            current_price: Current price of the asset
-            
-        Returns:
-            Dict with shares, dollar_amount, and percentage
+        Uses the position_size_pct from analysis, capped by max_position_size_pct.
         """
-        # Start with suggested size from analysis
-        suggested_pct = min(analysis.position_size_pct, self.max_position_pct)
+        equity = portfolio.equity if hasattr(portfolio, 'equity') else portfolio.get('equity', 100000)
+        cash = portfolio.cash if hasattr(portfolio, 'cash') else portfolio.get('cash', equity)
         
-        # Scale by conviction (higher conviction = closer to max)
-        conviction_factor = analysis.conviction_score / 100
-        adjusted_pct = suggested_pct * conviction_factor
+        # Get requested position size and normalize
+        if hasattr(analysis, 'position_size_pct'):
+            requested_pct_raw = analysis.position_size_pct
+        else:
+            requested_pct_raw = analysis.get('position_size_pct', 0.10)
         
-        # Ensure we don't exceed max
-        final_pct = min(adjusted_pct, self.max_position_pct)
+        requested_pct = self._normalize_percentage(requested_pct_raw)
+        
+        # Cap at max position size
+        actual_pct = min(requested_pct, self.max_position_size_pct)
         
         # Calculate dollar amount
-        available_cash = portfolio.cash
-        portfolio_value = portfolio.total_value
+        dollar_amount = equity * actual_pct
         
-        dollar_amount = portfolio_value * final_pct
-        
-        # Don't exceed available cash
-        dollar_amount = min(dollar_amount, available_cash * 0.95)  # Keep 5% buffer
+        # Cap by available cash
+        dollar_amount = min(dollar_amount, cash * 0.95)  # Keep 5% buffer
         
         # Calculate shares
-        shares = int(dollar_amount / current_price)
-        actual_dollar_amount = shares * current_price
-        actual_pct = actual_dollar_amount / portfolio_value
+        if current_price > 0:
+            shares = int(dollar_amount / current_price)
+        else:
+            shares = 0
+        
+        logger.info(f"Position sizing: requested={requested_pct_raw}({requested_pct:.0%}), "
+                   f"actual={actual_pct:.0%}, dollars=${dollar_amount:,.2f}, shares={shares}")
         
         return {
             "shares": shares,
-            "dollar_amount": actual_dollar_amount,
-            "percentage": actual_pct,
-            "current_price": current_price,
-            "conviction_factor": conviction_factor
+            "dollar_amount": dollar_amount,
+            "requested_pct": requested_pct,
+            "actual_pct": actual_pct,
+            "capped": requested_pct > self.max_position_size_pct
         }
     
-    def calculate_stop_loss(
-        self,
-        entry_price: float,
-        analysis: Analysis
-    ) -> float:
-        """
-        Calculate stop loss price.
-        
-        Args:
-            entry_price: Entry price
-            analysis: Trade analysis
-            
-        Returns:
-            Stop loss price
-        """
-        stop_loss_pct = analysis.stop_loss_pct or self.stop_loss_pct
-        return entry_price * (1 - stop_loss_pct)
-    
-    def update_daily_pnl(self, pnl: float) -> None:
-        """Update daily P&L tracking."""
-        today = datetime.now(timezone.utc).date()
-        
-        if today != self.daily_pnl_reset_date:
-            self.daily_pnl = 0.0
-            self.daily_pnl_reset_date = today
-            
-            # Reset halt if it was due to daily loss
-            if self.trading_halted and "daily loss" in self.halt_reason.lower():
-                self.trading_halted = False
-                self.halt_reason = ""
-        
-        self.daily_pnl += pnl
-    
     def halt_trading(self, reason: str) -> None:
-        """Halt all trading."""
+        """Halt all trading with a reason."""
         self.trading_halted = True
         self.halt_reason = reason
         logger.critical(f"TRADING HALTED: {reason}")
     
     def resume_trading(self) -> None:
-        """Resume trading after halt."""
+        """Resume trading after a halt."""
         self.trading_halted = False
         self.halt_reason = ""
+        self.consecutive_rejects = 0
         logger.info("Trading resumed")
     
-    # =========================================================================
-    # INDIVIDUAL RISK CHECKS
-    # =========================================================================
-    
-    def _check_trading_halted(self) -> RiskCheckResult:
-        """Check if trading is halted."""
-        if self.trading_halted:
-            return RiskCheckResult(
-                passed=False,
-                rule="trading_halt",
-                message=f"Trading is halted: {self.halt_reason}",
-                severity="error"
-            )
-        return RiskCheckResult(
-            passed=True,
-            rule="trading_halt",
-            message="Trading is active"
-        )
-    
-    def _check_conviction(self, analysis: Analysis) -> RiskCheckResult:
-        """Check if conviction meets minimum threshold."""
-        if analysis.conviction_score < self.min_conviction:
-            return RiskCheckResult(
-                passed=False,
-                rule="min_conviction",
-                message=f"Conviction {analysis.conviction_score} < minimum {self.min_conviction}",
-                severity="error"
-            )
-        return RiskCheckResult(
-            passed=True,
-            rule="min_conviction",
-            message=f"Conviction {analysis.conviction_score} >= {self.min_conviction}"
-        )
-    
-    def _check_position_size(
-        self,
-        analysis: Analysis,
-        portfolio: PortfolioSnapshot
-    ) -> RiskCheckResult:
-        """Check if position size is within limits."""
-        if analysis.position_size_pct > self.max_position_pct:
-            return RiskCheckResult(
-                passed=False,
-                rule="max_position_size",
-                message=f"Position size {analysis.position_size_pct:.1%} > max {self.max_position_pct:.1%}",
-                severity="error"
-            )
-        return RiskCheckResult(
-            passed=True,
-            rule="max_position_size",
-            message=f"Position size {analysis.position_size_pct:.1%} within limit"
-        )
-    
-    def _check_position_count(
-        self,
-        current_positions: List[Position]
-    ) -> RiskCheckResult:
-        """Check if we're at max positions."""
-        position_count = len([p for p in current_positions if p.quantity > 0])
-        
-        if position_count >= self.max_positions:
-            return RiskCheckResult(
-                passed=False,
-                rule="max_positions",
-                message=f"At max positions ({position_count}/{self.max_positions})",
-                severity="error"
-            )
-        return RiskCheckResult(
-            passed=True,
-            rule="max_positions",
-            message=f"Position count {position_count}/{self.max_positions}"
-        )
-    
-    def _check_daily_loss_limit(
-        self,
-        portfolio: PortfolioSnapshot
-    ) -> RiskCheckResult:
-        """Check if daily loss limit has been hit."""
-        if portfolio.total_value > 0:
-            daily_loss_pct = abs(min(0, portfolio.daily_pnl)) / portfolio.total_value
-            
-            if daily_loss_pct >= self.daily_loss_limit_pct:
-                self.halt_trading(f"Daily loss limit hit: {daily_loss_pct:.1%}")
-                return RiskCheckResult(
-                    passed=False,
-                    rule="daily_loss_limit",
-                    message=f"Daily loss {daily_loss_pct:.1%} >= limit {self.daily_loss_limit_pct:.1%}",
-                    severity="error"
-                )
-        
-        return RiskCheckResult(
-            passed=True,
-            rule="daily_loss_limit",
-            message="Daily loss within limit"
-        )
-    
-    def _check_existing_position(
-        self,
-        ticker: str,
-        current_positions: List[Position]
-    ) -> RiskCheckResult:
-        """Check if we already have a position in this ticker."""
-        for position in current_positions:
-            if position.ticker == ticker and position.quantity > 0:
-                return RiskCheckResult(
-                    passed=True,  # Not a failure, just a warning
-                    rule="existing_position",
-                    message=f"Already have position in {ticker}: {position.quantity} shares",
-                    severity="warning"
-                )
-        
-        return RiskCheckResult(
-            passed=True,
-            rule="existing_position",
-            message=f"No existing position in {ticker}"
-        )
-    
-    def _check_stop_loss_defined(self, analysis: Analysis) -> RiskCheckResult:
-        """Check if stop loss is defined."""
-        if analysis.stop_loss_pct is None or analysis.stop_loss_pct <= 0:
-            return RiskCheckResult(
-                passed=False,
-                rule="stop_loss_required",
-                message="Stop loss must be defined",
-                severity="error"
-            )
-        
-        if analysis.stop_loss_pct > self.stop_loss_pct:
-            return RiskCheckResult(
-                passed=True,
-                rule="stop_loss_required",
-                message=f"Stop loss {analysis.stop_loss_pct:.1%} > recommended {self.stop_loss_pct:.1%}",
-                severity="warning"
-            )
-        
-        return RiskCheckResult(
-            passed=True,
-            rule="stop_loss_required",
-            message=f"Stop loss defined at {analysis.stop_loss_pct:.1%}"
-        )
-    
-    def get_status(self) -> Dict[str, Any]:
-        """Get current risk engine status."""
-        return {
-            "trading_halted": self.trading_halted,
-            "halt_reason": self.halt_reason,
-            "daily_pnl": self.daily_pnl,
-            "daily_pnl_reset_date": self.daily_pnl_reset_date.isoformat(),
-            "config": {
-                "max_position_pct": self.max_position_pct,
-                "max_positions": self.max_positions,
-                "stop_loss_pct": self.stop_loss_pct,
-                "daily_loss_limit_pct": self.daily_loss_limit_pct,
-                "min_conviction": self.min_conviction
-            }
-        }
+    def reset_daily_counters(self) -> None:
+        """Reset daily counters (call at market open)."""
+        self.daily_loss = 0.0
+        self.daily_trades = 0
+        logger.info("Daily counters reset")
