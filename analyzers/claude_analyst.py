@@ -1,11 +1,15 @@
 """
 Gann Sentinel Trader - Claude Analyst
-Forward-Predictive Reasoning Engine with Historical Context + Business Model Audit
+Forward-Predictive Reasoning Engine with Historical Context + Business Model Audit + Technical Structure
 
-Version: 3.0.0 (Business Intelligence Update)
+Version: 4.0.0 (Technical Integration Update)
 Last Updated: January 2026
 
 Change Log:
+- 4.0.0: Added Technical Scanner integration
+         Technical signals now feed into conviction scoring
+         Chart structure (market state, channel position, verdict) included in analysis
+         Updated conviction scoring to weight technical setup quality
 - 3.0.0: Added Business Model Audit - analyze full business before pattern matching
          Added Platform Transformation historical patterns (AMZN, NVDA, MSFT)
          Added "Challenge Priced In" framework
@@ -539,17 +543,35 @@ CHIP RESTRICTIONS:
 - Business model audit reveals undervalued optionality
 - Historical pattern matches clearly (including platform transformation)
 - Clear catalyst with timeline
-- Technical setup supports entry
+- Technical setup supports entry (CRITICAL):
+  * Technical verdict is "hypothesis_allowed"
+  * Price at channel support (for longs) or resistance (for shorts)
+  * Market state is TRENDING or RANGE_BOUND (not transitional)
+  * R-multiple >= 1.8
+  * If technical verdict is "no_trade", reduce conviction by 15-20 points
 
 60-79: MEDIUM - Watch
 - Some optionality unclear
 - Pattern partial
 - Wait for better entry
+- Technical verdict is "analyze_only" or position is mid-channel
 
 0-59: LOW - Pass
 - No clear undervalued segments
 - Bear case assumptions are reasonable
 - Risk/reward unfavorable
+- Technical verdict is "no_trade" with no clear setup
+- Market state is "transitional" with low confidence
+
+TECHNICAL STRUCTURE INTEGRATION:
+When technical signals are present:
+1. Check market state FIRST - transitional states reduce conviction by 10
+2. Check channel position - mid-channel (30-70%) has no edge, reduce by 5
+3. Check verdict - "no_trade" means wait, reduce by 15
+4. Check R-multiple - if < 1.8, trade is not favorable
+5. If technical says SELL but fundamentals say BUY, resolve conflict:
+   - If channel position > 85%, wait for pullback
+   - If channel position < 15%, fundamental BUY is confirmed by technical
 
 === OUTPUT REQUIREMENTS ===
 
@@ -607,6 +629,14 @@ Respond in JSON:
     }},
     
     "technical_context": "price vs range",
+    "technical_structure": {{
+        "market_state": "trending|range_bound|transitional",
+        "market_state_bias": "bullish|bearish|neutral",
+        "channel_position": "0-100% (0=bottom, 100=top)",
+        "technical_verdict": "hypothesis_allowed|no_trade|analyze_only",
+        "entry_timing": "favorable|wait|unfavorable",
+        "technical_conviction_adjustment": "-20 to +10 (adjustment to base conviction)"
+    }},
     "macro_cycle_position": "cycle position",
     "seasonal_factors": "any seasonal patterns",
     
@@ -660,10 +690,13 @@ Respond in JSON:
         prediction_signals = []
         event_signals = []
         business_intel_signals = []  # NEW
+        technical_signals = []  # NEW - Chart analysis
         
         for sig in signals:
             sig_type = sig.get("signal_type") or sig.get("category", "")
-            if "business_intel" in sig_type.lower():
+            if "technical" in sig_type.lower():
+                technical_signals.append(sig)
+            elif "business_intel" in sig_type.lower():
                 business_intel_signals.append(sig)
             elif "sentiment" in sig_type.lower():
                 sentiment_signals.append(sig)
@@ -676,6 +709,69 @@ Respond in JSON:
         
         # Build signal summaries
         signal_text = "=== CURRENT SIGNALS ===\n\n"
+        
+        # TECHNICAL ANALYSIS (Chart Structure - Process FIRST)
+        if technical_signals:
+            signal_text += "CHART STRUCTURE (Technical Analysis):\n"
+            for sig in technical_signals[:5]:
+                ticker = sig.get("ticker", "Unknown")
+                price = sig.get("current_price", 0)
+                
+                # Market state
+                ms = sig.get("market_state", {})
+                state = ms.get("state", "unknown")
+                bias = ms.get("bias", "neutral")
+                confidence = ms.get("confidence", "low")
+                evidence = ms.get("evidence", [])
+                
+                # Verdict
+                verdict = sig.get("verdict", "unknown")
+                verdict_reasons = sig.get("verdict_reasons", [])
+                
+                # Channel
+                channel = sig.get("trend_channel", {})
+                channel_pos = channel.get("position_in_channel", 0.5) if channel else 0.5
+                channel_upper = channel.get("channel_upper", 0) if channel else 0
+                channel_lower = channel.get("channel_lower", 0) if channel else 0
+                
+                # Support/Resistance
+                support = sig.get("support_levels", [])
+                resistance = sig.get("resistance_levels", [])
+                
+                # Trade hypothesis
+                hypo = sig.get("trade_hypothesis")
+                
+                # Primary scenario
+                primary = sig.get("primary_scenario", {})
+                
+                signal_text += f"\n  {ticker} @ ${price:.2f}:\n"
+                signal_text += f"    Market State: {state.upper()} ({bias}, {confidence} confidence)\n"
+                if evidence:
+                    signal_text += f"    Evidence: {evidence[0][:60]}\n"
+                
+                if channel_upper and channel_lower:
+                    signal_text += f"    Channel: ${channel_lower:.2f} - ${channel_upper:.2f} (position: {channel_pos:.0%} from bottom)\n"
+                
+                if support:
+                    signal_text += f"    Support: ${support[0]:.2f}\n"
+                if resistance:
+                    signal_text += f"    Resistance: ${resistance[0]:.2f}\n"
+                
+                signal_text += f"    VERDICT: {verdict.upper()}\n"
+                if verdict_reasons:
+                    signal_text += f"    Reason: {verdict_reasons[0][:60]}\n"
+                
+                if hypo and hypo.get("allow_trade"):
+                    side = hypo.get("side", "").upper()
+                    r_mult = hypo.get("expected_r", 0)
+                    entry = hypo.get("entry_zone", {})
+                    stop = hypo.get("invalidation", {})
+                    signal_text += f"    SETUP: {side} at ${entry.get('low', 0):.2f}-${entry.get('high', 0):.2f}, stop ${stop.get('level', 0):.2f}, R={r_mult:.1f}\n"
+                
+                if primary:
+                    signal_text += f"    Primary Scenario: {primary.get('name', '')} ({primary.get('probability', 0):.0%})\n"
+            
+            signal_text += "\n"
         
         # Business Intel signals (prioritize these - NEW)
         if business_intel_signals:
@@ -768,24 +864,33 @@ Respond in JSON:
    - Identify what's being valued at ZERO
    - Challenge any "priced in" sentiment - priced in for WHICH segments?
 
-2. ANCHOR IN HISTORY
+2. TECHNICAL STRUCTURE CHECK
+   - Review chart analysis signals if present
+   - What is the market state? (trending/range/transitional)
+   - Where is price in the channel? (buy zone/sell zone/no edge)
+   - What is the technical verdict? (hypothesis_allowed/no_trade/analyze_only)
+   - Does chart structure support entry timing?
+
+3. ANCHOR IN HISTORY
    - Does this setup match a platform transformation pattern?
    - What happened after similar conditions?
 
-3. IDENTIFY FORWARD CATALYSTS
+4. IDENTIFY FORWARD CATALYSTS
    - What events are coming for EACH business line?
    - Where should we position ahead?
 
-4. APPLY SECOND-ORDER THINKING
+5. APPLY SECOND-ORDER THINKING
    - For platform companies: which SEGMENT drives re-rating?
    - What optionality is market missing?
 
-5. SYNTHESIZE
-   - Combine business audit + historical pattern + catalyst
-   - Score conviction based on unpriced optionality + pattern match
+6. SYNTHESIZE
+   - Combine business audit + technical structure + historical pattern + catalyst
+   - Score conviction based on: unpriced optionality + pattern match + TECHNICAL SETUP
+   - If technical verdict is "no_trade", reduce conviction accordingly
+   - If technical verdict is "hypothesis_allowed", boost conviction if fundamentals align
 
 CRITICAL: Do not accept surface-level "priced in" takes. 
-Audit the business first. What is actually being priced?
+Audit the business first. Check the chart structure. What is actually being priced?
 
 Respond with your analysis in JSON format.
 """
