@@ -2,8 +2,12 @@
 Gann Sentinel Trader - Grok Scanner
 Forward-looking sentiment and news signal extraction via xAI Grok API.
 
-Version: 2.1.0 (Enhanced Error Handling)
+Version: 2.2.0 (Live Search API Fix)
 Last Updated: January 2026
+
+Change Log:
+- 2.2.0: Fixed xAI API - use search_parameters instead of tools for Live Search
+         Note: Live Search API deprecated Jan 12, 2026 - migration to Agent Tools API pending
 """
 
 import os
@@ -230,14 +234,19 @@ No other text, just the JSON."""
         }
         
         if use_search:
-            # xAI API uses "live_search" for real-time web and X/Twitter search
-            # Note: As of Jan 2026, xAI deprecated web_search/x_search in favor of live_search
-            request_body["tools"] = [
-                {"type": "live_search"},
-            ]
+            # xAI Live Search API uses search_parameters, not tools
+            # mode: "auto" lets Grok decide when to search, "on" forces search
+            # Sources default to web, news, and x when not specified
+            request_body["search_parameters"] = {
+                "mode": "auto",
+                "return_citations": True,
+            }
         
         try:
             logger.info(f"Calling Grok API with model {self.model}...")
+            logger.debug(f"Request body keys: {list(request_body.keys())}")
+            if use_search:
+                logger.info(f"Search enabled with parameters: {request_body.get('search_parameters', {})}")
             
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
