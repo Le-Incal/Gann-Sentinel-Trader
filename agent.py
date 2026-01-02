@@ -427,6 +427,14 @@ class GannSentinelAgent:
         except Exception as e:
             logger.error(f"Failed to send scan summary: {e}")
     
+    def _holds_position(self, ticker: str, positions: List[Position]) -> bool:
+        """Check if we currently hold a position in a ticker."""
+        for pos in positions:
+            pos_ticker = pos.ticker if hasattr(pos, 'ticker') else pos.get('ticker', '')
+            if pos_ticker.upper() == ticker.upper():
+                return True
+        return False
+    
     async def _handle_trade_recommendation(
         self,
         analysis: Analysis,
@@ -434,6 +442,16 @@ class GannSentinelAgent:
         positions: List[Position]
     ) -> None:
         """Handle a trade recommendation from Claude."""
+        
+        # CRITICAL: Only allow SELL if we actually hold the position
+        if analysis.recommendation == Recommendation.SELL:
+            if not self._holds_position(analysis.ticker, positions):
+                logger.info(f"Ignoring SELL recommendation for {analysis.ticker} - no position held")
+                self.telegram.record_trade_blocker(
+                    blocker_type="No Position",
+                    details=f"Cannot SELL {analysis.ticker} - we don't hold it"
+                )
+                return
         
         # Run risk checks
         passed, risk_results = self.risk_engine.validate_trade(
@@ -878,6 +896,19 @@ class GannSentinelAgent:
                 logger.error(f"Claude analysis error for {ticker}: {e}")
         
         # Build result dict
+        # NOTE: /check command is asking "should I buy this?" so we only act on BUY
+        # SELL recommendations are converted to HOLD/WATCH since we can't sell what we don't own
+        recommendation = "NONE"
+        if analysis:
+            if analysis.recommendation == Recommendation.BUY:
+                recommendation = "BUY"
+            elif analysis.recommendation == Recommendation.SELL:
+                # Can't sell what we don't own - convert to WATCH
+                recommendation = "HOLD"
+                logger.info(f"Converting SELL to HOLD for {ticker} - /check is BUY-only")
+            else:
+                recommendation = analysis.recommendation.value if hasattr(analysis.recommendation, 'value') else "HOLD"
+        
         result = {
             "ticker": ticker,
             "is_tradeable": is_tradeable,
@@ -887,15 +918,17 @@ class GannSentinelAgent:
             "signals": [s.to_dict() if hasattr(s, 'to_dict') else s for s in signals],
             "analysis": analysis_dict,
             "conviction": analysis.conviction_score if analysis else 0,
-            "recommendation": analysis.recommendation.value if analysis else "NONE",
+            "recommendation": recommendation,
             "thesis": analysis.thesis if analysis else "Insufficient signals for analysis. Try again later or check if ticker is valid.",
             "historical_context": getattr(analysis, 'historical_context', None) if analysis else None,
             "pending_trade_id": None,
             "risk_rejection": None,
         }
         
-        # Attempt to create trade if actionable
+        # Attempt to create trade ONLY if BUY recommendation
+        # /check command is asking "should I buy?" - never creates SELL trades
         if (analysis and 
+            analysis.recommendation == Recommendation.BUY and  # BUY only!
             analysis.is_actionable and 
             is_tradeable and 
             analysis.conviction_score >= Config.MIN_CONVICTION):
@@ -918,11 +951,11 @@ class GannSentinelAgent:
                 )
                 
                 if sizing["shares"] >= 1:
-                    # Create trade
+                    # Create BUY trade (only BUY reaches here due to check above)
                     trade = Trade(
                         analysis_id=analysis.analysis_id,
                         ticker=ticker,
-                        side=OrderSide.BUY if analysis.recommendation == Recommendation.BUY else OrderSide.SELL,
+                        side=OrderSide.BUY,  # Always BUY for /check command
                         quantity=sizing["shares"],
                         order_type=OrderType.MARKET,
                         limit_price=None,
