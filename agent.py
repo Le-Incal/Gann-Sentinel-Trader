@@ -438,7 +438,6 @@ class GannSentinelAgent:
             failed_checks = [r for r in risk_results if not r.passed and r.severity == "error"]
             reasons = "; ".join([r.message for r in failed_checks])
             
-            # Record rejection for scan summary (NOT separate message)
             self.telegram.record_risk_rejection(
                 ticker=analysis.ticker,
                 reason=reasons
@@ -450,10 +449,24 @@ class GannSentinelAgent:
         # Get current price
         quote = await self.executor.get_quote(analysis.ticker)
         if "error" in quote:
-            logger.error(f"Could not get quote for {analysis.ticker}: {quote['error']}")
+            error_msg = quote.get("error", "Unknown quote error")
+            logger.error(f"Could not get quote for {analysis.ticker}: {error_msg}")
+            
+            # Record the blocker so it shows in scan summary
+            self.telegram.record_trade_blocker(
+                blocker_type="Quote Error",
+                details=f"{analysis.ticker}: {error_msg}"
+            )
             return
         
-        current_price = quote["mid"]
+        current_price = quote.get("mid")
+        if not current_price or current_price <= 0:
+            logger.error(f"Invalid price for {analysis.ticker}: {current_price}")
+            self.telegram.record_trade_blocker(
+                blocker_type="Invalid Price",
+                details=f"{analysis.ticker}: Price is {current_price}"
+            )
+            return
         
         # Calculate position size
         sizing = self.risk_engine.calculate_position_size(
@@ -464,6 +477,10 @@ class GannSentinelAgent:
         
         if sizing["shares"] < 1:
             logger.warning(f"Position size too small: {sizing['shares']} shares")
+            self.telegram.record_trade_blocker(
+                blocker_type="Position Size",
+                details=f"Calculated {sizing['shares']} shares (need at least 1)"
+            )
             return
         
         # Create trade object
