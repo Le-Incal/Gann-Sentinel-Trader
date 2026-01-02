@@ -3,6 +3,8 @@ Telegram Bot for Gann Sentinel Trader
 Handles notifications and command processing for trade approvals and system control.
 
 Uses Unicode escape sequences for all emojis and special characters.
+
+Version: 1.1.0 - Added /check command support
 """
 
 import os
@@ -78,7 +80,7 @@ class TelegramBot:
         self._system_errors: List[Dict[str, Any]] = []
         self._pending_approvals: List[str] = []
         self._risk_rejections: List[Dict[str, Any]] = []
-        self._trade_blockers: List[Dict[str, Any]] = []  # NEW: Track why trade wasn't created
+        self._trade_blockers: List[Dict[str, Any]] = []
     
     @property
     def is_configured(self) -> bool:
@@ -203,6 +205,8 @@ class TelegramBot:
             elif cmd_text == "reject" and args:
                 cmd_dict["trade_id"] = args[0]
                 cmd_dict["reason"] = " ".join(args[1:]) if len(args) > 1 else "Rejected by user"
+            elif cmd_text == "check" and args:
+                cmd_dict["ticker"] = args[0].upper()
             
             commands.append(cmd_dict)
             logger.info(f"Parsed command: {cmd_dict}")
@@ -301,6 +305,116 @@ class TelegramBot:
         return f"[{BAR_FILLED * filled}{BAR_EMPTY * empty}]"
     
     # =========================================================================
+    # CHECK COMMAND RESULT
+    # =========================================================================
+    
+    async def send_check_result(self, result: Dict[str, Any]) -> bool:
+        """
+        Send on-demand analysis result from /check command.
+        
+        Formats a comprehensive analysis summary including:
+        - Ticker status (tradeable vs pre-IPO)
+        - Signal count
+        - Conviction score with visual bar
+        - Recommendation
+        - Thesis
+        - Historical context (if available)
+        - Trade action prompt (if applicable)
+        """
+        ticker = result.get("ticker", "???")
+        conviction = result.get("conviction", 0)
+        is_tradeable = result.get("is_tradeable", False)
+        current_price = result.get("current_price")
+        recommendation = result.get("recommendation", "NONE")
+        thesis = result.get("thesis", "No analysis available")
+        pending_trade_id = result.get("pending_trade_id")
+        risk_rejection = result.get("risk_rejection")
+        historical_context = result.get("historical_context")
+        signals_count = result.get("signals_count", 0)
+        
+        # Build conviction bar
+        bar = self._build_conviction_bar(conviction)
+        
+        # Build status line
+        if is_tradeable and current_price:
+            status = f"Tradeable @ ${current_price:.2f}"
+        elif is_tradeable:
+            status = "Tradeable (price unavailable)"
+        else:
+            status = "Not Tradeable (pre-IPO or unlisted)"
+        
+        # Build recommendation emoji and text
+        if recommendation == "BUY":
+            rec_emoji = EMOJI_BULL
+            rec_text = "BUY"
+        elif recommendation == "SELL":
+            rec_emoji = EMOJI_BEAR
+            rec_text = "SELL"
+        else:
+            rec_emoji = EMOJI_WHITE_CIRCLE
+            rec_text = "HOLD/WATCH"
+        
+        lines = [
+            f"{EMOJI_TARGET} ANALYSIS: {ticker}",
+            "=" * 30,
+            "",
+            f"Status: {status}",
+            f"Signals: {signals_count} gathered",
+            "",
+            f"{EMOJI_CHART} CONVICTION: {conviction}/100",
+            bar,
+            "",
+            f"{rec_emoji} RECOMMENDATION: {rec_text}",
+            "",
+            f"{EMOJI_BRAIN} THESIS:",
+            thesis[:400] if thesis else "Insufficient data",
+        ]
+        
+        # Add historical context if available
+        if historical_context:
+            lines.extend([
+                "",
+                f"{EMOJI_SEARCH} HISTORICAL PATTERN:",
+                str(historical_context)[:200],
+            ])
+        
+        # Add trade action or status
+        lines.append("")
+        lines.append("=" * 30)
+        
+        if pending_trade_id:
+            lines.extend([
+                f"{EMOJI_BELL} Trade Created - Pending Approval",
+                "",
+                f"/approve {pending_trade_id}",
+                f"/reject {pending_trade_id}",
+            ])
+        elif risk_rejection:
+            lines.extend([
+                f"{EMOJI_WARNING} Risk Check Failed:",
+                str(risk_rejection)[:100],
+            ])
+        elif not is_tradeable:
+            lines.extend([
+                f"{EMOJI_SEARCH} WATCH LIST",
+                "Cannot trade (pre-IPO or unlisted)",
+                "Monitor for when it becomes available",
+            ])
+        elif conviction < 80:
+            lines.extend([
+                f"{EMOJI_ZZZ} No Trade",
+                f"Conviction {conviction} below 80 threshold",
+            ])
+        else:
+            lines.extend([
+                f"{EMOJI_ZZZ} No Trade",
+                "Analysis did not meet criteria",
+            ])
+        
+        message = "\n".join(lines)
+        return await self.send_message(message, parse_mode=None)
+    
+    # =========================================================================
     # COMPREHENSIVE SCAN SUMMARY
     # =========================================================================
     
@@ -315,187 +429,121 @@ class TelegramBot:
         Send a comprehensive scan summary after each scan cycle.
         """
         now = datetime.now(timezone.utc)
-        scan_duration = None
+        elapsed = None
         if self._scan_start_time:
-            scan_duration = (now - self._scan_start_time).total_seconds()
+            elapsed = (now - self._scan_start_time).total_seconds()
         
-        lines = []
-        
-        # Header
-        lines.append("=" * 40)
-        lines.append(f"{EMOJI_SEARCH} SCAN CYCLE COMPLETE")
-        lines.append(f"{now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-        if scan_duration:
-            lines.append(f"Duration: {scan_duration:.1f}s")
+        lines = [
+            "=" * 40,
+            f"{EMOJI_CHART} SCAN COMPLETE",
+            f"{now.strftime('%Y-%m-%d %H:%M UTC')}",
+        ]
+        if elapsed:
+            lines.append(f"Elapsed: {elapsed:.1f}s")
         lines.append("=" * 40)
         
         # =====================================================================
-        # SOURCES & SIGNAL COUNTS
+        # DATA SOURCES SECTION
         # =====================================================================
         lines.append(f"\n{EMOJI_ANTENNA} DATA SOURCES")
         
-        total_signals = 0
-        errors = []
-        
-        for query in self._source_queries:
-            source = query.get("source", "Unknown")
-            count = query.get("signals_returned", 0)
-            error = query.get("error")
-            total_signals += count
-            
-            if error:
-                lines.append(f"  {EMOJI_CROSS} {source}: ERROR ({error})")
-                errors.append(source)
-            else:
-                lines.append(f"  {EMOJI_CHECK} {source}: {count} signals")
-        
-        lines.append(f"\nTotal: {total_signals} signals")
-        
-        # =====================================================================
-        # KEY SIGNALS BY CATEGORY
-        # =====================================================================
-        if signals:
-            lines.append("\n" + "-" * 40)
-            lines.append(f"{EMOJI_CHART} KEY SIGNALS")
-            
-            sentiment_signals = []
-            macro_signals = []
-            prediction_signals = []
-            
-            for sig in signals:
-                sig_type = sig.get("signal_type") or sig.get("category") or ""
-                source = sig.get("source") or sig.get("source_type") or ""
+        if self._source_queries:
+            for sq in self._source_queries:
+                source = sq.get("source", "Unknown")
+                count = sq.get("signals_returned", 0)
+                error = sq.get("error")
                 
-                if "sentiment" in sig_type.lower() or "grok" in source.lower():
-                    sentiment_signals.append(sig)
-                elif "macro" in sig_type.lower() or "fred" in source.lower():
-                    macro_signals.append(sig)
-                elif "prediction" in sig_type.lower() or "polymarket" in source.lower():
-                    prediction_signals.append(sig)
-            
-            if sentiment_signals:
-                lines.append(f"\n{EMOJI_BIRD} Sentiment: {len(sentiment_signals)} signals")
-                for sig in sentiment_signals[:2]:
-                    summary = sig.get("summary", "")[:60]
-                    lines.append(f"  {EMOJI_BULLET} {summary}")
-            
-            if macro_signals:
-                lines.append(f"\n{EMOJI_CHART_UP} Macro: {len(macro_signals)} signals")
-                for sig in macro_signals[:3]:
-                    summary = sig.get("summary", "")[:60]
-                    lines.append(f"  {EMOJI_BULLET} {summary}")
-            
-            if prediction_signals:
-                lines.append(f"\n{EMOJI_TARGET} Predictions: {len(prediction_signals)} signals")
-                sorted_preds = sorted(
-                    prediction_signals,
-                    key=lambda x: abs(x.get("raw_value", {}).get("change") or 0),
-                    reverse=True
-                )
-                for sig in sorted_preds[:3]:
-                    summary = sig.get("summary", "")[:60]
-                    lines.append(f"  {EMOJI_BULLET} {summary}")
+                if error:
+                    lines.append(f"  {EMOJI_RED_CIRCLE} {source}: ERROR - {error[:30]}")
+                elif count > 0:
+                    lines.append(f"  {EMOJI_GREEN_CIRCLE} {source}: {count} signals")
+                else:
+                    lines.append(f"  {EMOJI_WHITE_CIRCLE} {source}: 0 signals")
+        else:
+            lines.append("  (No sources queried)")
         
         # =====================================================================
-        # CLAUDE'S ANALYSIS
+        # SIGNALS SECTION
         # =====================================================================
-        lines.append("\n" + "-" * 40)
-        lines.append(f"{EMOJI_BRAIN} CLAUDE'S ANALYSIS")
+        lines.append(f"\n{EMOJI_BIRD} SIGNALS ({len(signals)} total)")
+        
+        sentiment_signals = [s for s in signals if s.get("category") == "sentiment"]
+        news_signals = [s for s in signals if s.get("category") == "news"]
+        macro_signals = [s for s in signals if s.get("category") == "macro"]
+        prediction_signals = [s for s in signals if s.get("category") == "prediction"]
+        other_signals = [s for s in signals if s.get("category") not in ["sentiment", "news", "macro", "prediction"]]
+        
+        if sentiment_signals:
+            lines.append(f"  {EMOJI_BULLET} Sentiment: {len(sentiment_signals)}")
+        if news_signals:
+            lines.append(f"  {EMOJI_BULLET} News: {len(news_signals)}")
+        if macro_signals:
+            lines.append(f"  {EMOJI_BULLET} Macro: {len(macro_signals)}")
+        if prediction_signals:
+            lines.append(f"  {EMOJI_BULLET} Predictions: {len(prediction_signals)}")
+        if other_signals:
+            lines.append(f"  {EMOJI_BULLET} Other: {len(other_signals)}")
+        
+        if signals:
+            lines.append("")
+            lines.append("  Top signals:")
+            for sig in signals[:3]:
+                summary = sig.get("summary", "No summary")[:50]
+                conf = sig.get("confidence", 0)
+                lines.append(f"    {EMOJI_BULLET} {summary}... ({conf:.0%})")
+        
+        # =====================================================================
+        # ANALYSIS SECTION
+        # =====================================================================
+        lines.append(f"\n{EMOJI_BRAIN} CLAUDE ANALYSIS")
         
         if analysis:
-            ticker = analysis.get("ticker")
-            recommendation = analysis.get("recommendation", "NONE")
+            ticker = analysis.get("ticker", "N/A")
             conviction = analysis.get("conviction_score", 0)
+            rec = analysis.get("recommendation", "NONE")
             thesis = analysis.get("thesis", "")
-            bull_case = analysis.get("bull_case", "")
-            bear_case = analysis.get("bear_case", "")
-            time_horizon = analysis.get("time_horizon", "unknown")
             
-            # Conviction bar with Unicode blocks
             bar = self._build_conviction_bar(conviction)
-            is_actionable = conviction >= 80 and recommendation in ["BUY", "SELL"]
             
-            lines.append(f"\nConviction: {conviction}/100")
-            if is_actionable:
-                lines.append(f"{bar} {EMOJI_GREEN_CIRCLE} ACTIONABLE")
-            else:
-                lines.append(f"{bar} {EMOJI_WHITE_CIRCLE} Threshold: 80")
+            lines.append(f"  Ticker: {ticker}")
+            lines.append(f"  Conviction: {conviction}/100")
+            lines.append(f"  {bar}")
+            lines.append(f"  Recommendation: {rec}")
             
-            if ticker and recommendation in ["BUY", "SELL"]:
-                lines.append(f"\nRecommendation: {recommendation} {ticker}")
-                lines.append(f"Time Horizon: {time_horizon}")
-                
-                if thesis:
-                    lines.append(f"\nThesis: {thesis[:250]}...")
-                
-                if bull_case:
-                    lines.append(f"\n{EMOJI_BULL} Bull: {bull_case[:150]}...")
-                
-                if bear_case:
-                    lines.append(f"\n{EMOJI_BEAR} Bear: {bear_case[:150]}...")
-                
-                # Trade Parameters
-                position_size = analysis.get("position_size_pct", 0)
-                stop_loss = analysis.get("stop_loss_pct", 0)
-                
-                if position_size > 1:
-                    position_display = f"{position_size:.0f}%"
-                else:
-                    position_display = f"{position_size * 100:.0f}%"
-                    
-                if stop_loss > 1:
-                    stop_display = f"{stop_loss:.0f}%"
-                else:
-                    stop_display = f"{stop_loss * 100:.0f}%"
-                
-                lines.append(f"\nTrade Parameters:")
-                lines.append(f"  Stop Loss: {stop_display}")
-                lines.append(f"  Position Size: {position_display}")
-            else:
-                lines.append(f"\n{EMOJI_ZZZ} No actionable opportunity")
-                if thesis:
-                    lines.append(f"\nThesis: {thesis[:200]}...")
-                if bull_case:
-                    lines.append(f"\n{EMOJI_BULL} Bull: {bull_case[:120]}...")
-                if bear_case:
-                    lines.append(f"\n{EMOJI_BEAR} Bear: {bear_case[:120]}...")
+            if thesis:
+                thesis_preview = thesis[:150]
+                lines.append(f"\n  Thesis: {thesis_preview}...")
         else:
-            lines.append(f"\n{EMOJI_CROSS} Analysis not generated")
+            lines.append("  (No analysis generated)")
         
         # =====================================================================
-        # TRADE STATUS
+        # DECISION SECTION
         # =====================================================================
-        lines.append("\n" + "-" * 40)
-        lines.append(f"{EMOJI_WARNING} TRADE STATUS")
+        lines.append(f"\n{EMOJI_TARGET} DECISION")
         
         if self._risk_rejections:
-            # Risk engine blocked the trade
-            for rejection in self._risk_rejections:
-                lines.append(f"\n{EMOJI_RED_CIRCLE} REJECTED BY RISK ENGINE")
-                lines.append(f"Ticker: {rejection['ticker']}")
-                lines.append(f"Reason: {rejection['reason']}")
-            lines.append(f"\n{EMOJI_BULLET} Trade blocked - no approval needed")
+            lines.append(f"{EMOJI_RED_CIRCLE} Risk Engine Rejected:")
+            for rej in self._risk_rejections:
+                ticker = rej.get("ticker", "Unknown")
+                reason = rej.get("reason", "No reason given")
+                lines.append(f"  {EMOJI_BULLET} {ticker}: {reason[:50]}")
         
         elif self._trade_blockers:
-            # Trade passed risk but failed downstream
-            lines.append(f"\n{EMOJI_RED_CIRCLE} TRADE NOT CREATED")
+            lines.append(f"{EMOJI_WARNING} Trade Blocked:")
             for blocker in self._trade_blockers:
                 lines.append(f"{EMOJI_BULLET} {blocker['type']}: {blocker['details']}")
         
         elif pending_trade_id:
-            # Trade created and awaiting approval
             lines.append(f"\n{EMOJI_BELL} TRADE PENDING APPROVAL")
             lines.append(f"Trade ID: {pending_trade_id}")
             lines.append(f"\n{EMOJI_CHECK} /approve {pending_trade_id}")
             lines.append(f"{EMOJI_CROSS} /reject {pending_trade_id}")
         
         elif analysis and analysis.get("conviction_score", 0) >= 80:
-            # Conviction met but no trade and no recorded reason
             lines.append(f"\n{EMOJI_WHITE_CIRCLE} Conviction met, no trade created")
             lines.append("(Unknown issue - check logs)")
         
         else:
-            # Conviction below threshold
             lines.append(f"\n{EMOJI_WHITE_CIRCLE} No trade - conviction below 80")
         
         # =====================================================================
@@ -518,6 +566,7 @@ class TelegramBot:
         # =====================================================================
         lines.append("\n" + "-" * 40)
         lines.append(f"{EMOJI_KEYBOARD} COMMANDS")
+        lines.append("/check [TICKER] - Analyze any stock")
         lines.append("/status - System status")
         lines.append("/pending - Pending trades")
         lines.append("/approve [id] - Approve trade")
@@ -675,7 +724,7 @@ class TelegramBot:
                 trade_id = trade.get("id", "")[:8]
                 lines.append(f"  {EMOJI_BULLET} {side} {ticker} - /approve {trade_id}")
         
-        lines.append(f"\n{EMOJI_KEYBOARD} /status /pending /help")
+        lines.append(f"\n{EMOJI_KEYBOARD} /check [TICKER] /status /pending /help")
         lines.append("=" * 40)
         
         message = "\n".join(lines)
