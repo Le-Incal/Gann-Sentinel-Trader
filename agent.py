@@ -2,7 +2,7 @@
 Gann Sentinel Trader - Main Agent
 Orchestrates the trading system: scan signals, analyze, approve, execute.
 
-Version: 2.0.0 - Added Technical Scanner integration
+Version: 2.0.1 - Fixed RiskEngine method name (check_trade -> validate_trade)
 - Technical analysis in hourly scan cycle
 - Technical analysis in /check command
 - Chart structure feeds into Claude conviction scoring
@@ -16,6 +16,7 @@ import asyncio
 import logging
 import sys
 import traceback
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 
@@ -24,7 +25,7 @@ from storage.database import Database
 from scanners.grok_scanner import GrokScanner
 from scanners.fred_scanner import FREDScanner
 from scanners.polymarket_scanner import PolymarketScanner
-from scanners.technical_scanner import TechnicalScanner  # NEW
+from scanners.technical_scanner import TechnicalScanner
 from analyzers.claude_analyst import ClaudeAnalyst
 from executors.risk_engine import RiskEngine
 from executors.alpaca_executor import AlpacaExecutor
@@ -82,7 +83,7 @@ class GannSentinelAgent:
         self.grok = GrokScanner()
         self.fred = FREDScanner()
         self.polymarket = PolymarketScanner()
-        self.technical = TechnicalScanner()  # NEW - Chart analysis
+        self.technical = TechnicalScanner()
         self.analyst = ClaudeAnalyst()
         self.risk_engine = RiskEngine()
         self.executor = AlpacaExecutor()
@@ -226,7 +227,7 @@ class GannSentinelAgent:
     async def _full_scan_cycle(self) -> None:
         """Run a full signal scan and analysis cycle."""
         signals: List[Signal] = []
-        technical_signals: List[Dict[str, Any]] = []  # NEW - Track technical separately
+        technical_signals: List[Dict[str, Any]] = []
         
         self._current_pending_trade_id = None
         self.telegram.record_scan_start()
@@ -339,12 +340,12 @@ class GannSentinelAgent:
             )
         
         # =================================================================
-        # NEW: TECHNICAL ANALYSIS SCAN
+        # TECHNICAL ANALYSIS SCAN
         # Run on top watchlist tickers
         # =================================================================
         try:
             if self.technical.is_configured:
-                tech_tickers = self.watchlist[:5]  # Top 5 from watchlist
+                tech_tickers = self.watchlist[:5]
                 logger.info(f"Running technical analysis on: {tech_tickers}")
                 
                 for ticker in tech_tickers:
@@ -355,11 +356,11 @@ class GannSentinelAgent:
                         if tech_signal:
                             signal_dict = tech_signal.to_dict()
                             technical_signals.append(signal_dict)
-                            signals.append(tech_signal)  # Add to main signals list
+                            signals.append(tech_signal)
                             
                             # Record for telegram
                             self.telegram.record_signal(signal_dict)
-                            self.telegram.record_technical_signal(signal_dict)  # NEW method
+                            self.telegram.record_technical_signal(signal_dict)
                             
                             logger.info(
                                 f"Technical {ticker}: {tech_signal.market_state.state.value}, "
@@ -418,7 +419,7 @@ class GannSentinelAgent:
                 analysis=None,
                 portfolio=None,
                 pending_trade_id=None,
-                technical_signals=technical_signals  # NEW
+                technical_signals=technical_signals
             )
             return
         
@@ -488,7 +489,7 @@ class GannSentinelAgent:
                 analysis=analysis_dict,
                 portfolio=portfolio_dict,
                 pending_trade_id=self._current_pending_trade_id,
-                technical_signals=technical_signals  # NEW
+                technical_signals=technical_signals
             )
         except Exception as e:
             logger.error(f"Error sending scan summary: {e}")
@@ -501,8 +502,8 @@ class GannSentinelAgent:
         positions: List[Position]
     ) -> None:
         """Process a trade recommendation through risk checks."""
-        # Run risk checks
-        passed, results = self.risk_engine.check_trade(
+        # Run risk checks - FIXED: was check_trade, now validate_trade
+        passed, results = self.risk_engine.validate_trade(
             analysis=analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis,
             portfolio=portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio,
             current_positions=[p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
@@ -799,12 +800,12 @@ class GannSentinelAgent:
         - recommendation: BUY/SELL/HOLD/NONE
         - thesis: Analysis thesis
         - historical_context: Historical pattern match (if found)
-        - technical_analysis: Chart structure analysis (NEW)
+        - technical_analysis: Chart structure analysis
         - pending_trade_id: Trade ID if trade was created
         - risk_rejection: Reason if risk check failed
         """
         signals = []
-        technical_data = None  # NEW
+        technical_data = None
         
         # Gather Grok sentiment for this ticker
         try:
@@ -823,7 +824,7 @@ class GannSentinelAgent:
             logger.error(f"Grok catalyst error for {ticker}: {e}")
         
         # =================================================================
-        # NEW: TECHNICAL ANALYSIS for /check command
+        # TECHNICAL ANALYSIS for /check command
         # Use 5-year weekly for comprehensive view
         # =================================================================
         try:
@@ -833,7 +834,7 @@ class GannSentinelAgent:
                 
                 if tech_signal:
                     technical_data = tech_signal.to_dict()
-                    signals.append(tech_signal)  # Add to signals for Claude
+                    signals.append(tech_signal)
                     logger.info(
                         f"Technical {ticker}: state={tech_signal.market_state.state.value}, "
                         f"bias={tech_signal.market_state.bias.value}, "
@@ -917,7 +918,7 @@ class GannSentinelAgent:
             "historical_context": analysis_dict.get("historical_context") if analysis_dict else None,
             "bull_case": analysis_dict.get("bull_case") if analysis_dict else None,
             "bear_case": analysis_dict.get("bear_case") if analysis_dict else None,
-            "technical_analysis": technical_data,  # NEW
+            "technical_analysis": technical_data,
             "pending_trade_id": None,
             "risk_rejection": None,
         }
@@ -930,7 +931,8 @@ class GannSentinelAgent:
             
             logger.info(f"Trade criteria met for {ticker}, running risk checks...")
             
-            passed, risk_results = self.risk_engine.check_trade(
+            # FIXED: was check_trade, now validate_trade
+            passed, risk_results = self.risk_engine.validate_trade(
                 analysis=analysis_dict,
                 portfolio=portfolio_dict,
                 current_positions=[p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
@@ -986,13 +988,6 @@ EXAMPLES:
   /check TSLA
 """
         await self.telegram.send_message(help_text, parse_mode=None)
-
-
-# =============================================================================
-# IMPORTS FOR TRADE MODEL
-# =============================================================================
-
-import uuid
 
 
 # =============================================================================
