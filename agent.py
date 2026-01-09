@@ -2,10 +2,11 @@
 Gann Sentinel Trader - Main Agent
 Orchestrates the trading system: scan signals, analyze, approve, execute.
 
-Version: 2.0.1 - Fixed RiskEngine method name (check_trade -> validate_trade)
-- Technical analysis in hourly scan cycle
-- Technical analysis in /check command
-- Chart structure feeds into Claude conviction scoring
+Version: 2.0.1 - Fixed silent trade creation failures
+- Added trade blocker recording for quote fetch failures
+- Added trade blocker recording for invalid price
+- Added trade blocker recording for position size too small
+- Now shows WHY trades weren't created in Telegram
 
 DISCLAIMER: Trading involves substantial risk of loss. This is an experimental
 system and nothing here constitutes financial advice. Only trade what you can
@@ -16,7 +17,6 @@ import asyncio
 import logging
 import sys
 import traceback
-import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 
@@ -25,7 +25,7 @@ from storage.database import Database
 from scanners.grok_scanner import GrokScanner
 from scanners.fred_scanner import FREDScanner
 from scanners.polymarket_scanner import PolymarketScanner
-from scanners.technical_scanner import TechnicalScanner
+from scanners.technical_scanner import TechnicalScanner  # NEW
 from analyzers.claude_analyst import ClaudeAnalyst
 from executors.risk_engine import RiskEngine
 from executors.alpaca_executor import AlpacaExecutor
@@ -49,13 +49,13 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # EMOJI CONSTANTS - Using Unicode escape sequences to prevent encoding issues
 # =============================================================================
-EMOJI_ROCKET = "\U0001F680"      # 🚀
-EMOJI_STOP = "\U0001F6D1"        # 🛑
-EMOJI_WARNING = "\U000026A0"     # ⚠
-EMOJI_CHECK = "\U00002705"       # ✅
-EMOJI_CROSS = "\U0000274C"       # ❌
-EMOJI_BULLET = "\U00002022"      # •
-EMOJI_SEARCH = "\U0001F50D"      # 🔍
+EMOJI_ROCKET = "\U0001F680"      # ðŸš€
+EMOJI_STOP = "\U0001F6D1"        # ðŸ›‘
+EMOJI_WARNING = "\U000026A0"     # âš 
+EMOJI_CHECK = "\U00002705"       # âœ…
+EMOJI_CROSS = "\U0000274C"       # âŒ
+EMOJI_BULLET = "\U00002022"      # â€¢
+EMOJI_SEARCH = "\U0001F50D"      # ðŸ”
 
 
 class GannSentinelAgent:
@@ -83,7 +83,7 @@ class GannSentinelAgent:
         self.grok = GrokScanner()
         self.fred = FREDScanner()
         self.polymarket = PolymarketScanner()
-        self.technical = TechnicalScanner()
+        self.technical = TechnicalScanner()  # NEW - Chart analysis
         self.analyst = ClaudeAnalyst()
         self.risk_engine = RiskEngine()
         self.executor = AlpacaExecutor()
@@ -227,7 +227,7 @@ class GannSentinelAgent:
     async def _full_scan_cycle(self) -> None:
         """Run a full signal scan and analysis cycle."""
         signals: List[Signal] = []
-        technical_signals: List[Dict[str, Any]] = []
+        technical_signals: List[Dict[str, Any]] = []  # NEW - Track technical separately
         
         self._current_pending_trade_id = None
         self.telegram.record_scan_start()
@@ -340,12 +340,12 @@ class GannSentinelAgent:
             )
         
         # =================================================================
-        # TECHNICAL ANALYSIS SCAN
+        # NEW: TECHNICAL ANALYSIS SCAN
         # Run on top watchlist tickers
         # =================================================================
         try:
             if self.technical.is_configured:
-                tech_tickers = self.watchlist[:5]
+                tech_tickers = self.watchlist[:5]  # Top 5 from watchlist
                 logger.info(f"Running technical analysis on: {tech_tickers}")
                 
                 for ticker in tech_tickers:
@@ -356,11 +356,11 @@ class GannSentinelAgent:
                         if tech_signal:
                             signal_dict = tech_signal.to_dict()
                             technical_signals.append(signal_dict)
-                            signals.append(tech_signal)
+                            signals.append(tech_signal)  # Add to main signals list
                             
                             # Record for telegram
                             self.telegram.record_signal(signal_dict)
-                            self.telegram.record_technical_signal(signal_dict)
+                            self.telegram.record_technical_signal(signal_dict)  # NEW method
                             
                             logger.info(
                                 f"Technical {ticker}: {tech_signal.market_state.state.value}, "
@@ -419,7 +419,7 @@ class GannSentinelAgent:
                 analysis=None,
                 portfolio=None,
                 pending_trade_id=None,
-                technical_signals=technical_signals
+                technical_signals=technical_signals  # NEW
             )
             return
         
@@ -489,7 +489,7 @@ class GannSentinelAgent:
                 analysis=analysis_dict,
                 portfolio=portfolio_dict,
                 pending_trade_id=self._current_pending_trade_id,
-                technical_signals=technical_signals
+                technical_signals=technical_signals  # NEW
             )
         except Exception as e:
             logger.error(f"Error sending scan summary: {e}")
@@ -502,8 +502,8 @@ class GannSentinelAgent:
         positions: List[Position]
     ) -> None:
         """Process a trade recommendation through risk checks."""
-        # Run risk checks - FIXED: was check_trade, now validate_trade
-        passed, results = self.risk_engine.validate_trade(
+        # Run risk checks
+        passed, results = self.risk_engine.check_trade(
             analysis=analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis,
             portfolio=portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio,
             current_positions=[p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
@@ -534,15 +534,27 @@ class GannSentinelAgent:
             current_price = quote.get("mid", quote.get("last", 0))
         except Exception as e:
             logger.error(f"Error getting quote: {e}")
+            self.telegram.record_trade_blocker({
+                "type": "quote_fetch_failed",
+                "details": f"Could not get price for {analysis.ticker}: {str(e)[:100]}"
+            })
             return
         
         if current_price <= 0:
             logger.error(f"Invalid price for {analysis.ticker}")
+            self.telegram.record_trade_blocker({
+                "type": "invalid_price",
+                "details": f"Price for {analysis.ticker} is {current_price} (must be > 0)"
+            })
             return
         
         shares = int(position_value / current_price)
         if shares <= 0:
             logger.warning(f"Position size too small for {analysis.ticker}")
+            self.telegram.record_trade_blocker({
+                "type": "position_too_small",
+                "details": f"Calculated 0 shares for {analysis.ticker} (value: ${position_value:.2f}, price: ${current_price:.2f})"
+            })
             return
         
         # Create trade record
@@ -800,12 +812,12 @@ class GannSentinelAgent:
         - recommendation: BUY/SELL/HOLD/NONE
         - thesis: Analysis thesis
         - historical_context: Historical pattern match (if found)
-        - technical_analysis: Chart structure analysis
+        - technical_analysis: Chart structure analysis (NEW)
         - pending_trade_id: Trade ID if trade was created
         - risk_rejection: Reason if risk check failed
         """
         signals = []
-        technical_data = None
+        technical_data = None  # NEW
         
         # Gather Grok sentiment for this ticker
         try:
@@ -824,7 +836,7 @@ class GannSentinelAgent:
             logger.error(f"Grok catalyst error for {ticker}: {e}")
         
         # =================================================================
-        # TECHNICAL ANALYSIS for /check command
+        # NEW: TECHNICAL ANALYSIS for /check command
         # Use 5-year weekly for comprehensive view
         # =================================================================
         try:
@@ -834,7 +846,7 @@ class GannSentinelAgent:
                 
                 if tech_signal:
                     technical_data = tech_signal.to_dict()
-                    signals.append(tech_signal)
+                    signals.append(tech_signal)  # Add to signals for Claude
                     logger.info(
                         f"Technical {ticker}: state={tech_signal.market_state.state.value}, "
                         f"bias={tech_signal.market_state.bias.value}, "
@@ -918,7 +930,7 @@ class GannSentinelAgent:
             "historical_context": analysis_dict.get("historical_context") if analysis_dict else None,
             "bull_case": analysis_dict.get("bull_case") if analysis_dict else None,
             "bear_case": analysis_dict.get("bear_case") if analysis_dict else None,
-            "technical_analysis": technical_data,
+            "technical_analysis": technical_data,  # NEW
             "pending_trade_id": None,
             "risk_rejection": None,
         }
@@ -931,8 +943,7 @@ class GannSentinelAgent:
             
             logger.info(f"Trade criteria met for {ticker}, running risk checks...")
             
-            # FIXED: was check_trade, now validate_trade
-            passed, risk_results = self.risk_engine.validate_trade(
+            passed, risk_results = self.risk_engine.check_trade(
                 analysis=analysis_dict,
                 portfolio=portfolio_dict,
                 current_positions=[p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
@@ -988,6 +999,13 @@ EXAMPLES:
   /check TSLA
 """
         await self.telegram.send_message(help_text, parse_mode=None)
+
+
+# =============================================================================
+# IMPORTS FOR TRADE MODEL
+# =============================================================================
+
+import uuid
 
 
 # =============================================================================
