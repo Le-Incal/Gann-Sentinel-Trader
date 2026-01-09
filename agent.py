@@ -503,7 +503,7 @@ class GannSentinelAgent:
     ) -> None:
         """Process a trade recommendation through risk checks."""
         # Run risk checks
-        passed, results = self.risk_engine.check_trade(
+        passed, results = self.risk_engine.validate_trade(
             analysis=analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis,
             portfolio=portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio,
             current_positions=[p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
@@ -943,7 +943,7 @@ class GannSentinelAgent:
             
             logger.info(f"Trade criteria met for {ticker}, running risk checks...")
             
-            passed, risk_results = self.risk_engine.check_trade(
+            passed, risk_results = self.risk_engine.validate_trade(
                 analysis=analysis_dict,
                 portfolio=portfolio_dict,
                 current_positions=[p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]

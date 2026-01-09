@@ -506,8 +506,13 @@ class TelegramBot:
         # =====================================================================
         lines.append("\n" + "-" * 40)
         lines.append(f"{EMOJI_WARNING} TRADE STATUS")
-        
-        if self._risk_rejections:
+
+        if self._system_errors:
+            lines.append(f"\n{EMOJI_RED_CIRCLE} SYSTEM ERROR")
+            for error in self._system_errors:
+                lines.append(f"{EMOJI_BULLET} {error['component']}: {error['error'][:100]}")
+
+        elif self._risk_rejections:
             for rejection in self._risk_rejections:
                 lines.append(f"\n{EMOJI_RED_CIRCLE} REJECTED BY RISK ENGINE")
                 lines.append(f"Ticker: {rejection.get('ticker', 'N/A')}")
