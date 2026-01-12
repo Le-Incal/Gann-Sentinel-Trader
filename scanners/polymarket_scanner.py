@@ -479,16 +479,76 @@ class PolymarketScanner:
         """
         Check if a market should be excluded (sports, entertainment, etc.).
 
+        Uses multi-layer detection:
+        1. Keyword matching (generic sports terms)
+        2. Pattern matching (FC teams, betting language, weather)
+        3. Context clues (vs. without stock keywords)
+
         Args:
             combined_text: Combined question + description + title text
 
         Returns:
             True if market should be excluded
         """
+        import re
+
+        # Layer 1: Direct keyword matching
         for excluded_keyword in EXCLUDED_KEYWORDS:
             if excluded_keyword in combined_text:
-                logger.debug(f"Excluding market - matched '{excluded_keyword}'")
+                logger.debug(f"Excluding market - keyword match: '{excluded_keyword}'")
                 return True
+
+        # Layer 2: Pattern matching for sports
+        sports_patterns = [
+            # Football/Soccer club patterns
+            r'\bfc\s+\w+',           # "FC Nantes", "FC Barcelona"
+            r'\b\w+\s+fc\b',         # "Liverpool FC", "Juventus FC"
+            r'\bafc\s+\w+',          # "AFC Bournemouth"
+            r'\b\w+\s+afc\b',        # "Arsenal AFC"
+            r'\bsc\s+\w+',           # "SC Freiburg"
+            r'\b\w+\s+sc\b',         # Sports Club suffix
+            r'\bunited\b.*\bvs\b',   # "Manchester United vs..."
+            r'\bcity\b.*\bvs\b',     # "Manchester City vs..."
+
+            # Betting language patterns
+            r'\bo/u\s+\d',           # "O/U 2.5" (over/under)
+            r'\bover\s*\/\s*under\b',
+            r'\bboth teams to score\b',
+            r'\bto win\s+on\s+\d{4}-\d{2}-\d{2}',  # "to win on 2026-01-16"
+            r'\bwill\s+\w+\s+win\s+on\s+\d{4}',    # "will X win on YYYY"
+            r'\b1st round\b.*\bwin\b',              # Election-style but for sports
+
+            # Weather patterns (not stock relevant)
+            r'\bhighest temperature\b',
+            r'\bweather\b.*\btemperature\b',
+            r'\b\d+°[fc]\b',         # Temperature with degree symbol
+
+            # Generic sports match patterns
+            r'\bvs\.?\s+[a-z]+\s+(fc|afc|sc|united|city|rovers|wanderers)\b',
+        ]
+
+        for pattern in sports_patterns:
+            if re.search(pattern, combined_text, re.IGNORECASE):
+                logger.debug(f"Excluding market - pattern match: '{pattern}'")
+                return True
+
+        # Layer 3: Context-based exclusion
+        # If "vs" or "vs." is present but no stock-relevant keywords, likely sports
+        if re.search(r'\bvs\.?\b', combined_text, re.IGNORECASE):
+            # Check if any stock-relevant keywords are present
+            stock_keywords = [
+                'stock', 'share', 'price', 'market cap', 'revenue',
+                'earnings', 'profit', 'company', 'corporation', 'merger',
+                'acquisition', 'ipo', 'sec', 'regulation', 'tariff',
+                'fed', 'inflation', 'gdp', 'bitcoin', 'crypto', 'ai',
+                'chip', 'semiconductor', 'tech', 'nvidia', 'tesla', 'apple',
+                'google', 'microsoft', 'amazon', 'meta', 'openai'
+            ]
+            has_stock_context = any(kw in combined_text for kw in stock_keywords)
+            if not has_stock_context:
+                logger.debug(f"Excluding market - 'vs' without stock context")
+                return True
+
         return False
 
     def _categorize_market(self, market: Dict[str, Any]) -> MarketCategory:

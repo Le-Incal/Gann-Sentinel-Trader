@@ -406,7 +406,8 @@ class ClaudeAnalyst:
         if not self.api_key:
             logger.warning("ANTHROPIC_API_KEY not set - analysis disabled")
         
-        self.model = "claude-sonnet-4-20250514"
+        # Use Claude 3.5 Sonnet - current production model
+        self.model = "claude-3-5-sonnet-20241022"
         self.base_url = "https://api.anthropic.com/v1/messages"
         
         self.temporal_context = get_temporal_context()
@@ -949,11 +950,15 @@ Respond with your analysis in JSON format.
         system_prompt: str,
         user_prompt: str,
     ) -> Optional[Dict[str, Any]]:
-        """Call Claude API and parse JSON response."""
+        """
+        Call Claude API and parse JSON response.
+
+        Returns dict on success, or dict with 'error' key on failure.
+        """
         if not self.api_key:
             logger.error("No API key - cannot call Claude")
-            return None
-        
+            return {"error": "ANTHROPIC_API_KEY not configured"}
+
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
@@ -972,28 +977,36 @@ Respond with your analysis in JSON format.
                         ],
                     },
                 )
-                
+
                 if response.status_code != 200:
-                    logger.error(f"Claude API error: {response.status_code}")
-                    return None
-                
+                    error_body = response.text[:200]  # First 200 chars of error
+                    logger.error(f"Claude API error {response.status_code}: {error_body}")
+                    return {"error": f"API {response.status_code}: {error_body[:100]}"}
+
                 result = response.json()
                 content = result.get("content", [{}])[0].get("text", "")
-                
+
+                if not content:
+                    logger.error("Claude returned empty response")
+                    return {"error": "Claude returned empty response"}
+
                 # Parse JSON
                 if "```json" in content:
                     content = content.split("```json")[1].split("```")[0]
                 elif "```" in content:
                     content = content.split("```")[1].split("```")[0]
-                
+
                 return json.loads(content.strip())
-                
+
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Claude response: {e}")
-            return None
+            logger.error(f"Failed to parse Claude response as JSON: {e}")
+            return {"error": f"JSON parse error: {str(e)[:80]}"}
+        except httpx.TimeoutException:
+            logger.error("Claude API timeout after 120 seconds")
+            return {"error": "API timeout (120s)"}
         except Exception as e:
             logger.error(f"Error calling Claude API: {e}")
-            return None
+            return {"error": f"API error: {str(e)[:80]}"}
     
     # =========================================================================
     # ANALYSIS METHODS
@@ -1060,9 +1073,13 @@ Respond with your analysis in JSON format.
     ) -> Analysis:
         """Parse Claude's JSON response into an Analysis object."""
         now = datetime.now(timezone.utc)
-        
+
         if not response:
             return self._create_error_analysis(signals_used, "No response from Claude")
+
+        # Check if response contains an error
+        if "error" in response:
+            return self._create_error_analysis(signals_used, response["error"])
         
         try:
             # Parse business model audit
