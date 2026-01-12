@@ -2,11 +2,11 @@
 Gann Sentinel Trader - Main Agent
 Orchestrates the trading system: scan signals, analyze, approve, execute.
 
-Version: 2.0.2 - Polymarket focus + Claude/config alignment
-- Added trade blocker recording for quote fetch failures
-- Added trade blocker recording for invalid price
-- Added trade blocker recording for position size too small
-- Now shows WHY trades weren't created in Telegram
+Version: 2.1.0 - MACA Telegram Integration
+- Callback query handling for inline button presses
+- Answer callback queries to clear loading state
+- /logs command for activity viewing via button
+- Integration with telegram_bot.py v2.2.0
 
 DISCLAIMER: Trading involves substantial risk of loss. This is an experimental
 system and nothing here constitutes financial advice. Only trade what you can
@@ -89,7 +89,8 @@ class GannSentinelAgent:
         self.executor = AlpacaExecutor()
         self.telegram = TelegramBot(
             token=Config.TELEGRAM_BOT_TOKEN,
-            chat_id=Config.TELEGRAM_CHAT_ID
+            chat_id=Config.TELEGRAM_CHAT_ID,
+            db=self.db
         )
         
         # Agent state
@@ -627,9 +628,16 @@ class GannSentinelAgent:
             await asyncio.sleep(2)
     
     async def _handle_command(self, cmd: Dict[str, Any]) -> None:
-        """Handle a Telegram command."""
+        """Handle a Telegram command or callback query."""
         command = cmd.get("command", "").lower()
-        
+
+        # Handle callback query (inline button press) - must answer to clear loading state
+        if cmd.get("type") == "callback_query":
+            callback_id = cmd.get("callback_id")
+            if callback_id:
+                # Answer immediately to clear the loading indicator
+                await self.telegram.answer_callback_query(callback_id)
+
         if command == "status":
             await self._handle_status_command()
         elif command == "pending":
@@ -648,6 +656,10 @@ class GannSentinelAgent:
             await self._send_daily_digest()
         elif command == "check":
             await self._handle_check_command(cmd.get("ticker"))
+        elif command == "logs":
+            await self._handle_logs_command(cmd.get("count", 20))
+        elif command == "export_logs":
+            await self._handle_export_logs_command(cmd.get("count", 50))
         elif command == "help":
             await self._handle_help_command()
     
@@ -758,7 +770,15 @@ class GannSentinelAgent:
         """Handle /scan command - manual scan trigger."""
         await self.telegram.send_message(f"{EMOJI_SEARCH} Running manual scan...", parse_mode=None)
         await self._full_scan_cycle()
-    
+
+    async def _handle_logs_command(self, count: int = 20) -> None:
+        """Handle /logs command - view recent activity."""
+        await self.telegram.send_logs_summary(count)
+
+    async def _handle_export_logs_command(self, count: int = 50) -> None:
+        """Handle /export_logs command - detailed activity export."""
+        await self.telegram.send_logs_export(count)
+
     async def _handle_check_command(self, ticker: str) -> None:
         """
         Handle /check [ticker] command - on-demand analysis.
@@ -990,6 +1010,8 @@ class GannSentinelAgent:
 /scan - Run manual scan cycle
 /digest - Send daily digest now
 /check [TICKER] - Analyze any stock
+/logs - View recent activity
+/export_logs [N] - Export N log entries
 /stop - Emergency halt
 /resume - Resume trading
 /help - Show this help
@@ -997,6 +1019,7 @@ class GannSentinelAgent:
 EXAMPLES:
   /check NVDA
   /check TSLA
+  /logs 50
 """
         await self.telegram.send_message(help_text, parse_mode=None)
 

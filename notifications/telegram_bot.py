@@ -2,12 +2,12 @@
 Telegram Bot for Gann Sentinel Trader
 Handles notifications and command processing for trade approvals and system control.
 
-Version: 2.1.0 - Added Activity Logging for Full Observability
-- All outgoing messages logged to database
-- All incoming commands logged to database
-- New /logs command to view activity
-- New /export_logs command for formatted export
-- Integration with Database class for persistent storage
+Version: 2.2.0 - MACA Telegram Upgrade
+- Inline buttons for approve/reject (no typing commands)
+- AI Council view (Grok, Perplexity, ChatGPT thesis display)
+- Enhanced chart analysis with 5-year context
+- Claude's synthesis as "Senior Trader" decision
+- Callback query handling for button presses
 
 Uses Unicode escape sequences for all emojis and special characters.
 """
@@ -70,10 +70,11 @@ class TelegramBot:
     """
     Telegram bot for Gann Sentinel Trader notifications and commands.
 
-    Version 2.1.0 adds full activity logging:
-    - Every message sent is logged to telegram_messages table
-    - Every command received is logged
-    - New /logs and /export_logs commands for observability
+    Version 2.2.0 adds MACA Telegram upgrade:
+    - Inline buttons for approve/reject actions
+    - AI Council display (all AI thesis proposals)
+    - Enhanced decision messages with chart analysis
+    - Callback query handling for button interactions
     """
 
     def __init__(
@@ -233,7 +234,7 @@ class TelegramBot:
             return False
 
     async def get_commands(self) -> List[Dict[str, Any]]:
-        """Poll for new commands."""
+        """Poll for new commands and callback queries."""
         if not self.is_configured:
             return []
 
@@ -257,6 +258,42 @@ class TelegramBot:
                 for update in data.get("result", []):
                     self.last_update_id = update["update_id"]
 
+                    # Handle callback_query (inline button press)
+                    if "callback_query" in update:
+                        cb = update["callback_query"]
+                        callback_data = cb.get("data", "")
+                        callback_id = cb.get("id")
+
+                        action, param = self.parse_callback_data(callback_data)
+
+                        cmd_data = {
+                            "type": "callback_query",
+                            "callback_id": callback_id
+                        }
+
+                        if action == "approve":
+                            cmd_data["command"] = "approve"
+                            cmd_data["trade_id"] = param
+                        elif action == "reject":
+                            cmd_data["command"] = "reject"
+                            cmd_data["trade_id"] = param
+                        elif action == "cmd":
+                            cmd_data["command"] = param  # status, pending, scan, help, logs
+                        else:
+                            cmd_data["command"] = action
+
+                        # Log incoming callback
+                        self._log_incoming(
+                            content=f"Button: {callback_data}",
+                            command=cmd_data.get("command", "unknown"),
+                            related_entity_id=param,
+                            metadata=cmd_data
+                        )
+
+                        commands.append(cmd_data)
+                        continue
+
+                    # Handle regular message
                     message = update.get("message", {})
                     text = message.get("text", "")
 
@@ -264,7 +301,7 @@ class TelegramBot:
                         parts = text.split(maxsplit=2)
                         command = parts[0][1:].lower()
 
-                        cmd_data = {"command": command}
+                        cmd_data = {"command": command, "type": "message"}
                         related_entity_id = None
                         related_entity_type = None
 
@@ -978,7 +1015,7 @@ class TelegramBot:
             f"{EMOJI_ROCKET} GANN SENTINEL STARTED\n\n"
             f"Time: {now.strftime('%Y-%m-%d %H:%M UTC')}\n"
             f"Mode: PAPER\n"
-            f"Version: 2.1.0 (MACA Preview)\n"
+            f"Version: 2.2.0 (MACA Telegram)\n"
             f"Approval Gate: ON\n\n"
             f"/status - Check status\n"
             f"/logs - View activity\n"
@@ -997,7 +1034,7 @@ class TelegramBot:
         analysis: Optional[Dict[str, Any]],
         current_price: Optional[float] = None
     ) -> bool:
-        """Send trade approval request."""
+        """Send trade approval request with inline buttons."""
         trade_id = trade.get("id", "")[:8]
         ticker = trade.get("ticker", "???")
         side = trade.get("side", "BUY").upper()
@@ -1026,18 +1063,17 @@ class TelegramBot:
             bar,
             "",
             f"Thesis: {thesis[:300]}...",
-            "",
-            f"/approve {trade_id}",
-            f"/reject {trade_id}",
         ])
 
         message = "\n".join(lines)
-        return await self.send_message(
-            message,
-            parse_mode=None,
+
+        # Send with inline buttons
+        keyboard = self.build_approval_keyboard(trade_id)
+        return await self.send_message_with_buttons(
+            text=message,
+            reply_markup=keyboard,
             message_type="approval_request",
-            related_entity_id=trade_id,
-            related_entity_type="trade"
+            related_entity_id=trade_id
         )
 
     async def send_status_message(
@@ -1056,7 +1092,7 @@ class TelegramBot:
             "",
             f"Status: {status}",
             f"Mode: PAPER",
-            f"Version: 2.1.0",
+            f"Version: 2.2.0",
             f"Approval Gate: ON",
         ]
 
@@ -1160,6 +1196,502 @@ class TelegramBot:
         self._technical_signals = []
 
         return await self.send_message(message, parse_mode=None, message_type="daily_digest")
+
+    # =========================================================================
+    # MACA TELEGRAM METHODS - Inline Buttons & AI Council Display
+    # =========================================================================
+
+    def build_approval_keyboard(self, trade_id: str) -> Dict[str, Any]:
+        """
+        Build inline keyboard with Approve/Reject buttons.
+
+        Returns Telegram InlineKeyboardMarkup structure.
+        """
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": f"{EMOJI_CHECK} APPROVE", "callback_data": f"approve_{trade_id}"},
+                    {"text": f"{EMOJI_CROSS} REJECT", "callback_data": f"reject_{trade_id}"}
+                ],
+                [
+                    {"text": f"{EMOJI_CHART} Status", "callback_data": "cmd_status"},
+                    {"text": f"{EMOJI_HOURGLASS} Pending", "callback_data": "cmd_pending"},
+                    {"text": f"{EMOJI_SEARCH} Scan", "callback_data": "cmd_scan"},
+                    {"text": f"{EMOJI_MEMO} Help", "callback_data": "cmd_help"}
+                ]
+            ]
+        }
+
+    def build_command_keyboard(self) -> Dict[str, Any]:
+        """Build inline keyboard with quick command buttons."""
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": f"{EMOJI_CHART} Status", "callback_data": "cmd_status"},
+                    {"text": f"{EMOJI_HOURGLASS} Pending", "callback_data": "cmd_pending"},
+                    {"text": f"{EMOJI_SEARCH} Scan", "callback_data": "cmd_scan"}
+                ],
+                [
+                    {"text": f"{EMOJI_SCROLL} Logs", "callback_data": "cmd_logs"},
+                    {"text": f"{EMOJI_MEMO} Help", "callback_data": "cmd_help"}
+                ]
+            ]
+        }
+
+    def parse_callback_data(self, callback_data: str) -> tuple:
+        """
+        Parse callback data from inline button press.
+
+        Returns:
+            Tuple of (action, parameter)
+            e.g., "approve_abc123" -> ("approve", "abc123")
+                  "cmd_status" -> ("cmd", "status")
+        """
+        if "_" in callback_data:
+            parts = callback_data.split("_", 1)
+            return parts[0], parts[1]
+        return callback_data, None
+
+    def parse_update(self, update: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Parse a Telegram update, handling both messages and callback queries.
+
+        Returns:
+            Dict with 'type' and relevant data, or None if not parseable
+        """
+        # Handle callback_query (inline button press)
+        if "callback_query" in update:
+            cb = update["callback_query"]
+            return {
+                "type": "callback_query",
+                "id": cb.get("id"),
+                "data": cb.get("data"),
+                "chat_id": cb.get("message", {}).get("chat", {}).get("id"),
+                "message_id": cb.get("message", {}).get("message_id")
+            }
+
+        # Handle regular message
+        if "message" in update:
+            msg = update["message"]
+            text = msg.get("text", "")
+            return {
+                "type": "message",
+                "text": text,
+                "chat_id": msg.get("chat", {}).get("id"),
+                "message_id": msg.get("message_id")
+            }
+
+        return None
+
+    def format_ai_proposal(self, proposal: Dict[str, Any]) -> str:
+        """
+        Format a single AI proposal section for Telegram.
+
+        Args:
+            proposal: Thesis proposal from Grok/Perplexity/ChatGPT
+
+        Returns:
+            Formatted string for display
+        """
+        source = proposal.get("ai_source", "unknown").upper()
+        proposal_type = proposal.get("proposal_type", "")
+        rec = proposal.get("recommendation", {})
+        evidence = proposal.get("supporting_evidence", {})
+
+        ticker = rec.get("ticker")
+        side = rec.get("side", "")
+        conviction = rec.get("conviction_score", 0)
+        thesis = rec.get("thesis", "")
+        catalyst = rec.get("catalyst", "")
+        time_horizon = rec.get("time_horizon", "")
+
+        # AI source emoji mapping
+        emoji_map = {
+            "GROK": EMOJI_BIRD,           # Social sentiment
+            "PERPLEXITY": EMOJI_TARGET,   # Fundamental research
+            "CHATGPT": EMOJI_BRAIN,       # Pattern recognition
+        }
+        emoji = emoji_map.get(source, EMOJI_CHART)
+
+        # Build conviction bar
+        bar = self._build_conviction_bar(conviction)
+        is_actionable = conviction >= 80
+
+        lines = []
+        lines.append(f"{emoji} {source}")
+        lines.append("-" * 30)
+
+        if proposal_type == "NO_OPPORTUNITY" or not ticker:
+            lines.append(f"Recommendation: PASS")
+            lines.append(f"Conviction: {conviction}/100")
+            lines.append(bar)
+            if thesis:
+                lines.append(f"\n{thesis[:200]}")
+        else:
+            lines.append(f"Ticker: {ticker}")
+            lines.append(f"Action: {side}")
+            lines.append(f"Conviction: {conviction}/100")
+            if is_actionable:
+                lines.append(f"{bar} {EMOJI_GREEN_CIRCLE}")
+            else:
+                lines.append(bar)
+
+            if thesis:
+                lines.append(f"\nThesis: {thesis[:180]}...")
+
+            if catalyst:
+                lines.append(f"\nCatalyst: {catalyst}")
+
+            if time_horizon:
+                lines.append(f"Horizon: {time_horizon}")
+
+        return "\n".join(lines)
+
+    def format_ai_council_message(self, proposals: List[Dict[str, Any]]) -> str:
+        """
+        Format Message 1: AI Council Views.
+
+        Shows thesis proposals from all AI analysts.
+        """
+        now = datetime.now(timezone.utc)
+
+        lines = []
+        lines.append("=" * 40)
+        lines.append(f"{EMOJI_SEARCH} MACA SCAN - AI COUNCIL")
+        lines.append(f"{now.strftime('%Y-%m-%d %H:%M UTC')}")
+        lines.append("=" * 40)
+
+        # Sort proposals by source for consistent ordering
+        source_order = {"grok": 0, "perplexity": 1, "chatgpt": 2}
+        sorted_proposals = sorted(
+            proposals,
+            key=lambda p: source_order.get(p.get("ai_source", "").lower(), 99)
+        )
+
+        for proposal in sorted_proposals:
+            lines.append("")
+            lines.append(self.format_ai_proposal(proposal))
+
+        lines.append("")
+        lines.append("=" * 40)
+        lines.append(f"{EMOJI_BRAIN} Claude's synthesis follows...")
+
+        return "\n".join(lines)
+
+    def format_decision_message(
+        self,
+        synthesis: Dict[str, Any],
+        technical_signals: List[Dict[str, Any]],
+        portfolio: Dict[str, Any],
+        trade_id: Optional[str] = None
+    ) -> str:
+        """
+        Format Message 2: Claude's Decision + Technical Analysis.
+
+        Shows chart analysis, Claude's synthesis, and trade status.
+        """
+        lines = []
+
+        # =====================================================================
+        # TECHNICAL ANALYSIS SECTION
+        # =====================================================================
+        if technical_signals:
+            lines.append("=" * 40)
+            lines.append(f"{EMOJI_CANDLE} CHART ANALYSIS")
+            lines.append("-" * 40)
+
+            for tech in technical_signals[:3]:
+                ticker = tech.get("ticker", "???")
+                price = tech.get("current_price", 0)
+                ms = tech.get("market_state", {})
+                state = ms.get("state", "unknown")
+                bias = ms.get("bias", "neutral")
+                confidence = ms.get("confidence", "low")
+                verdict = tech.get("verdict", "unknown")
+                channel = tech.get("trend_channel", {})
+                channel_pos = channel.get("position_in_channel", 0.5) if channel else 0.5
+
+                # Historical context if available
+                hist = tech.get("historical_context", {})
+                pct_from_ath = hist.get("pct_from_ath")
+                pct_52w = hist.get("pct_52w_change")
+
+                state_text = self._format_market_state(state, bias, confidence)
+                verdict_text = self._format_verdict(verdict)
+
+                lines.append(f"\n{EMOJI_BULLET} {ticker} @ ${price:,.2f}")
+                lines.append(f"  State: {state_text}")
+                lines.append(f"  Channel: {channel_pos:.0%} from bottom")
+                lines.append(f"  Verdict: {verdict_text}")
+
+                # Add historical context if available
+                if pct_from_ath is not None or pct_52w is not None:
+                    context_parts = []
+                    if pct_from_ath is not None:
+                        context_parts.append(f"{pct_from_ath:+.1f}% from ATH")
+                    if pct_52w is not None:
+                        context_parts.append(f"{pct_52w:+.1f}% 52wk")
+                    lines.append(f"  5yr: {', '.join(context_parts)}")
+
+                # Trade setup if allowed
+                hypo = tech.get("trade_hypothesis", {})
+                if hypo.get("allow_trade"):
+                    side = hypo.get("side", "").upper()
+                    r_mult = hypo.get("expected_r", 0)
+                    lines.append(f"  Setup: {side} (R={r_mult:.1f})")
+
+        # =====================================================================
+        # CLAUDE'S SYNTHESIS
+        # =====================================================================
+        lines.append("")
+        lines.append("=" * 40)
+        lines.append(f"{EMOJI_BRAIN} CLAUDE'S SYNTHESIS (Senior Trader)")
+        lines.append("=" * 40)
+
+        decision_type = synthesis.get("decision_type", "NO_TRADE")
+        rec = synthesis.get("recommendation", {})
+        selected = synthesis.get("selected_proposal", {})
+        cross_val = synthesis.get("cross_validation", {})
+        rationale = synthesis.get("rationale", "")
+
+        ticker = rec.get("ticker")
+        side = rec.get("side", "")
+        conviction = rec.get("conviction_score", 0)
+        thesis = rec.get("thesis", "")
+        position_size = rec.get("position_size_pct", 0)
+        stop_loss = rec.get("stop_loss_pct", 0)
+        time_horizon = rec.get("time_horizon", "")
+
+        bar = self._build_conviction_bar(conviction)
+        is_actionable = decision_type == "TRADE" and conviction >= 80
+
+        lines.append(f"\nDecision: {decision_type}")
+
+        if selected.get("ai_source"):
+            lines.append(f"Selected: {selected['ai_source'].upper()} proposal")
+
+        if ticker and side:
+            lines.append(f"\nRecommendation: {side} {ticker}")
+
+        lines.append(f"Conviction: {conviction}/100")
+        if is_actionable:
+            lines.append(f"{bar} {EMOJI_GREEN_CIRCLE} ACTIONABLE")
+        else:
+            lines.append(f"{bar} {EMOJI_WHITE_CIRCLE}")
+
+        if thesis:
+            lines.append(f"\nThesis: {thesis[:250]}...")
+
+        # Cross-validation
+        if cross_val:
+            lines.append(f"\nCross-Validation:")
+            fred = cross_val.get("fred_alignment", "N/A")
+            poly = cross_val.get("polymarket_alignment", "N/A")
+            tech = cross_val.get("technical_alignment", "N/A")
+            lines.append(f"  FRED: {fred}")
+            lines.append(f"  Polymarket: {poly}")
+            lines.append(f"  Technical: {tech}")
+
+        # Trade parameters
+        if is_actionable and (position_size or stop_loss):
+            lines.append(f"\nTrade Parameters:")
+            if stop_loss:
+                lines.append(f"  Stop Loss: {stop_loss}%")
+            if position_size:
+                lines.append(f"  Position Size: {position_size}%")
+            if time_horizon:
+                lines.append(f"  Horizon: {time_horizon}")
+
+        # =====================================================================
+        # TRADE STATUS
+        # =====================================================================
+        lines.append("")
+        lines.append("-" * 40)
+
+        if trade_id and is_actionable:
+            lines.append(f"{EMOJI_BELL} TRADE PENDING APPROVAL")
+            lines.append(f"Trade ID: {trade_id}")
+            lines.append("")
+            lines.append("Use buttons below to approve or reject")
+        elif decision_type == "NO_TRADE":
+            lines.append(f"{EMOJI_ZZZ} NO TRADE")
+            if rationale:
+                lines.append(f"Reason: {rationale[:150]}")
+        else:
+            lines.append(f"{EMOJI_WHITE_CIRCLE} Watching - no action required")
+
+        # =====================================================================
+        # PORTFOLIO SNAPSHOT
+        # =====================================================================
+        if portfolio:
+            lines.append("")
+            lines.append("-" * 40)
+            lines.append(f"{EMOJI_MONEY} PORTFOLIO")
+
+            equity = portfolio.get("equity", 0)
+            cash = portfolio.get("cash", 0)
+            position_count = portfolio.get("position_count", 0)
+
+            lines.append(f"  Equity: ${equity:,.2f}")
+            lines.append(f"  Cash: ${cash:,.2f}")
+            lines.append(f"  Positions: {position_count}")
+
+        return "\n".join(lines)
+
+    async def send_message_with_buttons(
+        self,
+        text: str,
+        reply_markup: Dict[str, Any],
+        chat_id: Optional[str] = None,
+        parse_mode: Optional[str] = None,
+        message_type: str = "notification",
+        related_entity_id: Optional[str] = None
+    ) -> bool:
+        """
+        Send a message with inline keyboard buttons.
+
+        Args:
+            text: Message text
+            reply_markup: InlineKeyboardMarkup dict
+            chat_id: Target chat (defaults to self.chat_id)
+            parse_mode: Optional parse mode
+            message_type: For logging
+            related_entity_id: For logging
+        """
+        if not self.is_configured:
+            logger.warning("Telegram not configured - message not sent")
+            return False
+
+        target_chat = chat_id or self.chat_id
+
+        # Log outgoing message
+        self._log_outgoing(
+            content=text,
+            message_type=message_type,
+            related_entity_id=related_entity_id,
+            metadata={"has_buttons": True}
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                payload = {
+                    "chat_id": target_chat,
+                    "text": text,
+                    "reply_markup": reply_markup
+                }
+
+                if parse_mode:
+                    payload["parse_mode"] = parse_mode
+
+                response = await client.post(
+                    f"{self.base_url}/sendMessage",
+                    json=payload
+                )
+
+                if response.status_code == 200:
+                    return True
+
+                # If failed, try without parse_mode
+                if parse_mode and response.status_code == 400:
+                    logger.warning("Parse mode failed, retrying without formatting")
+                    payload.pop("parse_mode", None)
+                    response = await client.post(
+                        f"{self.base_url}/sendMessage",
+                        json=payload
+                    )
+                    return response.status_code == 200
+
+                logger.error(f"Telegram API error: {response.status_code} - {response.text}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error sending Telegram message with buttons: {e}")
+            return False
+
+    async def answer_callback_query(
+        self,
+        callback_query_id: str,
+        text: Optional[str] = None,
+        show_alert: bool = False
+    ) -> bool:
+        """
+        Answer a callback query (required by Telegram API after button press).
+
+        Args:
+            callback_query_id: The callback query ID from the update
+            text: Optional text to show (toast notification)
+            show_alert: If True, shows a modal alert instead of toast
+        """
+        if not self.is_configured:
+            return False
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                payload = {"callback_query_id": callback_query_id}
+
+                if text:
+                    payload["text"] = text
+                    payload["show_alert"] = show_alert
+
+                response = await client.post(
+                    f"{self.base_url}/answerCallbackQuery",
+                    json=payload
+                )
+
+                return response.status_code == 200
+
+        except Exception as e:
+            logger.error(f"Error answering callback query: {e}")
+            return False
+
+    async def send_maca_scan_summary(
+        self,
+        proposals: List[Dict[str, Any]],
+        synthesis: Dict[str, Any],
+        technical_signals: List[Dict[str, Any]],
+        portfolio: Dict[str, Any],
+        trade_id: Optional[str] = None
+    ) -> bool:
+        """
+        Send full MACA scan summary as two messages.
+
+        Message 1: AI Council views (Grok, Perplexity, ChatGPT)
+        Message 2: Chart analysis + Claude's decision + buttons
+        """
+        import asyncio
+
+        # Message 1: AI Council
+        msg1 = self.format_ai_council_message(proposals)
+        await self.send_message(msg1, parse_mode=None, message_type="maca_ai_council")
+
+        # Small delay between messages
+        await asyncio.sleep(0.5)
+
+        # Message 2: Decision with buttons
+        msg2 = self.format_decision_message(
+            synthesis=synthesis,
+            technical_signals=technical_signals,
+            portfolio=portfolio,
+            trade_id=trade_id
+        )
+
+        if trade_id and synthesis.get("decision_type") == "TRADE":
+            # Send with approval buttons
+            keyboard = self.build_approval_keyboard(trade_id)
+            return await self.send_message_with_buttons(
+                text=msg2,
+                reply_markup=keyboard,
+                message_type="maca_decision",
+                related_entity_id=trade_id
+            )
+        else:
+            # Send with command buttons only
+            keyboard = self.build_command_keyboard()
+            return await self.send_message_with_buttons(
+                text=msg2,
+                reply_markup=keyboard,
+                message_type="maca_decision"
+            )
 
 
 async def send_telegram_message(text: str) -> bool:

@@ -2,7 +2,10 @@
 MACA Orchestrator for Gann Sentinel Trader
 Coordinates the Multi-Agent Consensus Architecture 4-phase process.
 
-Version: 1.0.0 - Initial MACA Integration
+Version: 1.1.0 - MACA Telegram Integration
+- Uses send_maca_scan_summary() for AI Council + Decision display
+- Inline buttons for approve/reject
+- Enhanced notification with technical signals and portfolio
 
 Phases:
 1. Parallel thesis generation (Grok, Perplexity, ChatGPT)
@@ -161,7 +164,10 @@ class MACAOrchestrator:
             final_decision = await self._phase4_final_decision(
                 cycle_id=cycle_id,
                 synthesis=synthesis,
-                reviews=reviews
+                reviews=reviews,
+                proposals=proposals,
+                technical_analysis=technical_analysis,
+                portfolio=portfolio
             )
 
             phase4_complete = datetime.now(timezone.utc)
@@ -523,7 +529,10 @@ class MACAOrchestrator:
         self,
         cycle_id: str,
         synthesis: Dict[str, Any],
-        reviews: List[Dict[str, Any]]
+        reviews: List[Dict[str, Any]],
+        proposals: Optional[List[Dict[str, Any]]] = None,
+        technical_analysis: Optional[Dict[str, Any]] = None,
+        portfolio: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Phase 4: Claude makes final decision based on reviews.
@@ -532,6 +541,9 @@ class MACAOrchestrator:
             cycle_id: Current scan cycle ID
             synthesis: Claude's synthesis from Phase 2
             reviews: Peer reviews from Phase 3
+            proposals: Original thesis proposals from Phase 1 (for notification)
+            technical_analysis: Technical chart analysis (for notification)
+            portfolio: Current portfolio state (for notification)
 
         Returns:
             Final decision with adjusted conviction
@@ -582,7 +594,14 @@ class MACAOrchestrator:
 
         # Notify via Telegram if configured
         if self.telegram:
-            await self._notify_final_decision(final_decision, synthesis, reviews)
+            await self._notify_final_decision(
+                final_decision=final_decision,
+                synthesis=synthesis,
+                reviews=reviews,
+                proposals=proposals or [],
+                technical_analysis=technical_analysis,
+                portfolio=portfolio or {}
+            )
 
         return final_decision
 
@@ -610,40 +629,85 @@ class MACAOrchestrator:
         self,
         final_decision: Dict[str, Any],
         synthesis: Dict[str, Any],
-        reviews: List[Dict[str, Any]]
+        reviews: List[Dict[str, Any]],
+        proposals: List[Dict[str, Any]],
+        technical_analysis: Optional[Dict[str, Any]] = None,
+        portfolio: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Send Telegram notification for final decision."""
+        """
+        Send Telegram notification for final decision using MACA display.
+
+        Uses the new send_maca_scan_summary() method for rich display with:
+        - AI Council views (all proposals)
+        - Chart analysis with technical signals
+        - Claude's synthesis decision
+        - Inline approve/reject buttons
+        """
         try:
-            rec = synthesis.get("recommendation", {})
-            ticker = rec.get("ticker", "N/A")
-            side = rec.get("side", "N/A")
+            # Build technical signals list for display
+            technical_signals = []
+            if technical_analysis:
+                # technical_analysis might be a single dict or have nested structure
+                if isinstance(technical_analysis, dict):
+                    # If it has a ticker, it's a single signal
+                    if "ticker" in technical_analysis:
+                        technical_signals.append(technical_analysis)
+                    # If it has tickers as keys, extract them
+                    else:
+                        for key, value in technical_analysis.items():
+                            if isinstance(value, dict) and "ticker" in value:
+                                technical_signals.append(value)
 
+            # Get trade_id if this is actionable
+            trade_id = None
             if final_decision.get("proceed_to_execution"):
-                message = (
-                    f"MACA Trade Signal\n\n"
-                    f"Ticker: {ticker}\n"
-                    f"Side: {side}\n"
-                    f"Conviction: {final_decision.get('final_conviction')}/100\n"
-                    f"Approvals: {final_decision.get('approval_count')}/{final_decision.get('total_reviews')}\n"
-                    f"Note: {final_decision.get('decision_note')}\n\n"
-                    f"Thesis: {rec.get('thesis', 'N/A')}"
-                )
-            else:
-                message = (
-                    f"MACA Cycle Complete\n\n"
-                    f"Decision: NO TRADE\n"
-                    f"Considered: {ticker} ({side})\n"
-                    f"Final Conviction: {final_decision.get('final_conviction')}/100\n"
-                    f"Approvals: {final_decision.get('approval_count')}/{final_decision.get('total_reviews')}\n"
-                    f"Note: {final_decision.get('decision_note')}"
-                )
+                # Trade ID would be generated by the trade creation process
+                # For now, use cycle_id as placeholder - actual trade_id comes from trade creation
+                trade_id = final_decision.get("cycle_id", "")[:8]
 
-            await self.telegram.send_message(
-                message,
-                message_type="maca_decision"
+            # Use the new MACA scan summary method with inline buttons
+            await self.telegram.send_maca_scan_summary(
+                proposals=proposals,
+                synthesis=synthesis,
+                technical_signals=technical_signals,
+                portfolio=portfolio or {},
+                trade_id=trade_id if final_decision.get("proceed_to_execution") else None
             )
+
         except Exception as e:
-            logger.error(f"Failed to send decision notification: {e}")
+            logger.error(f"Failed to send MACA decision notification: {e}")
+            # Fallback to simple message
+            try:
+                rec = synthesis.get("recommendation", {})
+                ticker = rec.get("ticker", "N/A")
+                side = rec.get("side", "N/A")
+
+                if final_decision.get("proceed_to_execution"):
+                    message = (
+                        f"MACA Trade Signal\n\n"
+                        f"Ticker: {ticker}\n"
+                        f"Side: {side}\n"
+                        f"Conviction: {final_decision.get('final_conviction')}/100\n"
+                        f"Approvals: {final_decision.get('approval_count')}/{final_decision.get('total_reviews')}\n"
+                        f"Note: {final_decision.get('decision_note')}\n\n"
+                        f"Thesis: {rec.get('thesis', 'N/A')}"
+                    )
+                else:
+                    message = (
+                        f"MACA Cycle Complete\n\n"
+                        f"Decision: NO TRADE\n"
+                        f"Considered: {ticker} ({side})\n"
+                        f"Final Conviction: {final_decision.get('final_conviction')}/100\n"
+                        f"Approvals: {final_decision.get('approval_count')}/{final_decision.get('total_reviews')}\n"
+                        f"Note: {final_decision.get('decision_note')}"
+                    )
+
+                await self.telegram.send_message(
+                    message,
+                    message_type="maca_decision"
+                )
+            except Exception as fallback_error:
+                logger.error(f"Fallback notification also failed: {fallback_error}")
 
     def _empty_proposal(self, cycle_id: str, source: str, reason: str) -> Dict[str, Any]:
         """Return empty proposal when generation fails."""
