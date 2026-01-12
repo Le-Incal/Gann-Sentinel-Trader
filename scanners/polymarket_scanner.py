@@ -500,15 +500,22 @@ class PolymarketScanner:
 
         # Layer 2: Pattern matching for sports
         sports_patterns = [
-            # Football/Soccer club patterns
+            # Football/Soccer club patterns - European naming conventions
             r'\bfc\s+\w+',           # "FC Nantes", "FC Barcelona"
             r'\b\w+\s+fc\b',         # "Liverpool FC", "Juventus FC"
             r'\bafc\s+\w+',          # "AFC Bournemouth"
             r'\b\w+\s+afc\b',        # "Arsenal AFC"
             r'\bsc\s+\w+',           # "SC Freiburg"
             r'\b\w+\s+sc\b',         # Sports Club suffix
+            r'\brcd\s+\w+',          # "RCD Espanyol" (Real Club Deportivo)
+            r'\bcd\s+\w+',           # "CD Leganes" (Club Deportivo)
+            r'\bcf\s+\w+',           # "CF Monterrey" (Club de Futbol)
+            r'\b\w+\s+cf\b',         # "Valencia CF"
+            r'\breal\s+(madrid|sociedad|betis|valladolid|zaragoza)\b',  # Spanish "Real" clubs
+            r'\batletico\b',         # Atletico Madrid, etc.
             r'\bunited\b.*\bvs\b',   # "Manchester United vs..."
             r'\bcity\b.*\bvs\b',     # "Manchester City vs..."
+            r'\bbarcelona\b.*\b(win|match|game|score)\b',  # FC Barcelona context
 
             # Betting language patterns
             r'\bo/u\s+\d',           # "O/U 2.5" (over/under)
@@ -517,14 +524,26 @@ class PolymarketScanner:
             r'\bto win\s+on\s+\d{4}-\d{2}-\d{2}',  # "to win on 2026-01-16"
             r'\bwill\s+\w+\s+win\s+on\s+\d{4}',    # "will X win on YYYY"
             r'\b1st round\b.*\bwin\b',              # Election-style but for sports
+            r'\bwin\s+the\s+most\s+seats\b',        # Political party seats
+
+            # Gaming/Entertainment (not stock relevant unless about gaming companies)
+            r'\bgta\s*\d+\b',        # "GTA 6" - video game
+            r'\bcall\s+of\s+duty\b',
+            r'\bfortnite\b',
+            r'\bminecraft\b',
+            r'\bgame\s+cost\b',      # "game cost $X"
 
             # Weather patterns (not stock relevant)
             r'\bhighest temperature\b',
             r'\bweather\b.*\btemperature\b',
             r'\b\d+°[fc]\b',         # Temperature with degree symbol
 
+            # Political parties (unless policy-related)
+            r'\bcommunist\s+party\b.*\bseats\b',
+            r'\bparliament(ary)?\s+(election|seats)\b',
+
             # Generic sports match patterns
-            r'\bvs\.?\s+[a-z]+\s+(fc|afc|sc|united|city|rovers|wanderers)\b',
+            r'\bvs\.?\s+[a-z]+\s+(fc|afc|sc|cf|rcd|cd|united|city|rovers|wanderers)\b',
         ]
 
         for pattern in sports_patterns:
