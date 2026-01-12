@@ -2,7 +2,10 @@
 Gann Sentinel Trader - Database
 SQLite storage for signals, analyses, trades, portfolio state, and telegram activity logs.
 
-Version: 2.1.0 - Added Telegram message logging for full system observability
+Version: 2.2.0 - Learning Engine integration
+- Added learning tables (trade_outcomes, signal_performance, source_reliability, etc.)
+- get_learning_stats() and get_source_reliability() methods
+- SPY benchmark tracking
 """
 
 import sqlite3
@@ -246,7 +249,147 @@ class Database:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_reviews_cycle ON ai_reviews(scan_cycle_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_scan_cycles_status ON scan_cycles(status)")
 
+            # Learning Engine tables
+            self._init_learning_tables(cursor)
+
             logger.info(f"Database initialized at {self.db_path}")
+
+    def _init_learning_tables(self, cursor) -> None:
+        """Initialize Learning Engine tables."""
+        # Trade outcomes table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trade_outcomes (
+                id TEXT PRIMARY KEY,
+                trade_id TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                side TEXT NOT NULL,
+                entry_price REAL NOT NULL,
+                entry_date TEXT NOT NULL,
+                entry_conviction INTEGER,
+                entry_thesis TEXT,
+                exit_price REAL,
+                exit_date TEXT,
+                exit_reason TEXT,
+                realized_pnl REAL,
+                realized_pnl_pct REAL,
+                hold_time_hours REAL,
+                max_drawdown_pct REAL,
+                max_gain_pct REAL,
+                spy_return_same_period REAL,
+                alpha REAL,
+                primary_signal_source TEXT,
+                signal_sources_agreed INTEGER,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (trade_id) REFERENCES trades(id)
+            )
+        """)
+
+        # Signal performance table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS signal_performance (
+                id TEXT PRIMARY KEY,
+                signal_id TEXT,
+                source TEXT NOT NULL,
+                signal_type TEXT,
+                ticker TEXT,
+                signal_date TEXT NOT NULL,
+                predicted_direction TEXT,
+                conviction_at_signal INTEGER,
+                actual_direction TEXT,
+                price_at_signal REAL,
+                price_after_1d REAL,
+                price_after_5d REAL,
+                price_after_20d REAL,
+                accurate_1d BOOLEAN,
+                accurate_5d BOOLEAN,
+                accurate_20d BOOLEAN,
+                evaluated_at TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Source reliability table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS source_reliability (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                period TEXT NOT NULL,
+                total_signals INTEGER,
+                accurate_signals INTEGER,
+                accuracy_rate REAL,
+                avg_conviction_when_right REAL,
+                avg_conviction_when_wrong REAL,
+                accuracy_by_sector TEXT,
+                accuracy_trend TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source, period)
+            )
+        """)
+
+        # Market regimes table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS market_regimes (
+                id TEXT PRIMARY KEY,
+                date TEXT NOT NULL UNIQUE,
+                vix_level REAL,
+                vix_regime TEXT,
+                spy_20d_return REAL,
+                spy_trend TEXT,
+                advance_decline_ratio REAL,
+                pct_above_50dma REAL,
+                leading_sectors TEXT,
+                lagging_sectors TEXT,
+                our_win_rate_this_regime REAL,
+                trades_in_regime INTEGER,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Learning stats table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS learning_stats (
+                id TEXT PRIMARY KEY,
+                stat_type TEXT NOT NULL,
+                stat_key TEXT,
+                period TEXT NOT NULL,
+                total_trades INTEGER,
+                winning_trades INTEGER,
+                win_rate REAL,
+                avg_return REAL,
+                total_return REAL,
+                sharpe_ratio REAL,
+                max_drawdown REAL,
+                avg_hold_time_hours REAL,
+                spy_return_same_period REAL,
+                alpha REAL,
+                beta REAL,
+                insights TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(stat_type, stat_key, period)
+            )
+        """)
+
+        # SPY benchmarks table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS spy_benchmarks (
+                id TEXT PRIMARY KEY,
+                date TEXT NOT NULL UNIQUE,
+                open_price REAL,
+                close_price REAL,
+                daily_return REAL,
+                cumulative_return_30d REAL,
+                cumulative_return_90d REAL,
+                cumulative_return_ytd REAL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Indices for learning tables
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_trade_outcomes_ticker ON trade_outcomes(ticker)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_trade_outcomes_date ON trade_outcomes(exit_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_signal_performance_source ON signal_performance(source)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_signal_performance_date ON signal_performance(signal_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_market_regimes_date ON market_regimes(date)")
 
     # =========================================================================
     # TELEGRAM MESSAGE LOGGING
@@ -944,6 +1087,199 @@ class Database:
             cursor.execute("SELECT * FROM errors ORDER BY created_at DESC LIMIT ?", (limit,))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
+
+    # =========================================================================
+    # LEARNING ENGINE METHODS
+    # =========================================================================
+
+    def get_learning_stats(
+        self,
+        stat_type: str,
+        stat_key: Optional[str],
+        period: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get learning statistics for Claude's context.
+
+        Args:
+            stat_type: Type of stat (overall, by_source, by_conviction, by_regime)
+            stat_key: Specific key within type (e.g., "grok" for by_source)
+            period: Time period (7d, 30d, 90d, all_time)
+
+        Returns:
+            Dict with stats or None if not found
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            if stat_key:
+                cursor.execute("""
+                    SELECT * FROM learning_stats
+                    WHERE stat_type = ? AND stat_key = ? AND period = ?
+                """, (stat_type, stat_key, period))
+            else:
+                cursor.execute("""
+                    SELECT * FROM learning_stats
+                    WHERE stat_type = ? AND stat_key IS NULL AND period = ?
+                """, (stat_type, period))
+
+            row = cursor.fetchone()
+            if row:
+                result = dict(row)
+                if result.get("insights"):
+                    result["insights"] = json.loads(result["insights"])
+                return result
+            return None
+
+    def save_learning_stats(self, stats: Dict[str, Any]) -> None:
+        """Save or update learning statistics."""
+        import uuid
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            stat_id = stats.get("id") or str(uuid.uuid4())
+            insights_json = json.dumps(stats.get("insights")) if stats.get("insights") else None
+
+            cursor.execute("""
+                INSERT OR REPLACE INTO learning_stats
+                (id, stat_type, stat_key, period, total_trades, winning_trades,
+                 win_rate, avg_return, total_return, sharpe_ratio, max_drawdown,
+                 avg_hold_time_hours, spy_return_same_period, alpha, beta, insights, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                stat_id,
+                stats.get("stat_type"),
+                stats.get("stat_key"),
+                stats.get("period"),
+                stats.get("total_trades"),
+                stats.get("winning_trades"),
+                stats.get("win_rate"),
+                stats.get("avg_return"),
+                stats.get("total_return"),
+                stats.get("sharpe_ratio"),
+                stats.get("max_drawdown"),
+                stats.get("avg_hold_time_hours"),
+                stats.get("spy_return_same_period"),
+                stats.get("alpha"),
+                stats.get("beta"),
+                insights_json,
+                datetime.now(timezone.utc).isoformat()
+            ))
+
+    def get_source_reliability(self, source: str, period: str) -> Optional[Dict[str, Any]]:
+        """
+        Get reliability metrics for a signal source.
+
+        Args:
+            source: Signal source (grok, perplexity, chatgpt, technical)
+            period: Time period (7d, 30d, 90d, all_time)
+
+        Returns:
+            Dict with accuracy metrics or None
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM source_reliability
+                WHERE source = ? AND period = ?
+            """, (source, period))
+
+            row = cursor.fetchone()
+            if row:
+                result = dict(row)
+                if result.get("accuracy_by_sector"):
+                    result["accuracy_by_sector"] = json.loads(result["accuracy_by_sector"])
+                return result
+            return None
+
+    def save_source_reliability(self, reliability: Dict[str, Any]) -> None:
+        """Save or update source reliability metrics."""
+        import uuid
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            rel_id = reliability.get("id") or str(uuid.uuid4())
+            sector_json = json.dumps(reliability.get("accuracy_by_sector")) if reliability.get("accuracy_by_sector") else None
+
+            cursor.execute("""
+                INSERT OR REPLACE INTO source_reliability
+                (id, source, period, total_signals, accurate_signals, accuracy_rate,
+                 avg_conviction_when_right, avg_conviction_when_wrong, accuracy_by_sector,
+                 accuracy_trend, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                rel_id,
+                reliability.get("source"),
+                reliability.get("period"),
+                reliability.get("total_signals"),
+                reliability.get("accurate_signals"),
+                reliability.get("accuracy_rate"),
+                reliability.get("avg_conviction_when_right"),
+                reliability.get("avg_conviction_when_wrong"),
+                sector_json,
+                reliability.get("accuracy_trend"),
+                datetime.now(timezone.utc).isoformat()
+            ))
+
+    def save_trade_outcome(self, outcome: Dict[str, Any]) -> None:
+        """Save a trade outcome for learning analysis."""
+        import uuid
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            outcome_id = outcome.get("id") or str(uuid.uuid4())
+
+            cursor.execute("""
+                INSERT INTO trade_outcomes
+                (id, trade_id, ticker, side, entry_price, entry_date, entry_conviction,
+                 entry_thesis, exit_price, exit_date, exit_reason, realized_pnl,
+                 realized_pnl_pct, hold_time_hours, max_drawdown_pct, max_gain_pct,
+                 spy_return_same_period, alpha, primary_signal_source, signal_sources_agreed)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                outcome_id,
+                outcome.get("trade_id"),
+                outcome.get("ticker"),
+                outcome.get("side"),
+                outcome.get("entry_price"),
+                outcome.get("entry_date"),
+                outcome.get("entry_conviction"),
+                outcome.get("entry_thesis"),
+                outcome.get("exit_price"),
+                outcome.get("exit_date"),
+                outcome.get("exit_reason"),
+                outcome.get("realized_pnl"),
+                outcome.get("realized_pnl_pct"),
+                outcome.get("hold_time_hours"),
+                outcome.get("max_drawdown_pct"),
+                outcome.get("max_gain_pct"),
+                outcome.get("spy_return_same_period"),
+                outcome.get("alpha"),
+                outcome.get("primary_signal_source"),
+                outcome.get("signal_sources_agreed")
+            ))
+
+    def get_trade_outcomes(
+        self,
+        limit: int = 100,
+        ticker: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get trade outcomes for analysis."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            query = "SELECT * FROM trade_outcomes"
+            params = []
+
+            if ticker:
+                query += " WHERE ticker = ?"
+                params.append(ticker)
+
+            query += " ORDER BY exit_date DESC LIMIT ?"
+            params.append(limit)
+
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
 
 
 # Import timedelta for the activity summary

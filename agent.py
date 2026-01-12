@@ -2,11 +2,14 @@
 Gann Sentinel Trader - Main Agent
 Orchestrates the trading system: scan signals, analyze, approve, execute.
 
-Version: 2.1.0 - MACA Telegram Integration
-- Callback query handling for inline button presses
-- Answer callback queries to clear loading state
-- /logs command for activity viewing via button
-- Integration with telegram_bot.py v2.2.0
+Version: 2.2.0 - Learning Engine Integration
+- Smart scheduling (2 scans/day at 9:35 AM & 12:30 PM ET)
+- Learning Engine for performance tracking and context injection
+- Trade outcome tracking with alpha calculation
+- Source reliability scoring
+- Market regime detection
+
+Previous (2.1.0): MACA Telegram Integration with inline buttons
 
 DISCLAIMER: Trading involves substantial risk of loss. This is an experimental
 system and nothing here constitutes financial advice. Only trade what you can
@@ -33,6 +36,7 @@ from notifications.telegram_bot import TelegramBot
 from models.signals import Signal
 from models.analysis import Analysis, Recommendation
 from models.trades import Trade, TradeStatus, OrderType, OrderSide, Position
+from learning_engine import LearningEngine, SmartScheduler
 
 # Configure logging
 logging.basicConfig(
@@ -92,21 +96,26 @@ class GannSentinelAgent:
             chat_id=Config.TELEGRAM_CHAT_ID,
             db=self.db
         )
-        
+
+        # Learning Engine & Smart Scheduler
+        self.learning_engine = LearningEngine(db=self.db, executor=self.executor)
+        self.scheduler = SmartScheduler()
+
         # Agent state
         self.running = False
         self.last_scan_time: Optional[datetime] = None
         self.watchlist: List[str] = []
-        
+
         # Track pending trade for scan summary
         self._current_pending_trade_id: Optional[str] = None
-        
+
         # Daily digest scheduling
         self.last_digest_time: Optional[datetime] = None
         self.digest_hour_utc = 21  # 9 PM UTC = 4 PM ET / 1 PM PT
-        
+
         logger.info("All components initialized successfully")
         logger.info(f"Technical Scanner: {'CONFIGURED' if self.technical.is_configured else 'NOT CONFIGURED'}")
+        logger.info(f"Learning Engine: ENABLED (Smart Schedule: 2 scans/day)")
     
     # =========================================================================
     # MAIN LOOP
@@ -168,10 +177,12 @@ class GannSentinelAgent:
         """Single iteration of the main loop."""
         now = datetime.now(timezone.utc)
         
-        # Check if it's time for a scan
+        # Check if it's time for a scan (Smart Scheduler)
         if self._should_scan(now):
+            scan_type = self.scheduler.get_scan_type(now)
             await self._full_scan_cycle()
             self.last_scan_time = now
+            self.scheduler.record_scan(now, scan_type)
         
         # Check if it's time for daily digest
         await self._check_daily_digest(now)
@@ -180,24 +191,22 @@ class GannSentinelAgent:
         await self._check_positions()
     
     def _should_scan(self, now: datetime) -> bool:
-        """Check if we should run a scan cycle."""
-        # Market hours check (US market: 9:30 AM - 4:00 PM ET)
-        # ET is UTC-5 (standard) or UTC-4 (daylight)
-        hour_utc = now.hour
-        
-        # Rough market hours in UTC: 14:30 - 21:00 (EST) or 13:30 - 20:00 (EDT)
-        market_open = 13  # Conservative start
-        market_close = 21  # Conservative end
-        
-        if not (market_open <= hour_utc <= market_close):
-            return False
-        
-        # Check scan interval
-        if self.last_scan_time is None:
+        """
+        Check if we should run a scan cycle using Smart Scheduler.
+
+        Smart Schedule (saves ~75% API costs):
+        - Morning scan: 9:35 AM ET (14:35 UTC)
+        - Midday scan: 12:30 PM ET (17:30 UTC)
+        - No weekends
+        - Manual /check and /scan always work
+        """
+        # Use Smart Scheduler for automatic scans
+        if self.scheduler.should_scan(now):
+            scan_type = self.scheduler.get_scan_type(now)
+            logger.info(f"Smart Scheduler: {scan_type} scan window")
             return True
-        
-        elapsed = (now - self.last_scan_time).total_seconds() / 60
-        return elapsed >= Config.SCAN_INTERVAL_MINUTES
+
+        return False
     
     async def _check_daily_digest(self, now: datetime) -> None:
         """Check if daily digest should be sent."""
