@@ -2,7 +2,7 @@
 Gann Sentinel Trader - Main Agent
 Orchestrates the trading system: scan signals, analyze, approve, execute.
 
-Version: 2.0.1 - Fixed silent trade creation failures
+Version: 2.0.2 - Polymarket focus + Claude/config alignment
 - Added trade blocker recording for quote fetch failures
 - Added trade blocker recording for invalid price
 - Added trade blocker recording for position size too small

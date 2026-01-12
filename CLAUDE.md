@@ -142,4 +142,4 @@ database.py                # SQLite storage
 
 ## Version
 
-Current: v2.0.2 (Polymarket focus + Claude fix)
+Current: v2.0.2 (Polymarket focus + Claude/config alignment)

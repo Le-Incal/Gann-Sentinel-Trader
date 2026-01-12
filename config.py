@@ -25,11 +25,11 @@ class Config:
     # xAI (Grok)
     XAI_API_KEY: str = os.getenv("XAI_API_KEY", "")
     XAI_BASE_URL: str = "https://api.x.ai/v1"
-    XAI_MODEL: str = "grok-4-1-fast-reasoning"
-    
+    XAI_MODEL: str = "grok-3-fast-beta"  # Matches scanners/grok_scanner.py
+
     # Anthropic (Claude)
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-    CLAUDE_MODEL: str = "claude-sonnet-4-20250514"
+    CLAUDE_MODEL: str = "claude-3-sonnet-20240229"  # Matches analyzers/claude_analyst.py
     
     # Alpaca
     ALPACA_API_KEY: str = os.getenv("ALPACA_API_KEY", "")

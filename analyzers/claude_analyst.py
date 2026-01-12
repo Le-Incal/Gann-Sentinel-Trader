@@ -414,7 +414,7 @@ class ClaudeAnalyst:
         self.historical_patterns = HISTORICAL_PATTERNS
         self.second_order_effects = SECOND_ORDER_EFFECTS
         
-        logger.info(f"Claude Analyst v3.0.0 initialized - Business Intelligence Mode")
+        logger.info(f"Claude Analyst v4.0.0 initialized - Business Intelligence Mode")
     
     def refresh_temporal_context(self) -> None:
         """Refresh temporal context."""
@@ -1223,7 +1223,7 @@ if __name__ == "__main__":
     
     async def test():
         analyst = ClaudeAnalyst()
-        print(f"Claude Analyst v3.0.0 initialized")
+        print(f"Claude Analyst v4.0.0 initialized")
         print(f"API Key configured: {bool(analyst.api_key)}")
         print(f"Historical patterns: {len(analyst.historical_patterns)}")
         print(f"Second-order effects: {len(analyst.second_order_effects)}")
