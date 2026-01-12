@@ -29,7 +29,7 @@ class Config:
 
     # Anthropic (Claude)
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-    CLAUDE_MODEL: str = "claude-3-5-sonnet-latest"  # Matches analyzers/claude_analyst.py
+    CLAUDE_MODEL: str = "claude-sonnet-4-20250514"  # Matches analyzers/claude_analyst.py
     
     # Alpaca
     ALPACA_API_KEY: str = os.getenv("ALPACA_API_KEY", "")
