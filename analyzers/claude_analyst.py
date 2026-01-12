@@ -406,8 +406,8 @@ class ClaudeAnalyst:
         if not self.api_key:
             logger.warning("ANTHROPIC_API_KEY not set - analysis disabled")
         
-        # Use Claude 3 Sonnet - stable production model
-        self.model = "claude-3-sonnet-20240229"
+        # Use Claude 3.5 Sonnet - latest stable model
+        self.model = "claude-3-5-sonnet-latest"
         self.base_url = "https://api.anthropic.com/v1/messages"
         
         self.temporal_context = get_temporal_context()
