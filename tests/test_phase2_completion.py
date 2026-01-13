@@ -279,9 +279,8 @@ def test_get_cost_by_day():
                 "metadata": cycle["metadata"]
             })
 
-        # Get daily breakdown from cost_summary
-        summary = db.get_cost_summary(days=7)
-        daily = summary.get("by_day", [])
+        # Get daily breakdown using get_cost_by_day method
+        daily = db.get_cost_by_day(days=7)
 
         assert isinstance(daily, list), "Should return list"
         assert len(daily) > 0, "Should have daily data"

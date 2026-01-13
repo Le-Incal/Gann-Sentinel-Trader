@@ -2,11 +2,14 @@
 Telegram Bot for Gann Sentinel Trader
 Handles notifications and command processing for trade approvals and system control.
 
-Version: 2.2.1 - Added Cost Tracking & MACA Check Formatting
-- format_maca_check_result() for /check with MACA output
-- format_cost_message() for /cost command
-- format_positions_message() and format_history_message()
-- Inline buttons for approve/reject
+Version: 2.3.0 - Exception Handler Fix + Activity Logging
+- Fixed bare except blocks to catch specific exceptions (ValueError, AttributeError)
+- All outgoing messages logged to database
+- All incoming commands logged to database
+- New /logs command to view activity
+- New /export_logs command for formatted export
+- Integration with Database class for persistent storage
+- MACA inline buttons for approve/reject
 - AI Council view (Grok, Perplexity, ChatGPT thesis display)
 
 Uses Unicode escape sequences for all emojis and special characters.
@@ -58,8 +61,8 @@ EMOJI_BULL = "\U0001F402"        # 🐂
 EMOJI_ZZZ = "\U0001F4A4"         # 💤
 EMOJI_CANDLE = "\U0001F56F"      # 🕯️
 EMOJI_RULER = "\U0001F4CF"       # 📏
-EMOJI_SCROLL = "\U0001F4DC"      # 📜 (NEW - for logs)
-EMOJI_EYES = "\U0001F440"        # 👀 (NEW - for activity)
+EMOJI_SCROLL = "\U0001F4DC"      # 📜 (for logs)
+EMOJI_EYES = "\U0001F440"        # 👀 (for activity)
 
 # Progress bar characters (Unicode block elements)
 BAR_FILLED = "\U00002588"        # Full block
@@ -70,11 +73,10 @@ class TelegramBot:
     """
     Telegram bot for Gann Sentinel Trader notifications and commands.
 
-    Version 2.2.0 adds MACA Telegram upgrade:
-    - Inline buttons for approve/reject actions
-    - AI Council display (all AI thesis proposals)
-    - Enhanced decision messages with chart analysis
-    - Callback query handling for button interactions
+    Version 2.3.0 adds:
+    - Fixed exception handlers to catch specific exceptions
+    - Full activity logging to telegram_messages table
+    - New /logs and /export_logs commands for observability
     """
 
     def __init__(
@@ -278,7 +280,7 @@ class TelegramBot:
                             cmd_data["command"] = "reject"
                             cmd_data["trade_id"] = param
                         elif action == "cmd":
-                            cmd_data["command"] = param  # status, pending, scan, help, logs
+                            cmd_data["command"] = param  # status, pending, scan, help
                         else:
                             cmd_data["command"] = action
 
@@ -324,6 +326,21 @@ class TelegramBot:
                                     cmd_data["count"] = int(parts[1])
                                 except (ValueError, IndexError):
                                     cmd_data["count"] = 20
+                            elif command == "history":
+                                # /history [N] - get last N trades
+                                try:
+                                    cmd_data["count"] = int(parts[1])
+                                except (ValueError, IndexError):
+                                    cmd_data["count"] = 10
+                            elif command == "export":
+                                # /export [csv/parquet]
+                                cmd_data["format"] = parts[1].lower()
+                            elif command == "cost":
+                                # /cost [days] - default 7
+                                try:
+                                    cmd_data["days"] = int(parts[1])
+                                except (ValueError, IndexError):
+                                    cmd_data["days"] = 7
                             elif command == "export_logs":
                                 try:
                                     cmd_data["count"] = int(parts[1])
@@ -1015,8 +1032,13 @@ class TelegramBot:
             f"{EMOJI_ROCKET} GANN SENTINEL STARTED\n\n"
             f"Time: {now.strftime('%Y-%m-%d %H:%M UTC')}\n"
             f"Mode: PAPER\n"
-            f"Version: 2.2.0 (MACA Telegram)\n"
+            f"Version: 2.3.0\n"
             f"Approval Gate: ON\n\n"
+            f"{EMOJI_BRAIN} Learning Engine: ON\n"
+            f"{EMOJI_CHART} Smart Schedule:\n"
+            f"  Morning: 9:35 AM ET\n"
+            f"  Midday: 12:30 PM ET\n"
+            f"  Weekends: OFF\n\n"
             f"/status - Check status\n"
             f"/logs - View activity\n"
             f"/help - Show commands"
@@ -1034,7 +1056,7 @@ class TelegramBot:
         analysis: Optional[Dict[str, Any]],
         current_price: Optional[float] = None
     ) -> bool:
-        """Send trade approval request with inline buttons."""
+        """Send trade approval request."""
         trade_id = trade.get("id", "")[:8]
         ticker = trade.get("ticker", "???")
         side = trade.get("side", "BUY").upper()
@@ -1063,17 +1085,18 @@ class TelegramBot:
             bar,
             "",
             f"Thesis: {thesis[:300]}...",
+            "",
+            f"/approve {trade_id}",
+            f"/reject {trade_id}",
         ])
 
         message = "\n".join(lines)
-
-        # Send with inline buttons
-        keyboard = self.build_approval_keyboard(trade_id)
-        return await self.send_message_with_buttons(
-            text=message,
-            reply_markup=keyboard,
+        return await self.send_message(
+            message,
+            parse_mode=None,
             message_type="approval_request",
-            related_entity_id=trade_id
+            related_entity_id=trade_id,
+            related_entity_type="trade"
         )
 
     async def send_status_message(
@@ -1092,7 +1115,7 @@ class TelegramBot:
             "",
             f"Status: {status}",
             f"Mode: PAPER",
-            f"Version: 2.2.0",
+            f"Version: 2.3.0",
             f"Approval Gate: ON",
         ]
 
@@ -1353,6 +1376,8 @@ class TelegramBot:
 
         Shows thesis proposals from all AI analysts.
         """
+        from datetime import datetime, timezone
+
         now = datetime.now(timezone.utc)
 
         lines = []
@@ -1658,13 +1683,12 @@ class TelegramBot:
         Message 1: AI Council views (Grok, Perplexity, ChatGPT)
         Message 2: Chart analysis + Claude's decision + buttons
         """
-        import asyncio
-
         # Message 1: AI Council
         msg1 = self.format_ai_council_message(proposals)
         await self.send_message(msg1, parse_mode=None, message_type="maca_ai_council")
 
         # Small delay between messages
+        import asyncio
         await asyncio.sleep(0.5)
 
         # Message 2: Decision with buttons
@@ -1748,12 +1772,12 @@ class TelegramBot:
                 pnl_emoji = EMOJI_WHITE_CIRCLE
                 pnl_str = "$0.00 (0.0%)"
 
-            # Format entry date
+            # Format entry date - FIXED: catch specific exceptions
             if entry_date:
                 try:
                     dt = datetime.fromisoformat(entry_date.replace("Z", "+00:00"))
                     date_str = dt.strftime("%m/%d")
-                except:
+                except (ValueError, AttributeError):
                     date_str = ""
             else:
                 date_str = ""
@@ -1828,12 +1852,12 @@ class TelegramBot:
 
             emoji = status_emoji.get(status, EMOJI_WHITE_CIRCLE)
 
-            # Format date
+            # Format date - FIXED: catch specific exceptions
             if created:
                 try:
                     dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
                     date_str = dt.strftime("%m/%d %H:%M")
-                except:
+                except (ValueError, AttributeError):
                     date_str = created[:10]
             else:
                 date_str = ""

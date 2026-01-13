@@ -2,11 +2,10 @@
 Gann Sentinel Trader - Database
 SQLite storage for signals, analyses, trades, portfolio state, and telegram activity logs.
 
-Version: 2.2.1 - Cost Tracking for /cost command
-- Added update_cycle_costs() for tracking API costs per scan cycle
-- Added get_cost_summary() for aggregated cost reports
-- Includes Learning Engine tables (trade_outcomes, signal_performance, etc.)
-- SPY benchmark tracking
+Version: 2.3.0 - SQL Injection Prevention + Cost Tracking
+- Added column whitelisting for dynamic UPDATE queries
+- In-memory mode for testing
+- Per-cycle cost tracking methods
 """
 
 import sqlite3
@@ -37,7 +36,6 @@ class Database:
         else:
             self.db_path = db_path or Config.DATABASE_PATH
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-
         self._init_schema()
 
     @contextmanager
@@ -264,147 +262,7 @@ class Database:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_reviews_cycle ON ai_reviews(scan_cycle_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_scan_cycles_status ON scan_cycles(status)")
 
-            # Learning Engine tables
-            self._init_learning_tables(cursor)
-
             logger.info(f"Database initialized at {self.db_path}")
-
-    def _init_learning_tables(self, cursor) -> None:
-        """Initialize Learning Engine tables."""
-        # Trade outcomes table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS trade_outcomes (
-                id TEXT PRIMARY KEY,
-                trade_id TEXT NOT NULL,
-                ticker TEXT NOT NULL,
-                side TEXT NOT NULL,
-                entry_price REAL NOT NULL,
-                entry_date TEXT NOT NULL,
-                entry_conviction INTEGER,
-                entry_thesis TEXT,
-                exit_price REAL,
-                exit_date TEXT,
-                exit_reason TEXT,
-                realized_pnl REAL,
-                realized_pnl_pct REAL,
-                hold_time_hours REAL,
-                max_drawdown_pct REAL,
-                max_gain_pct REAL,
-                spy_return_same_period REAL,
-                alpha REAL,
-                primary_signal_source TEXT,
-                signal_sources_agreed INTEGER,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (trade_id) REFERENCES trades(id)
-            )
-        """)
-
-        # Signal performance table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS signal_performance (
-                id TEXT PRIMARY KEY,
-                signal_id TEXT,
-                source TEXT NOT NULL,
-                signal_type TEXT,
-                ticker TEXT,
-                signal_date TEXT NOT NULL,
-                predicted_direction TEXT,
-                conviction_at_signal INTEGER,
-                actual_direction TEXT,
-                price_at_signal REAL,
-                price_after_1d REAL,
-                price_after_5d REAL,
-                price_after_20d REAL,
-                accurate_1d BOOLEAN,
-                accurate_5d BOOLEAN,
-                accurate_20d BOOLEAN,
-                evaluated_at TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        # Source reliability table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS source_reliability (
-                id TEXT PRIMARY KEY,
-                source TEXT NOT NULL,
-                period TEXT NOT NULL,
-                total_signals INTEGER,
-                accurate_signals INTEGER,
-                accuracy_rate REAL,
-                avg_conviction_when_right REAL,
-                avg_conviction_when_wrong REAL,
-                accuracy_by_sector TEXT,
-                accuracy_trend TEXT,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(source, period)
-            )
-        """)
-
-        # Market regimes table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS market_regimes (
-                id TEXT PRIMARY KEY,
-                date TEXT NOT NULL UNIQUE,
-                vix_level REAL,
-                vix_regime TEXT,
-                spy_20d_return REAL,
-                spy_trend TEXT,
-                advance_decline_ratio REAL,
-                pct_above_50dma REAL,
-                leading_sectors TEXT,
-                lagging_sectors TEXT,
-                our_win_rate_this_regime REAL,
-                trades_in_regime INTEGER,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        # Learning stats table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS learning_stats (
-                id TEXT PRIMARY KEY,
-                stat_type TEXT NOT NULL,
-                stat_key TEXT,
-                period TEXT NOT NULL,
-                total_trades INTEGER,
-                winning_trades INTEGER,
-                win_rate REAL,
-                avg_return REAL,
-                total_return REAL,
-                sharpe_ratio REAL,
-                max_drawdown REAL,
-                avg_hold_time_hours REAL,
-                spy_return_same_period REAL,
-                alpha REAL,
-                beta REAL,
-                insights TEXT,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(stat_type, stat_key, period)
-            )
-        """)
-
-        # SPY benchmarks table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS spy_benchmarks (
-                id TEXT PRIMARY KEY,
-                date TEXT NOT NULL UNIQUE,
-                open_price REAL,
-                close_price REAL,
-                daily_return REAL,
-                cumulative_return_30d REAL,
-                cumulative_return_90d REAL,
-                cumulative_return_ytd REAL,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        # Indices for learning tables
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_trade_outcomes_ticker ON trade_outcomes(ticker)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_trade_outcomes_date ON trade_outcomes(exit_date)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_signal_performance_source ON signal_performance(source)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_signal_performance_date ON signal_performance(signal_date)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_market_regimes_date ON market_regimes(date)")
 
     # =========================================================================
     # TELEGRAM MESSAGE LOGGING
@@ -678,6 +536,13 @@ class Database:
             logger.info(f"Created scan cycle: {cycle_id}")
             return cycle_id
 
+    # Allowed columns for dynamic updates (SQL injection prevention)
+    SCAN_CYCLE_COLUMNS = frozenset({
+        "status", "proposals_count", "selected_proposal_id", "final_conviction",
+        "final_decision", "restart_count", "duration_seconds", "metadata",
+        "total_cost_usd", "error"
+    })
+
     def update_scan_cycle(self, cycle_id: str, **kwargs) -> bool:
         """Update scan cycle with results."""
         with self._get_connection() as conn:
@@ -687,6 +552,11 @@ class Database:
             params = []
 
             for key, value in kwargs.items():
+                # SQL injection prevention: only allow whitelisted columns
+                if key not in self.SCAN_CYCLE_COLUMNS:
+                    logger.warning(f"Ignoring invalid column in update_scan_cycle: {key}")
+                    continue
+
                 if key == "metadata" and value:
                     value = json.dumps(value)
                 updates.append(f"{key} = ?")
@@ -703,23 +573,6 @@ class Database:
             """, params)
 
             return cursor.rowcount > 0
-
-    def get_recent_scan_cycles(self, limit: int = 10) -> List[dict]:
-        """Get recent scan cycles."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM scan_cycles ORDER BY timestamp_utc DESC LIMIT ?",
-                (limit,)
-            )
-            rows = cursor.fetchall()
-            results = []
-            for row in rows:
-                d = dict(row)
-                if d.get("metadata"):
-                    d["metadata"] = json.loads(d["metadata"])
-                results.append(d)
-            return results
 
     def update_cycle_costs(
         self,
@@ -769,6 +622,23 @@ class Database:
 
             return cursor.rowcount > 0
 
+    def get_recent_scan_cycles(self, limit: int = 10) -> List[dict]:
+        """Get recent scan cycles."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM scan_cycles ORDER BY timestamp_utc DESC LIMIT ?",
+                (limit,)
+            )
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                d = dict(row)
+                if d.get("metadata"):
+                    d["metadata"] = json.loads(d["metadata"])
+                results.append(d)
+            return results
+
     def get_cost_summary(self, days: int = 7) -> Dict[str, Any]:
         """
         Get aggregated cost summary for scan cycles.
@@ -779,7 +649,7 @@ class Database:
         Returns:
             Dict with total_cost_usd, total_tokens, cycle_count, by_source
         """
-        from datetime import timedelta
+        from datetime import datetime, timezone, timedelta
 
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
@@ -794,7 +664,6 @@ class Database:
             total_cost = 0.0
             total_tokens = 0
             by_source: Dict[str, Dict[str, float]] = {}
-            by_day: Dict[str, Dict[str, Any]] = {}
 
             for row in rows:
                 d = dict(row)
@@ -811,22 +680,58 @@ class Database:
                     by_source[source]["cost_usd"] += data.get("cost_usd", 0)
                     by_source[source]["tokens"] += data.get("tokens", 0)
 
-                # Aggregate by day
-                ts = d.get("timestamp_utc", "")
-                date = ts[:10] if ts else "unknown"
-                if date not in by_day:
-                    by_day[date] = {"date": date, "cost_usd": 0, "cycle_count": 0}
-                by_day[date]["cost_usd"] += cost_tracking.get("total_cost_usd", 0)
-                by_day[date]["cycle_count"] += 1
-
             return {
                 "total_cost_usd": total_cost,
                 "total_tokens": total_tokens,
                 "cycle_count": len(rows),
                 "by_source": by_source,
-                "by_day": sorted(by_day.values(), key=lambda x: x["date"], reverse=True),
                 "period_days": days
             }
+
+    def get_cost_by_day(self, days: int = 7) -> List[Dict[str, Any]]:
+        """
+        Get cost breakdown by day.
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            List of dicts with date, cost_usd, cycle_count
+        """
+        from datetime import datetime, timezone, timedelta
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM scan_cycles WHERE timestamp_utc > ? AND status = 'complete' ORDER BY timestamp_utc DESC",
+                (cutoff,)
+            )
+            rows = cursor.fetchall()
+
+            # Group by date
+            daily: Dict[str, Dict[str, Any]] = {}
+
+            for row in rows:
+                d = dict(row)
+                # Extract date from timestamp
+                ts = d.get("timestamp_utc", "")
+                date = ts[:10] if ts else "unknown"
+
+                if date not in daily:
+                    daily[date] = {"date": date, "cost_usd": 0, "cycle_count": 0, "tokens": 0}
+
+                metadata = json.loads(d.get("metadata", "{}")) if d.get("metadata") else {}
+                cost_tracking = metadata.get("cost_tracking", {})
+
+                daily[date]["cost_usd"] += cost_tracking.get("total_cost_usd", 0)
+                daily[date]["tokens"] += cost_tracking.get("total_tokens", 0)
+                daily[date]["cycle_count"] += 1
+
+            # Sort by date descending
+            result = sorted(daily.values(), key=lambda x: x["date"], reverse=True)
+            return result
 
     # =========================================================================
     # SIGNALS (existing)
@@ -1054,6 +959,12 @@ class Database:
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
 
+    # Allowed columns for trade updates (SQL injection prevention)
+    TRADE_UPDATE_COLUMNS = frozenset({
+        "fill_price", "fill_quantity", "filled_at", "alpaca_order_id",
+        "rejection_reason", "error", "metadata"
+    })
+
     def update_trade_status(self, trade_id: str, status: str, **kwargs) -> bool:
         """Update trade status and optional fields."""
         with self._get_connection() as conn:
@@ -1063,6 +974,10 @@ class Database:
             params = [status, datetime.now(timezone.utc).isoformat()]
 
             for key, value in kwargs.items():
+                # SQL injection prevention: only allow whitelisted columns
+                if key not in self.TRADE_UPDATE_COLUMNS:
+                    logger.warning(f"Ignoring invalid column in update_trade_status: {key}")
+                    continue
                 updates.append(f"{key} = ?")
                 params.append(value)
 
@@ -1209,199 +1124,6 @@ class Database:
             cursor.execute("SELECT * FROM errors ORDER BY created_at DESC LIMIT ?", (limit,))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
-
-    # =========================================================================
-    # LEARNING ENGINE METHODS
-    # =========================================================================
-
-    def get_learning_stats(
-        self,
-        stat_type: str,
-        stat_key: Optional[str],
-        period: str
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Get learning statistics for Claude's context.
-
-        Args:
-            stat_type: Type of stat (overall, by_source, by_conviction, by_regime)
-            stat_key: Specific key within type (e.g., "grok" for by_source)
-            period: Time period (7d, 30d, 90d, all_time)
-
-        Returns:
-            Dict with stats or None if not found
-        """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-
-            if stat_key:
-                cursor.execute("""
-                    SELECT * FROM learning_stats
-                    WHERE stat_type = ? AND stat_key = ? AND period = ?
-                """, (stat_type, stat_key, period))
-            else:
-                cursor.execute("""
-                    SELECT * FROM learning_stats
-                    WHERE stat_type = ? AND stat_key IS NULL AND period = ?
-                """, (stat_type, period))
-
-            row = cursor.fetchone()
-            if row:
-                result = dict(row)
-                if result.get("insights"):
-                    result["insights"] = json.loads(result["insights"])
-                return result
-            return None
-
-    def save_learning_stats(self, stats: Dict[str, Any]) -> None:
-        """Save or update learning statistics."""
-        import uuid
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-
-            stat_id = stats.get("id") or str(uuid.uuid4())
-            insights_json = json.dumps(stats.get("insights")) if stats.get("insights") else None
-
-            cursor.execute("""
-                INSERT OR REPLACE INTO learning_stats
-                (id, stat_type, stat_key, period, total_trades, winning_trades,
-                 win_rate, avg_return, total_return, sharpe_ratio, max_drawdown,
-                 avg_hold_time_hours, spy_return_same_period, alpha, beta, insights, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                stat_id,
-                stats.get("stat_type"),
-                stats.get("stat_key"),
-                stats.get("period"),
-                stats.get("total_trades"),
-                stats.get("winning_trades"),
-                stats.get("win_rate"),
-                stats.get("avg_return"),
-                stats.get("total_return"),
-                stats.get("sharpe_ratio"),
-                stats.get("max_drawdown"),
-                stats.get("avg_hold_time_hours"),
-                stats.get("spy_return_same_period"),
-                stats.get("alpha"),
-                stats.get("beta"),
-                insights_json,
-                datetime.now(timezone.utc).isoformat()
-            ))
-
-    def get_source_reliability(self, source: str, period: str) -> Optional[Dict[str, Any]]:
-        """
-        Get reliability metrics for a signal source.
-
-        Args:
-            source: Signal source (grok, perplexity, chatgpt, technical)
-            period: Time period (7d, 30d, 90d, all_time)
-
-        Returns:
-            Dict with accuracy metrics or None
-        """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM source_reliability
-                WHERE source = ? AND period = ?
-            """, (source, period))
-
-            row = cursor.fetchone()
-            if row:
-                result = dict(row)
-                if result.get("accuracy_by_sector"):
-                    result["accuracy_by_sector"] = json.loads(result["accuracy_by_sector"])
-                return result
-            return None
-
-    def save_source_reliability(self, reliability: Dict[str, Any]) -> None:
-        """Save or update source reliability metrics."""
-        import uuid
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-
-            rel_id = reliability.get("id") or str(uuid.uuid4())
-            sector_json = json.dumps(reliability.get("accuracy_by_sector")) if reliability.get("accuracy_by_sector") else None
-
-            cursor.execute("""
-                INSERT OR REPLACE INTO source_reliability
-                (id, source, period, total_signals, accurate_signals, accuracy_rate,
-                 avg_conviction_when_right, avg_conviction_when_wrong, accuracy_by_sector,
-                 accuracy_trend, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                rel_id,
-                reliability.get("source"),
-                reliability.get("period"),
-                reliability.get("total_signals"),
-                reliability.get("accurate_signals"),
-                reliability.get("accuracy_rate"),
-                reliability.get("avg_conviction_when_right"),
-                reliability.get("avg_conviction_when_wrong"),
-                sector_json,
-                reliability.get("accuracy_trend"),
-                datetime.now(timezone.utc).isoformat()
-            ))
-
-    def save_trade_outcome(self, outcome: Dict[str, Any]) -> None:
-        """Save a trade outcome for learning analysis."""
-        import uuid
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-
-            outcome_id = outcome.get("id") or str(uuid.uuid4())
-
-            cursor.execute("""
-                INSERT INTO trade_outcomes
-                (id, trade_id, ticker, side, entry_price, entry_date, entry_conviction,
-                 entry_thesis, exit_price, exit_date, exit_reason, realized_pnl,
-                 realized_pnl_pct, hold_time_hours, max_drawdown_pct, max_gain_pct,
-                 spy_return_same_period, alpha, primary_signal_source, signal_sources_agreed)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                outcome_id,
-                outcome.get("trade_id"),
-                outcome.get("ticker"),
-                outcome.get("side"),
-                outcome.get("entry_price"),
-                outcome.get("entry_date"),
-                outcome.get("entry_conviction"),
-                outcome.get("entry_thesis"),
-                outcome.get("exit_price"),
-                outcome.get("exit_date"),
-                outcome.get("exit_reason"),
-                outcome.get("realized_pnl"),
-                outcome.get("realized_pnl_pct"),
-                outcome.get("hold_time_hours"),
-                outcome.get("max_drawdown_pct"),
-                outcome.get("max_gain_pct"),
-                outcome.get("spy_return_same_period"),
-                outcome.get("alpha"),
-                outcome.get("primary_signal_source"),
-                outcome.get("signal_sources_agreed")
-            ))
-
-    def get_trade_outcomes(
-        self,
-        limit: int = 100,
-        ticker: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """Get trade outcomes for analysis."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-
-            query = "SELECT * FROM trade_outcomes"
-            params = []
-
-            if ticker:
-                query += " WHERE ticker = ?"
-                params.append(ticker)
-
-            query += " ORDER BY exit_date DESC LIMIT ?"
-            params.append(limit)
-
-            cursor.execute(query, params)
-            return [dict(row) for row in cursor.fetchall()]
 
 
 # Import timedelta for the activity summary

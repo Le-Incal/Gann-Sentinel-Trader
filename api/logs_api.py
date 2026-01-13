@@ -2,7 +2,7 @@
 Gann Sentinel Trader - Logs API
 Lightweight HTTP endpoint for remote log access.
 
-Version: 1.0.0
+Version: 1.1.0 - Security hardening (no default token fallback)
 
 Usage:
     GET /api/logs?token=xxx&limit=50
@@ -12,6 +12,7 @@ Usage:
 """
 
 import os
+import sys
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="GST Logs API",
     description="Remote access to Gann Sentinel Trader logs",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 # Token for authentication
@@ -222,9 +223,10 @@ async def get_scan_cycles(
 if __name__ == "__main__":
     import uvicorn
 
-    # Set a default token for testing
+    # Require explicit token - no fallback for security
     if not os.getenv("LOGS_API_TOKEN"):
-        os.environ["LOGS_API_TOKEN"] = "test-token-123"
-        print("WARNING: Using default test token")
+        print("ERROR: LOGS_API_TOKEN environment variable is required")
+        print("Set it with: export LOGS_API_TOKEN=your-secure-token")
+        sys.exit(1)
 
     uvicorn.run(app, host="0.0.0.0", port=8080)
