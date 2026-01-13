@@ -58,6 +58,7 @@ EMOJI_CHECK = "\U00002705"       # ✅
 EMOJI_CROSS = "\U0000274C"       # ❌
 EMOJI_BULLET = "\U00002022"      # •
 EMOJI_SEARCH = "\U0001F50D"      # 🔍
+EMOJI_HOURGLASS = "\U000023F3"   # ⏳
 
 
 class GannSentinelAgent:
@@ -99,8 +100,7 @@ class GannSentinelAgent:
         self.executor = AlpacaExecutor()
         self.telegram = TelegramBot(
             token=Config.TELEGRAM_BOT_TOKEN,
-            chat_id=Config.TELEGRAM_CHAT_ID,
-            db=self.db
+            chat_id=Config.TELEGRAM_CHAT_ID
         )
 
         # Initialize Learning Engine and Smart Scheduler
@@ -672,6 +672,12 @@ class GannSentinelAgent:
             await self._handle_help_command()
         elif command == "logs":
             await self._handle_logs_command(cmd.get("count", 20))
+        elif command == "positions":
+            await self._handle_positions_command()
+        elif command == "history":
+            await self._handle_history_command(cmd.get("count", 10))
+        elif command == "export":
+            await self._handle_export_command(cmd.get("format", "csv"))
 
     async def _handle_status_command(self) -> None:
         """Handle /status command."""
@@ -1006,20 +1012,24 @@ class GannSentinelAgent:
 {EMOJI_SEARCH} GANN SENTINEL COMMANDS
 
 /status - Portfolio & system status
+/positions - Current open positions
+/history - Trade history
 /pending - List pending approvals
 /approve [ID] - Approve a trade
 /reject [ID] - Reject a trade
 /scan - Run manual scan cycle
-/digest - Send daily digest now
 /check [TICKER] - Analyze any stock
+/export [csv/parquet] - Export data
 /logs - View recent activity
+/digest - Send daily digest
 /stop - Emergency halt
 /resume - Resume trading
 /help - Show this help
 
 EXAMPLES:
   /check NVDA
-  /check TSLA
+  /history 20
+  /export csv
 """
         await self.telegram.send_message(help_text, parse_mode=None)
 
@@ -1030,6 +1040,100 @@ EXAMPLES:
         except Exception as e:
             logger.error(f"Error in logs command: {e}")
             await self.telegram.send_message(f"{EMOJI_CROSS} Error getting logs: {str(e)[:50]}", parse_mode=None)
+
+    async def _handle_positions_command(self) -> None:
+        """Handle /positions command - show current open positions."""
+        try:
+            # Get positions from Alpaca
+            positions = await self.executor.get_positions()
+            positions_data = [p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
+
+            # Format and send
+            message = self.telegram.format_positions_message(positions_data)
+            await self.telegram.send_message(message, parse_mode=None, message_type="positions")
+
+        except Exception as e:
+            logger.error(f"Error in positions command: {e}")
+            await self.telegram.send_message(f"{EMOJI_CROSS} Error getting positions: {str(e)[:50]}", parse_mode=None)
+
+    async def _handle_history_command(self, count: int = 10) -> None:
+        """Handle /history command - show trade history."""
+        try:
+            # Get recent trades from database
+            trades = self.db.get_recent_trades(limit=count)
+
+            # Format and send
+            message = self.telegram.format_history_message(trades, limit=count)
+            await self.telegram.send_message(message, parse_mode=None, message_type="history")
+
+        except Exception as e:
+            logger.error(f"Error in history command: {e}")
+            await self.telegram.send_message(f"{EMOJI_CROSS} Error getting history: {str(e)[:50]}", parse_mode=None)
+
+    async def _handle_export_command(self, format: str = "csv") -> None:
+        """Handle /export command - export data to CSV or Parquet."""
+        try:
+            from utils.data_exporter import (
+                export_trades_csv, export_signals_csv, export_positions_csv,
+                export_trades_parquet, generate_export_filename
+            )
+
+            format = format.lower()
+            if format not in ["csv", "parquet"]:
+                format = "csv"
+
+            await self.telegram.send_message(
+                f"{EMOJI_HOURGLASS} Generating {format.upper()} export...",
+                parse_mode=None
+            )
+
+            # Gather data
+            trades = self.db.get_recent_trades(limit=500)
+            signals = self.db.get_recent_signals(limit=500)
+            positions_raw = await self.executor.get_positions()
+            positions = [p.to_dict() if hasattr(p, 'to_dict') else p for p in positions_raw]
+
+            if format == "csv":
+                # Generate CSV exports
+                trades_csv = export_trades_csv(trades)
+                signals_csv = export_signals_csv(signals)
+                positions_csv = export_positions_csv(positions)
+
+                # Send summary
+                summary = (
+                    f"{EMOJI_CHECK} CSV Export Ready\n\n"
+                    f"Trades: {len(trades)} records\n"
+                    f"Signals: {len(signals)} records\n"
+                    f"Positions: {len(positions)} records\n\n"
+                    f"Use the Logs API to download:\n"
+                    f"GET /api/export?token=xxx&format=csv"
+                )
+                await self.telegram.send_message(summary, parse_mode=None)
+
+            else:
+                # Parquet export
+                summary = (
+                    f"{EMOJI_CHECK} Parquet Export Ready\n\n"
+                    f"Trades: {len(trades)} records\n"
+                    f"Signals: {len(signals)} records\n"
+                    f"Positions: {len(positions)} records\n\n"
+                    f"Use the Logs API to download:\n"
+                    f"GET /api/export?token=xxx&format=parquet"
+                )
+                await self.telegram.send_message(summary, parse_mode=None)
+
+        except ImportError as e:
+            logger.error(f"Export module not found: {e}")
+            await self.telegram.send_message(
+                f"{EMOJI_CROSS} Export module not available",
+                parse_mode=None
+            )
+        except Exception as e:
+            logger.error(f"Error in export command: {e}")
+            await self.telegram.send_message(
+                f"{EMOJI_CROSS} Export error: {str(e)[:50]}",
+                parse_mode=None
+            )
 
 
 # =============================================================================
