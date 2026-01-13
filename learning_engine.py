@@ -548,11 +548,11 @@ class LearningEngine:
 
         # Add color commentary
         if alpha > 0:
-            lines.append(f"\n✓ Outperforming SPY by {alpha:.1f}%")
+            lines.append(f"\n\u2713 Outperforming SPY by {alpha:.1f}%")
         elif alpha < 0:
-            lines.append(f"\n✗ Underperforming SPY by {abs(alpha):.1f}%")
+            lines.append(f"\n\u2717 Underperforming SPY by {abs(alpha):.1f}%")
         else:
-            lines.append("\n→ Matching SPY performance")
+            lines.append("\n\u2192 Matching SPY performance")
 
         return "\n".join(lines)
 
@@ -597,6 +597,575 @@ class LearningEngine:
         return "\n".join(lines)
 
     # =========================================================================
+    # TRADE OUTCOME RECORDING
+    # =========================================================================
+
+    def record_trade_outcome(
+        self,
+        trade_id: str,
+        ticker: str,
+        side: str,
+        entry_price: float,
+        entry_date: str,
+        exit_price: float,
+        exit_date: str,
+        quantity: int,
+        exit_reason: str = None,
+        signal_sources: List[str] = None,
+        conviction_at_entry: int = None,
+        spy_return_same_period: float = None
+    ) -> str:
+        """
+        Record a closed trade with full metrics.
+
+        Returns:
+            outcome_id
+        """
+        outcome_id = str(uuid.uuid4())
+
+        # Calculate metrics
+        realized_pnl = (exit_price - entry_price) * quantity
+        realized_pnl_pct = (exit_price - entry_price) / entry_price
+
+        # Calculate hold time
+        entry_dt = self._parse_datetime(entry_date)
+        exit_dt = self._parse_datetime(exit_date)
+        hold_time_hours = None
+        if entry_dt and exit_dt:
+            hold_time_hours = (exit_dt - entry_dt).total_seconds() / 3600
+
+        # Calculate alpha
+        alpha = None
+        if spy_return_same_period is not None:
+            alpha = realized_pnl_pct - spy_return_same_period
+
+        # Store in database
+        with self.db._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO trade_outcomes
+                (id, trade_id, ticker, side, entry_price, entry_date, exit_price, exit_date,
+                 exit_reason, realized_pnl, realized_pnl_pct, hold_time_hours,
+                 spy_return_same_period, alpha, entry_conviction, primary_signal_source,
+                 signal_sources_agreed, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                outcome_id, trade_id, ticker, side, entry_price, entry_date,
+                exit_price, exit_date, exit_reason, realized_pnl, realized_pnl_pct,
+                hold_time_hours, spy_return_same_period, alpha, conviction_at_entry,
+                signal_sources[0] if signal_sources else None,
+                len(signal_sources) if signal_sources else 0,
+                datetime.now(timezone.utc).isoformat()
+            ))
+
+        logger.info(f"Recorded trade outcome: {ticker} P&L=${realized_pnl:.2f} alpha={alpha:.2%}" if alpha else f"Recorded trade outcome: {ticker} P&L=${realized_pnl:.2f}")
+        return outcome_id
+
+    def get_trade_outcome(self, outcome_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a trade outcome by ID."""
+        with self.db._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM trade_outcomes WHERE id = ?", (outcome_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def detect_closed_positions(
+        self,
+        previous_positions: Dict[str, Dict],
+        current_positions: Dict[str, Dict],
+        current_prices: Dict[str, float]
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect positions that have been closed.
+
+        Args:
+            previous_positions: Dict of ticker -> position data (from last check)
+            current_positions: Dict of ticker -> position data (current)
+            current_prices: Dict of ticker -> current price
+
+        Returns:
+            List of closed position dicts
+        """
+        closed = []
+
+        for ticker, prev_pos in previous_positions.items():
+            if ticker not in current_positions:
+                # Position was closed
+                closed.append({
+                    "ticker": ticker,
+                    "quantity": prev_pos.get("quantity", 0),
+                    "entry_price": prev_pos.get("entry_price", prev_pos.get("avg_entry_price", 0)),
+                    "exit_price": current_prices.get(ticker, prev_pos.get("entry_price", 0)),
+                    "entry_date": prev_pos.get("entry_date"),
+                    "exit_date": datetime.now(timezone.utc).isoformat()
+                })
+
+        return closed
+
+    # =========================================================================
+    # SPY DATA FETCHING
+    # =========================================================================
+
+    async def fetch_spy_price(self) -> Optional[float]:
+        """Fetch current SPY price from executor."""
+        if not self.executor:
+            logger.warning("No executor configured for SPY fetch")
+            return None
+
+        try:
+            price = await self.executor.get_current_price("SPY")
+            return price
+        except Exception as e:
+            logger.error(f"Error fetching SPY price: {e}")
+            return None
+
+    def calculate_spy_period_return(
+        self,
+        start_price: float,
+        end_price: float
+    ) -> float:
+        """Calculate SPY return over a period."""
+        if start_price <= 0:
+            return 0.0
+        return (end_price - start_price) / start_price
+
+    def store_spy_benchmark(
+        self,
+        date: str,
+        open_price: float = None,
+        close_price: float = None,
+        high: float = None,
+        low: float = None
+    ) -> None:
+        """Store daily SPY benchmark data."""
+        benchmark_id = str(uuid.uuid4())
+
+        daily_return = None
+        if open_price and close_price:
+            daily_return = (close_price - open_price) / open_price
+
+        with self.db._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO spy_benchmarks
+                (id, date, open_price, close_price, high, low, daily_return, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                benchmark_id, date, open_price, close_price, high, low,
+                daily_return, datetime.now(timezone.utc).isoformat()
+            ))
+
+    def get_spy_benchmark(self, date: str) -> Optional[Dict[str, Any]]:
+        """Retrieve SPY benchmark for a specific date."""
+        with self.db._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM spy_benchmarks WHERE date = ?", (date,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    # =========================================================================
+    # WEEKLY PERFORMANCE DIGEST
+    # =========================================================================
+
+    def generate_weekly_digest(
+        self,
+        trades: List[Dict[str, Any]],
+        start_date: str,
+        end_date: str
+    ) -> Dict[str, Any]:
+        """
+        Generate weekly performance digest.
+
+        Args:
+            trades: List of trade outcome dicts
+            start_date: Week start date
+            end_date: Week end date
+
+        Returns:
+            Digest dict with all metrics
+        """
+        if not trades:
+            return {
+                "period": f"{start_date} to {end_date}",
+                "total_trades": 0,
+                "wins": 0,
+                "losses": 0,
+                "win_rate": 0,
+                "total_pnl": 0,
+                "total_alpha": 0,
+                "top_winner": None,
+                "top_loser": None
+            }
+
+        # Calculate metrics
+        wins = [t for t in trades if t.get("realized_pnl", 0) > 0]
+        losses = [t for t in trades if t.get("realized_pnl", 0) <= 0]
+
+        total_pnl = sum(t.get("realized_pnl", 0) for t in trades)
+        total_alpha = sum(t.get("alpha", 0) or 0 for t in trades)
+
+        # Find top winner and loser
+        sorted_by_pnl = sorted(trades, key=lambda x: x.get("realized_pnl", 0), reverse=True)
+        top_winner = sorted_by_pnl[0] if sorted_by_pnl and sorted_by_pnl[0].get("realized_pnl", 0) > 0 else None
+        top_loser = sorted_by_pnl[-1] if sorted_by_pnl and sorted_by_pnl[-1].get("realized_pnl", 0) < 0 else None
+
+        # Calculate hold times
+        hold_times = [t.get("hold_time_hours", 0) or 0 for t in trades if t.get("hold_time_hours")]
+        avg_hold_hours = sum(hold_times) / len(hold_times) if hold_times else 0
+        avg_hold_days = avg_hold_hours / 24
+
+        return {
+            "period": f"{start_date} to {end_date}",
+            "total_trades": len(trades),
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate": len(wins) / len(trades) if trades else 0,
+            "total_pnl": total_pnl,
+            "total_alpha": total_alpha,
+            "avg_hold_days": avg_hold_days,
+            "top_winner": {
+                "ticker": top_winner.get("ticker"),
+                "pnl": top_winner.get("realized_pnl"),
+                "return_pct": top_winner.get("realized_pnl_pct")
+            } if top_winner else None,
+            "top_loser": {
+                "ticker": top_loser.get("ticker"),
+                "pnl": top_loser.get("realized_pnl"),
+                "return_pct": top_loser.get("realized_pnl_pct")
+            } if top_loser else None
+        }
+
+    # =========================================================================
+    # DYNAMIC THRESHOLD ADJUSTMENT
+    # =========================================================================
+
+    def calculate_optimal_threshold(
+        self,
+        historical_trades: List[Dict[str, Any]]
+    ) -> int:
+        """
+        Calculate optimal conviction threshold from historical data.
+
+        Finds the conviction level that maximizes win rate while
+        maintaining reasonable trade volume.
+
+        Returns:
+            Optimal conviction threshold (70-95)
+        """
+        if not historical_trades:
+            return 80  # Default
+
+        # Group by conviction buckets
+        buckets = {}
+        for trade in historical_trades:
+            conv = trade.get("conviction", 0)
+            bucket = (conv // 5) * 5  # Round to nearest 5
+
+            if bucket not in buckets:
+                buckets[bucket] = {"wins": 0, "total": 0}
+
+            buckets[bucket]["total"] += 1
+            if trade.get("won"):
+                buckets[bucket]["wins"] += 1
+
+        # Find threshold with best risk-adjusted performance
+        best_threshold = 80
+        best_score = 0
+
+        for threshold in range(95, 69, -5):
+            trades_above = sum(b["total"] for c, b in buckets.items() if c >= threshold)
+            wins_above = sum(b["wins"] for c, b in buckets.items() if c >= threshold)
+
+            if trades_above < 3:  # Need minimum sample
+                continue
+
+            win_rate = wins_above / trades_above
+
+            # Score = win_rate * sqrt(trade_count) to balance accuracy and volume
+            score = win_rate * (trades_above ** 0.5)
+
+            if score > best_score:
+                best_score = score
+                best_threshold = threshold
+
+        return best_threshold
+
+    def adjust_threshold_for_regime(
+        self,
+        base_threshold: int,
+        vix_regime: str,
+        spy_trend: str
+    ) -> int:
+        """
+        Adjust conviction threshold based on market regime.
+
+        In risky regimes, require higher conviction.
+        In favorable regimes, can be slightly more aggressive.
+
+        Returns:
+            Adjusted threshold
+        """
+        adjustment = 0
+
+        # VIX adjustments
+        vix_adjustments = {
+            "low": -3,      # Can be more aggressive
+            "normal": 0,    # No change
+            "elevated": 5,  # More cautious
+            "extreme": 10   # Very cautious
+        }
+        adjustment += vix_adjustments.get(vix_regime, 0)
+
+        # SPY trend adjustments
+        trend_adjustments = {
+            "strong_up": -2,
+            "up": 0,
+            "sideways": 2,
+            "down": 5,
+            "strong_down": 8
+        }
+        adjustment += trend_adjustments.get(spy_trend, 0)
+
+        # Clamp result
+        adjusted = base_threshold + adjustment
+        return max(70, min(95, adjusted))
+
+    def get_dynamic_threshold(self) -> int:
+        """
+        Get current dynamic conviction threshold.
+
+        Combines historical optimization with regime adjustment.
+        """
+        # Get historical trades for optimization
+        with self.db._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT entry_conviction as conviction,
+                       CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END as won
+                FROM trade_outcomes
+                WHERE entry_conviction IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT 50
+            """)
+            rows = cursor.fetchall()
+            historical = [dict(r) for r in rows]
+
+        # Calculate base threshold
+        if historical:
+            base_threshold = self.calculate_optimal_threshold(historical)
+        else:
+            base_threshold = 80
+
+        # Get current regime
+        regime = self.get_current_regime()
+        vix_regime = regime.get("vix_regime", "normal")
+        spy_trend = regime.get("spy_trend", "sideways")
+
+        # Adjust for regime
+        return self.adjust_threshold_for_regime(base_threshold, vix_regime, spy_trend)
+
+    # =========================================================================
+    # PATTERN LIBRARY
+    # =========================================================================
+
+    def save_pattern(
+        self,
+        pattern_type: str,
+        outcome: str,
+        ticker: str = None,
+        entry_catalyst: str = None,
+        entry_signals: Dict[str, str] = None,
+        return_pct: float = None,
+        hold_days: int = None,
+        market_regime: str = None,
+        conviction_at_entry: int = None,
+        notes: str = None,
+        trade_id: str = None
+    ) -> str:
+        """
+        Save a trading pattern to the library.
+
+        Args:
+            pattern_type: e.g., "earnings_momentum", "sector_rotation", "technical_breakout"
+            outcome: "win" or "loss"
+            ...
+
+        Returns:
+            pattern_id
+        """
+        pattern_id = str(uuid.uuid4())
+
+        with self.db._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO patterns
+                (id, pattern_type, ticker, entry_catalyst, entry_signals, outcome,
+                 return_pct, hold_days, market_regime, conviction_at_entry, notes,
+                 trade_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                pattern_id, pattern_type, ticker, entry_catalyst,
+                json.dumps(entry_signals) if entry_signals else None,
+                outcome, return_pct, hold_days, market_regime,
+                conviction_at_entry, notes, trade_id,
+                datetime.now(timezone.utc).isoformat()
+            ))
+
+        logger.info(f"Saved pattern: {pattern_type} -> {outcome}")
+        return pattern_id
+
+    def get_pattern(self, pattern_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a pattern by ID."""
+        with self.db._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM patterns WHERE id = ?", (pattern_id,))
+            row = cursor.fetchone()
+            if row:
+                d = dict(row)
+                if d.get("entry_signals"):
+                    d["entry_signals"] = json.loads(d["entry_signals"])
+                return d
+            return None
+
+    def find_similar_patterns(
+        self,
+        pattern_type: str = None,
+        market_regime: str = None,
+        ticker: str = None,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Find historically similar patterns.
+
+        Args:
+            pattern_type: Filter by pattern type
+            market_regime: Filter by market regime
+            ticker: Filter by specific ticker
+            limit: Max results
+
+        Returns:
+            List of matching patterns
+        """
+        conditions = []
+        params = []
+
+        if pattern_type:
+            conditions.append("pattern_type = ?")
+            params.append(pattern_type)
+
+        if market_regime:
+            conditions.append("market_regime = ?")
+            params.append(market_regime)
+
+        if ticker:
+            conditions.append("ticker = ?")
+            params.append(ticker)
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        params.append(limit)
+
+        with self.db._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT * FROM patterns
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, params)
+            rows = cursor.fetchall()
+
+            results = []
+            for row in rows:
+                d = dict(row)
+                if d.get("entry_signals"):
+                    d["entry_signals"] = json.loads(d["entry_signals"])
+                results.append(d)
+
+            return results
+
+    def generate_pattern_context(
+        self,
+        ticker: str,
+        pattern_type: str = None,
+        current_regime: str = None
+    ) -> Dict[str, Any]:
+        """
+        Generate pattern context for Claude's decision making.
+
+        Returns historical performance for similar situations.
+        """
+        # Find similar patterns
+        similar = self.find_similar_patterns(
+            pattern_type=pattern_type,
+            market_regime=current_regime,
+            limit=20
+        )
+
+        if not similar:
+            return {
+                "similar_patterns": 0,
+                "historical_win_rate": None,
+                "avg_return": None,
+                "message": "No historical patterns found for this setup"
+            }
+
+        wins = [p for p in similar if p.get("outcome") == "win"]
+        win_rate = len(wins) / len(similar)
+
+        returns = [p.get("return_pct", 0) for p in similar if p.get("return_pct") is not None]
+        avg_return = sum(returns) / len(returns) if returns else 0
+
+        return {
+            "similar_patterns": len(similar),
+            "historical_win_rate": win_rate,
+            "avg_return": avg_return,
+            "avg_hold_days": sum(p.get("hold_days", 0) or 0 for p in similar) / len(similar),
+            "winning_examples": [
+                {"ticker": p.get("ticker"), "return": p.get("return_pct")}
+                for p in wins[:3]
+            ],
+            "message": f"Found {len(similar)} similar patterns with {win_rate:.0%} win rate"
+        }
+
+    def get_pattern_library_stats(self) -> Dict[str, Any]:
+        """Get statistics about the pattern library."""
+        with self.db._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Total patterns
+            cursor.execute("SELECT COUNT(*) as count FROM patterns")
+            total = cursor.fetchone()["count"]
+
+            # By type
+            cursor.execute("""
+                SELECT pattern_type, COUNT(*) as count,
+                       SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END) as wins
+                FROM patterns
+                GROUP BY pattern_type
+            """)
+            by_type = {}
+            for row in cursor.fetchall():
+                by_type[row["pattern_type"]] = {
+                    "count": row["count"],
+                    "win_rate": row["wins"] / row["count"] if row["count"] > 0 else 0
+                }
+
+            # Overall win rate
+            cursor.execute("""
+                SELECT COUNT(*) as total,
+                       SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END) as wins
+                FROM patterns
+            """)
+            overall = cursor.fetchone()
+            overall_wr = overall["wins"] / overall["total"] if overall["total"] > 0 else 0
+
+            return {
+                "total_patterns": total,
+                "by_type": by_type,
+                "overall_win_rate": overall_wr
+            }
+
+    # =========================================================================
     # UTILITY
     # =========================================================================
 
@@ -623,135 +1192,161 @@ def add_learning_tables(db):
 
     Call this during database initialization.
     """
-    cursor = db.conn.cursor()
+    with db._get_connection() as conn:
+        cursor = conn.cursor()
 
-    # Trade outcomes table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS trade_outcomes (
-            id TEXT PRIMARY KEY,
-            trade_id TEXT NOT NULL,
-            ticker TEXT NOT NULL,
-            side TEXT NOT NULL,
-            entry_price REAL NOT NULL,
-            entry_date TEXT NOT NULL,
-            entry_conviction INTEGER,
-            entry_thesis TEXT,
-            exit_price REAL,
-            exit_date TEXT,
-            exit_reason TEXT,
-            realized_pnl REAL,
-            realized_pnl_pct REAL,
-            hold_time_hours REAL,
-            max_drawdown_pct REAL,
-            max_gain_pct REAL,
-            spy_return_same_period REAL,
-            alpha REAL,
-            primary_signal_source TEXT,
-            signal_sources_agreed INTEGER,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (trade_id) REFERENCES trades(id)
-        )
-    """)
+        # Trade outcomes table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trade_outcomes (
+                id TEXT PRIMARY KEY,
+                trade_id TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                side TEXT NOT NULL,
+                entry_price REAL NOT NULL,
+                entry_date TEXT NOT NULL,
+                entry_conviction INTEGER,
+                entry_thesis TEXT,
+                exit_price REAL,
+                exit_date TEXT,
+                exit_reason TEXT,
+                realized_pnl REAL,
+                realized_pnl_pct REAL,
+                hold_time_hours REAL,
+                max_drawdown_pct REAL,
+                max_gain_pct REAL,
+                spy_return_same_period REAL,
+                alpha REAL,
+                primary_signal_source TEXT,
+                signal_sources_agreed INTEGER,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (trade_id) REFERENCES trades(id)
+            )
+        """)
 
-    # Signal performance table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS signal_performance (
-            id TEXT PRIMARY KEY,
-            signal_id TEXT,
-            source TEXT NOT NULL,
-            signal_type TEXT,
-            ticker TEXT,
-            signal_date TEXT NOT NULL,
-            predicted_direction TEXT,
-            conviction_at_signal INTEGER,
-            actual_direction TEXT,
-            price_at_signal REAL,
-            price_after_1d REAL,
-            price_after_5d REAL,
-            price_after_20d REAL,
-            accurate_1d BOOLEAN,
-            accurate_5d BOOLEAN,
-            accurate_20d BOOLEAN,
-            evaluated_at TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+        # Signal performance table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS signal_performance (
+                id TEXT PRIMARY KEY,
+                signal_id TEXT,
+                source TEXT NOT NULL,
+                signal_type TEXT,
+                ticker TEXT,
+                signal_date TEXT NOT NULL,
+                predicted_direction TEXT,
+                conviction_at_signal INTEGER,
+                actual_direction TEXT,
+                price_at_signal REAL,
+                price_after_1d REAL,
+                price_after_5d REAL,
+                price_after_20d REAL,
+                accurate_1d BOOLEAN,
+                accurate_5d BOOLEAN,
+                accurate_20d BOOLEAN,
+                evaluated_at TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-    # Source reliability table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS source_reliability (
-            id TEXT PRIMARY KEY,
-            source TEXT NOT NULL,
-            period TEXT NOT NULL,
-            total_signals INTEGER,
-            accurate_signals INTEGER,
-            accuracy_rate REAL,
-            avg_conviction_when_right REAL,
-            avg_conviction_when_wrong REAL,
-            accuracy_by_sector TEXT,
-            accuracy_trend TEXT,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(source, period)
-        )
-    """)
+        # Source reliability table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS source_reliability (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                period TEXT NOT NULL,
+                total_signals INTEGER,
+                accurate_signals INTEGER,
+                accuracy_rate REAL,
+                avg_conviction_when_right REAL,
+                avg_conviction_when_wrong REAL,
+                accuracy_by_sector TEXT,
+                accuracy_trend TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source, period)
+            )
+        """)
 
-    # Market regimes table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS market_regimes (
-            id TEXT PRIMARY KEY,
-            date TEXT NOT NULL UNIQUE,
-            vix_level REAL,
-            vix_regime TEXT,
-            spy_20d_return REAL,
-            spy_trend TEXT,
-            advance_decline_ratio REAL,
-            pct_above_50dma REAL,
-            leading_sectors TEXT,
-            lagging_sectors TEXT,
-            our_win_rate_this_regime REAL,
-            trades_in_regime INTEGER,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+        # Market regimes table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS market_regimes (
+                id TEXT PRIMARY KEY,
+                date TEXT NOT NULL UNIQUE,
+                vix_level REAL,
+                vix_regime TEXT,
+                spy_20d_return REAL,
+                spy_trend TEXT,
+                advance_decline_ratio REAL,
+                pct_above_50dma REAL,
+                leading_sectors TEXT,
+                lagging_sectors TEXT,
+                our_win_rate_this_regime REAL,
+                trades_in_regime INTEGER,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-    # Learning stats table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS learning_stats (
-            id TEXT PRIMARY KEY,
-            stat_type TEXT NOT NULL,
-            stat_key TEXT,
-            period TEXT NOT NULL,
-            total_trades INTEGER,
-            winning_trades INTEGER,
-            win_rate REAL,
-            avg_return REAL,
-            total_return REAL,
-            sharpe_ratio REAL,
-            max_drawdown REAL,
-            avg_hold_time_hours REAL,
-            spy_return_same_period REAL,
-            alpha REAL,
-            beta REAL,
-            insights TEXT,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(stat_type, stat_key, period)
-        )
-    """)
+        # Learning stats table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS learning_stats (
+                id TEXT PRIMARY KEY,
+                stat_type TEXT NOT NULL,
+                stat_key TEXT,
+                period TEXT NOT NULL,
+                total_trades INTEGER,
+                winning_trades INTEGER,
+                win_rate REAL,
+                avg_return REAL,
+                total_return REAL,
+                sharpe_ratio REAL,
+                max_drawdown REAL,
+                avg_hold_time_hours REAL,
+                spy_return_same_period REAL,
+                alpha REAL,
+                beta REAL,
+                insights TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(stat_type, stat_key, period)
+            )
+        """)
 
-    # SPY benchmarks table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS spy_benchmarks (
-            id TEXT PRIMARY KEY,
-            date TEXT NOT NULL UNIQUE,
-            open_price REAL,
-            close_price REAL,
-            daily_return REAL,
-            cumulative_return_30d REAL,
-            cumulative_return_90d REAL,
-            cumulative_return_ytd REAL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+        # SPY benchmarks table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS spy_benchmarks (
+                id TEXT PRIMARY KEY,
+                date TEXT NOT NULL UNIQUE,
+                open_price REAL,
+                close_price REAL,
+                high REAL,
+                low REAL,
+                daily_return REAL,
+                cumulative_return_30d REAL,
+                cumulative_return_90d REAL,
+                cumulative_return_ytd REAL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-    db.conn.commit()
+        # Pattern library table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS patterns (
+                id TEXT PRIMARY KEY,
+                pattern_type TEXT NOT NULL,
+                ticker TEXT,
+                entry_catalyst TEXT,
+                entry_signals TEXT,
+                outcome TEXT NOT NULL,
+                return_pct REAL,
+                hold_days INTEGER,
+                market_regime TEXT,
+                conviction_at_entry INTEGER,
+                notes TEXT,
+                trade_id TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Create indices for pattern queries
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_patterns_type ON patterns(pattern_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_patterns_regime ON patterns(market_regime)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_patterns_outcome ON patterns(outcome)")
+
     logger.info("Learning Engine tables created")
