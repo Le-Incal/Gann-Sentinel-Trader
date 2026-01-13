@@ -2,15 +2,12 @@
 Telegram Bot for Gann Sentinel Trader
 Handles notifications and command processing for trade approvals and system control.
 
-Version: 2.3.0 - Exception Handler Fix + Activity Logging
-- Fixed bare except blocks to catch specific exceptions (ValueError, AttributeError)
+Version: 2.1.0 - Added Activity Logging for Full Observability
 - All outgoing messages logged to database
 - All incoming commands logged to database
 - New /logs command to view activity
 - New /export_logs command for formatted export
 - Integration with Database class for persistent storage
-- MACA inline buttons for approve/reject
-- AI Council view (Grok, Perplexity, ChatGPT thesis display)
 
 Uses Unicode escape sequences for all emojis and special characters.
 """
@@ -33,36 +30,36 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # EMOJI & CHARACTER CONSTANTS
 # =============================================================================
-EMOJI_ROCKET = "\U0001F680"      # 🚀
-EMOJI_STOP = "\U0001F6D1"        # 🛑
-EMOJI_CHART = "\U0001F4CA"       # 📊
-EMOJI_MONEY = "\U0001F4B0"       # 💰
-EMOJI_CHART_UP = "\U0001F4C8"    # 📈
-EMOJI_CHART_DOWN = "\U0001F4C9"  # 📉
-EMOJI_WARNING = "\U000026A0"     # ⚠
-EMOJI_CHECK = "\U00002705"       # ✅
-EMOJI_CROSS = "\U0000274C"       # ❌
-EMOJI_BELL = "\U0001F514"        # 🔔
-EMOJI_BRAIN = "\U0001F9E0"       # 🧠
-EMOJI_SEARCH = "\U0001F50D"      # 🔍
-EMOJI_TARGET = "\U0001F3AF"      # 🎯
-EMOJI_HOURGLASS = "\U000023F3"   # ⏳
-EMOJI_GREEN_CIRCLE = "\U0001F7E2"  # 🟢
-EMOJI_RED_CIRCLE = "\U0001F534"    # 🔴
-EMOJI_YELLOW_CIRCLE = "\U0001F7E1" # 🟡
-EMOJI_WHITE_CIRCLE = "\U000026AA"  # ⚪
-EMOJI_BIRD = "\U0001F426"        # 🐦
-EMOJI_ANTENNA = "\U0001F4E1"     # 📡
-EMOJI_MEMO = "\U0001F4CB"        # 📋
-EMOJI_BULLET = "\U00002022"      # •
-EMOJI_KEYBOARD = "\U00002328"    # ⌨
-EMOJI_BEAR = "\U0001F43B"        # 🐻
-EMOJI_BULL = "\U0001F402"        # 🐂
-EMOJI_ZZZ = "\U0001F4A4"         # 💤
-EMOJI_CANDLE = "\U0001F56F"      # 🕯️
-EMOJI_RULER = "\U0001F4CF"       # 📏
-EMOJI_SCROLL = "\U0001F4DC"      # 📜 (for logs)
-EMOJI_EYES = "\U0001F440"        # 👀 (for activity)
+EMOJI_ROCKET = "\U0001F680"
+EMOJI_STOP = "\U0001F6D1"
+EMOJI_CHART = "\U0001F4CA"
+EMOJI_MONEY = "\U0001F4B0"
+EMOJI_CHART_UP = "\U0001F4C8"
+EMOJI_CHART_DOWN = "\U0001F4C9"
+EMOJI_WARNING = "\U000026A0"
+EMOJI_CHECK = "\U00002705"
+EMOJI_CROSS = "\U0000274C"
+EMOJI_BELL = "\U0001F514"
+EMOJI_BRAIN = "\U0001F9E0"
+EMOJI_SEARCH = "\U0001F50D"
+EMOJI_TARGET = "\U0001F3AF"
+EMOJI_HOURGLASS = "\U000023F3"
+EMOJI_GREEN_CIRCLE = "\U0001F7E2"
+EMOJI_RED_CIRCLE = "\U0001F534"
+EMOJI_YELLOW_CIRCLE = "\U0001F7E1"
+EMOJI_WHITE_CIRCLE = "\U000026AA"
+EMOJI_BIRD = "\U0001F426"
+EMOJI_ANTENNA = "\U0001F4E1"
+EMOJI_MEMO = "\U0001F4CB"
+EMOJI_BULLET = "\U00002022"
+EMOJI_KEYBOARD = "\U00002328"
+EMOJI_BEAR = "\U0001F43B"
+EMOJI_BULL = "\U0001F402"
+EMOJI_ZZZ = "\U0001F4A4"
+EMOJI_CANDLE = "\U0001F56F"
+EMOJI_RULER = "\U0001F4CF"
+EMOJI_SCROLL = "\U0001F4DC"
+EMOJI_EYES = "\U0001F440"
 
 # Progress bar characters (Unicode block elements)
 BAR_FILLED = "\U00002588"        # Full block
@@ -73,9 +70,9 @@ class TelegramBot:
     """
     Telegram bot for Gann Sentinel Trader notifications and commands.
 
-    Version 2.3.0 adds:
-    - Fixed exception handlers to catch specific exceptions
-    - Full activity logging to telegram_messages table
+    Version 2.1.0 adds full activity logging:
+    - Every message sent is logged to telegram_messages table
+    - Every command received is logged
     - New /logs and /export_logs commands for observability
     """
 
@@ -397,7 +394,7 @@ class TelegramBot:
             msg_type = msg.get("message_type", "?")
             preview = msg.get("content_preview", "")[:60]
 
-            arrow = "\U00002192" if direction == "outgoing" else "\U00002190"  # → or ←
+            arrow = "\U00002192" if direction == "outgoing" else "\U00002190"
 
             lines.append(f"{arrow} {ts}")
             lines.append(f"   [{msg_type}] {preview}")
@@ -1032,7 +1029,7 @@ class TelegramBot:
             f"{EMOJI_ROCKET} GANN SENTINEL STARTED\n\n"
             f"Time: {now.strftime('%Y-%m-%d %H:%M UTC')}\n"
             f"Mode: PAPER\n"
-            f"Version: 2.3.0\n"
+            f"Version: 2.2.0\n"
             f"Approval Gate: ON\n\n"
             f"{EMOJI_BRAIN} Learning Engine: ON\n"
             f"{EMOJI_CHART} Smart Schedule:\n"
@@ -1115,7 +1112,7 @@ class TelegramBot:
             "",
             f"Status: {status}",
             f"Mode: PAPER",
-            f"Version: 2.3.0",
+            f"Version: 2.1.0",
             f"Approval Gate: ON",
         ]
 
@@ -2070,6 +2067,80 @@ class TelegramBot:
             lines.append("-" * 35)
             lines.append(f"Monthly Projection: ~${monthly_proj:.2f}")
 
+        lines.append("=" * 35)
+
+        return "\n".join(lines)
+
+    def format_weekly_digest(self, digest: Dict[str, Any]) -> str:
+        """
+        Format weekly performance digest for Telegram.
+
+        Args:
+            digest: Output from LearningEngine.generate_weekly_digest()
+
+        Returns:
+            Formatted string for Telegram
+        """
+        period = digest.get("period", "Unknown period")
+        total_trades = digest.get("total_trades", 0)
+        wins = digest.get("wins", 0)
+        losses = digest.get("losses", 0)
+        win_rate = digest.get("win_rate", 0)
+        total_pnl = digest.get("total_pnl", 0)
+        total_alpha = digest.get("total_alpha", 0)
+        avg_hold_days = digest.get("avg_hold_days", 0)
+        top_winner = digest.get("top_winner")
+        top_loser = digest.get("top_loser")
+        best_source = digest.get("best_source")
+        lessons = digest.get("lessons", [])
+
+        # Header
+        lines = [
+            f"{EMOJI_CHART} WEEKLY PERFORMANCE DIGEST",
+            "=" * 35,
+            f"Period: {period}",
+            ""
+        ]
+
+        # Key Metrics
+        pnl_emoji = EMOJI_GREEN_CIRCLE if total_pnl >= 0 else EMOJI_RED_CIRCLE
+        alpha_emoji = EMOJI_GREEN_CIRCLE if total_alpha >= 0 else EMOJI_RED_CIRCLE
+
+        lines.append(f"{EMOJI_TARGET} KEY METRICS")
+        lines.append("-" * 30)
+        lines.append(f"Total Trades: {total_trades}")
+        lines.append(f"Win Rate: {win_rate:.0%} ({wins}W / {losses}L)")
+        lines.append(f"Total P&L: {pnl_emoji} ${total_pnl:,.2f}")
+        lines.append(f"Total Alpha: {alpha_emoji} {total_alpha:.1%}")
+        if avg_hold_days:
+            lines.append(f"Avg Hold: {avg_hold_days:.1f} days")
+
+        # Top Winner
+        if top_winner:
+            lines.append("")
+            lines.append(f"{EMOJI_ROCKET} TOP WINNER")
+            lines.append(f"  {top_winner['ticker']}: +${top_winner['pnl']:,.2f} ({top_winner['return_pct']:.1%})")
+
+        # Top Loser
+        if top_loser:
+            lines.append("")
+            lines.append(f"{EMOJI_WARNING} TOP LOSER")
+            lines.append(f"  {top_loser['ticker']}: ${top_loser['pnl']:,.2f} ({top_loser['return_pct']:.1%})")
+
+        # Best Source
+        if best_source:
+            lines.append("")
+            lines.append(f"{EMOJI_BRAIN} BEST AI SOURCE: {best_source}")
+
+        # Lessons
+        if lessons:
+            lines.append("")
+            lines.append("-" * 30)
+            lines.append(f"{EMOJI_SCROLL} LESSONS LEARNED:")
+            for lesson in lessons[:3]:
+                lines.append(f"  {lesson}")
+
+        lines.append("")
         lines.append("=" * 35)
 
         return "\n".join(lines)
