@@ -2145,6 +2145,35 @@ class TelegramBot:
 
         return "\n".join(lines)
 
+    def format_event_signal(self, signal: Dict[str, Any]) -> str:
+        """
+        Format event signal for Telegram display.
+
+        Args:
+            signal: EventSignal.to_dict() output
+
+        Returns:
+            Formatted single-line string for Telegram
+        """
+        event_type = signal.get("event_type", "UNKNOWN")
+        ticker = signal.get("asset_scope", {}).get("tickers", ["???"])[0]
+        bias = signal.get("directional_bias", "mixed")
+        confidence = signal.get("confidence", 0)
+        summary = signal.get("summary", "")
+
+        # Bias emoji
+        if bias == "bullish":
+            bias_emoji = EMOJI_GREEN_CIRCLE
+        elif bias == "bearish":
+            bias_emoji = EMOJI_RED_CIRCLE
+        else:
+            bias_emoji = EMOJI_YELLOW_CIRCLE
+
+        # Format event type nicely
+        event_display = event_type.replace("_", " ").title()
+
+        return f"{bias_emoji} {ticker}: {event_display} (conf: {confidence:.0%})"
+
 
 async def send_telegram_message(text: str) -> bool:
     """Quick helper to send a Telegram message."""

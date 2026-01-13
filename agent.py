@@ -2,7 +2,8 @@
 Gann Sentinel Trader - Main Agent
 Orchestrates the trading system: scan signals, analyze, approve, execute.
 
-Version: 2.3.0 - MACA Integration + Learning Engine + Smart Scheduling
+Version: 2.4.0 - Event Scanner + MACA + Learning Engine + Smart Scheduling
+- Event Scanner: 27 corporate event types (LevelFields-style)
 - MACA: Multi-Agent Consensus Architecture for /check command
 - Learning Engine tracks performance vs SPY
 - Smart scheduling: 2 scans/day (9:35 AM, 12:30 PM ET), no weekends
@@ -29,6 +30,7 @@ from scanners.grok_scanner import GrokScanner
 from scanners.fred_scanner import FREDScanner
 from scanners.polymarket_scanner import PolymarketScanner
 from scanners.technical_scanner import TechnicalScanner
+from scanners.event_scanner import EventScanner
 from analyzers.claude_analyst import ClaudeAnalyst
 from executors.risk_engine import RiskEngine
 from executors.alpaca_executor import AlpacaExecutor
@@ -81,7 +83,7 @@ class GannSentinelAgent:
     def __init__(self):
         """Initialize all components."""
         logger.info("=" * 60)
-        logger.info("INITIALIZING GANN SENTINEL TRADER v2.3.0")
+        logger.info("INITIALIZING GANN SENTINEL TRADER v2.4.0")
         logger.info("=" * 60)
 
         # Validate configuration
@@ -107,6 +109,7 @@ class GannSentinelAgent:
         self.fred = FREDScanner()
         self.polymarket = PolymarketScanner()
         self.technical = TechnicalScanner()
+        self.event_scanner = EventScanner()
         self.analyst = ClaudeAnalyst()
         self.risk_engine = RiskEngine()
         self.executor = AlpacaExecutor()
@@ -157,6 +160,7 @@ class GannSentinelAgent:
 
         logger.info("All components initialized successfully")
         logger.info(f"Technical Scanner: {'CONFIGURED' if self.technical.is_configured else 'NOT CONFIGURED'}")
+        logger.info(f"Event Scanner: {'CONFIGURED' if self.event_scanner.is_configured else 'NOT CONFIGURED'}")
         logger.info(f"Learning Engine: ENABLED")
         logger.info(f"Smart Scheduling: Morning (9:35 AM ET) + Midday (12:30 PM ET)")
         logger.info(f"MACA: {'ENABLED' if self.maca else 'DISABLED'}")
@@ -448,6 +452,56 @@ class GannSentinelAgent:
             self.telegram.record_source_query(
                 source="Technical Scanner",
                 query="chart analysis",
+                signals_returned=0,
+                error=str(type(e).__name__)
+            )
+
+        # =================================================================
+        # EVENT SCANNER - Corporate Events (27 types)
+        # =================================================================
+        event_signals = []
+        try:
+            if self.event_scanner.is_configured:
+                logger.info("Running event scan (27 event types)...")
+
+                raw_events = await self.event_scanner.scan_market_wide()
+
+                for event in raw_events:
+                    signal_dict = event.to_dict()
+                    event_signals.append(signal_dict)
+                    signals.append(event)
+
+                    # Record for telegram
+                    self.telegram.record_signal(signal_dict)
+
+                    logger.info(
+                        f"Event: {event.asset_scope['tickers'][0]} - {event.event_type} "
+                        f"({event.directional_bias}, conf={event.confidence:.2f})"
+                    )
+
+                self.telegram.record_source_query(
+                    source="Event Scanner",
+                    query="market-wide event scan (27 types)",
+                    signals_returned=len(event_signals),
+                    error=None
+                )
+
+                logger.info(f"Got {len(event_signals)} event signals")
+            else:
+                logger.warning("Event Scanner not configured - skipping")
+                self.telegram.record_source_query(
+                    source="Event Scanner",
+                    query="corporate events",
+                    signals_returned=0,
+                    error="Not configured (XAI_API_KEY missing)"
+                )
+
+        except Exception as e:
+            logger.error(f"Error in event scan: {e}")
+            self.db.log_error("scan_error", "event_scanner", str(e))
+            self.telegram.record_source_query(
+                source="Event Scanner",
+                query="corporate events",
                 signals_returned=0,
                 error=str(type(e).__name__)
             )
