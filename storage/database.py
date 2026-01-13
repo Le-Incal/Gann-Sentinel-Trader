@@ -2,9 +2,10 @@
 Gann Sentinel Trader - Database
 SQLite storage for signals, analyses, trades, portfolio state, and telegram activity logs.
 
-Version: 2.2.0 - Learning Engine integration
-- Added learning tables (trade_outcomes, signal_performance, source_reliability, etc.)
-- get_learning_stats() and get_source_reliability() methods
+Version: 2.2.1 - Cost Tracking for /cost command
+- Added update_cycle_costs() for tracking API costs per scan cycle
+- Added get_cost_summary() for aggregated cost reports
+- Includes Learning Engine tables (trade_outcomes, signal_performance, etc.)
 - SPY benchmark tracking
 """
 
@@ -705,6 +706,113 @@ class Database:
                     d["metadata"] = json.loads(d["metadata"])
                 results.append(d)
             return results
+
+    def update_cycle_costs(
+        self,
+        cycle_id: str,
+        total_tokens: int,
+        total_cost_usd: float,
+        cost_by_source: Dict[str, Any]
+    ) -> bool:
+        """
+        Update scan cycle with cost tracking data.
+
+        Args:
+            cycle_id: Scan cycle ID
+            total_tokens: Total tokens used across all AIs
+            total_cost_usd: Total cost in USD
+            cost_by_source: Dict mapping source -> {tokens, cost_usd}
+
+        Returns:
+            True if updated successfully
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Get existing metadata
+            cursor.execute("SELECT metadata FROM scan_cycles WHERE id = ?", (cycle_id,))
+            row = cursor.fetchone()
+
+            if row:
+                existing_metadata = json.loads(row["metadata"]) if row["metadata"] else {}
+            else:
+                existing_metadata = {}
+
+            # Add cost data to metadata
+            existing_metadata["cost_tracking"] = {
+                "total_tokens": total_tokens,
+                "total_cost_usd": total_cost_usd,
+                "by_source": cost_by_source,
+                "tracked_at": datetime.now(timezone.utc).isoformat()
+            }
+
+            cursor.execute("""
+                UPDATE scan_cycles SET metadata = ?
+                WHERE id = ?
+            """, (json.dumps(existing_metadata), cycle_id))
+
+            logger.info(f"Updated cycle {cycle_id[:8]} costs: ${total_cost_usd:.4f}")
+
+            return cursor.rowcount > 0
+
+    def get_cost_summary(self, days: int = 7) -> Dict[str, Any]:
+        """
+        Get aggregated cost summary for scan cycles.
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            Dict with total_cost_usd, total_tokens, cycle_count, by_source
+        """
+        from datetime import timedelta
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM scan_cycles WHERE timestamp_utc > ? AND status = 'complete'",
+                (cutoff,)
+            )
+            rows = cursor.fetchall()
+
+            total_cost = 0.0
+            total_tokens = 0
+            by_source: Dict[str, Dict[str, float]] = {}
+            by_day: Dict[str, Dict[str, Any]] = {}
+
+            for row in rows:
+                d = dict(row)
+                metadata = json.loads(d.get("metadata", "{}")) if d.get("metadata") else {}
+                cost_tracking = metadata.get("cost_tracking", {})
+
+                total_cost += cost_tracking.get("total_cost_usd", 0)
+                total_tokens += cost_tracking.get("total_tokens", 0)
+
+                # Aggregate by source
+                for source, data in cost_tracking.get("by_source", {}).items():
+                    if source not in by_source:
+                        by_source[source] = {"cost_usd": 0, "tokens": 0}
+                    by_source[source]["cost_usd"] += data.get("cost_usd", 0)
+                    by_source[source]["tokens"] += data.get("tokens", 0)
+
+                # Aggregate by day
+                ts = d.get("timestamp_utc", "")
+                date = ts[:10] if ts else "unknown"
+                if date not in by_day:
+                    by_day[date] = {"date": date, "cost_usd": 0, "cycle_count": 0}
+                by_day[date]["cost_usd"] += cost_tracking.get("total_cost_usd", 0)
+                by_day[date]["cycle_count"] += 1
+
+            return {
+                "total_cost_usd": total_cost,
+                "total_tokens": total_tokens,
+                "cycle_count": len(rows),
+                "by_source": by_source,
+                "by_day": sorted(by_day.values(), key=lambda x: x["date"], reverse=True),
+                "period_days": days
+            }
 
     # =========================================================================
     # SIGNALS (existing)
