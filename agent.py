@@ -2,7 +2,8 @@
 Gann Sentinel Trader - Main Agent
 Orchestrates the trading system: scan signals, analyze, approve, execute.
 
-Version: 2.2.0 - Learning Engine + Smart Scheduling
+Version: 2.3.0 - MACA Integration + Learning Engine + Smart Scheduling
+- MACA: Multi-Agent Consensus Architecture for /check command
 - Learning Engine tracks performance vs SPY
 - Smart scheduling: 2 scans/day (9:35 AM, 12:30 PM ET), no weekends
 - Context injection: Claude sees historical performance
@@ -15,6 +16,7 @@ afford to lose.
 
 import asyncio
 import logging
+import os
 import sys
 import traceback
 import uuid
@@ -35,6 +37,16 @@ from models.signals import Signal
 from models.analysis import Analysis, Recommendation
 from models.trades import Trade, TradeStatus, OrderType, OrderSide, Position
 from learning_engine import LearningEngine, SmartScheduler, add_learning_tables
+
+# MACA components (optional)
+try:
+    from core.maca_orchestrator import MACAOrchestrator
+    from analyzers.perplexity_analyst import PerplexityAnalyst
+    from analyzers.chatgpt_analyst import ChatGPTAnalyst
+    MACA_AVAILABLE = True
+except ImportError as e:
+    MACA_AVAILABLE = False
+    logging.warning(f"MACA components not available: {e}")
 
 # Configure logging
 logging.basicConfig(
@@ -69,7 +81,7 @@ class GannSentinelAgent:
     def __init__(self):
         """Initialize all components."""
         logger.info("=" * 60)
-        logger.info("INITIALIZING GANN SENTINEL TRADER v2.2.0")
+        logger.info("INITIALIZING GANN SENTINEL TRADER v2.3.0")
         logger.info("=" * 60)
 
         # Validate configuration
@@ -107,6 +119,30 @@ class GannSentinelAgent:
         self.learning_engine = LearningEngine(db=self.db, executor=self.executor)
         self.scheduler = SmartScheduler()
 
+        # Initialize MACA Orchestrator if enabled
+        self.maca: Optional[MACAOrchestrator] = None
+        self.maca_enabled = os.getenv("MACA_ENABLED", "false").lower() == "true"
+
+        if self.maca_enabled and MACA_AVAILABLE:
+            try:
+                self.perplexity = PerplexityAnalyst()
+                self.chatgpt = ChatGPTAnalyst()
+
+                self.maca = MACAOrchestrator(
+                    db=self.db,
+                    grok=self.grok,
+                    perplexity=self.perplexity,
+                    chatgpt=self.chatgpt,
+                    claude=self.analyst,
+                    telegram=self.telegram
+                )
+                logger.info("MACA Orchestrator initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize MACA: {e}")
+                self.maca = None
+        elif self.maca_enabled and not MACA_AVAILABLE:
+            logger.warning("MACA enabled but components not available")
+
         # Agent state
         self.running = False
         self.last_scan_time: Optional[datetime] = None
@@ -123,6 +159,7 @@ class GannSentinelAgent:
         logger.info(f"Technical Scanner: {'CONFIGURED' if self.technical.is_configured else 'NOT CONFIGURED'}")
         logger.info(f"Learning Engine: ENABLED")
         logger.info(f"Smart Scheduling: Morning (9:35 AM ET) + Midday (12:30 PM ET)")
+        logger.info(f"MACA: {'ENABLED' if self.maca else 'DISABLED'}")
 
     # =========================================================================
     # MAIN LOOP
@@ -678,6 +715,8 @@ class GannSentinelAgent:
             await self._handle_history_command(cmd.get("count", 10))
         elif command == "export":
             await self._handle_export_command(cmd.get("format", "csv"))
+        elif command == "cost":
+            await self._handle_cost_command(cmd.get("days", 7))
 
     async def _handle_status_command(self) -> None:
         """Handle /status command."""
@@ -791,12 +830,18 @@ class GannSentinelAgent:
         """
         Handle /check [ticker] command - on-demand analysis.
 
-        Runs full Grok + Technical + Claude analysis on any ticker
-        and generates a trade recommendation with approval prompt if actionable.
+        When MACA is enabled:
+        - Runs Grok, Perplexity, ChatGPT in parallel
+        - Claude synthesizes all theses into final recommendation
+        - Shows thesis from each AI with conviction scores
+        - Tracks API costs per check
+
+        When MACA is disabled:
+        - Runs Grok + Technical + Claude analysis
         """
         if not ticker:
             await self.telegram.send_message(
-                "Usage: /check [TICKER]\n\nExamples:\n  /check NVDA\n  /check TSLA\n  /check SPACEX",
+                "Usage: /check [TICKER]\n\nExamples:\n  /check NVDA\n  /check TSLA\n  /check AAPL",
                 parse_mode=None
             )
             return
@@ -804,6 +849,159 @@ class GannSentinelAgent:
         ticker = ticker.upper().strip()
         logger.info(f"On-demand check requested for: {ticker}")
 
+        # Use MACA if enabled
+        if self.maca and self.maca.is_configured:
+            await self._handle_maca_check(ticker)
+        else:
+            await self._handle_standard_check(ticker)
+
+    async def _handle_maca_check(self, ticker: str) -> None:
+        """
+        Handle /check using MACA - all 4 AIs analyze the ticker.
+
+        Shows:
+        1. Each AI's thesis and conviction
+        2. Claude's synthesis and final recommendation
+        3. Cost tracking for the check
+        """
+        # Acknowledge with MACA mode
+        await self.telegram.send_message(
+            f"{EMOJI_SEARCH} MACA Analyzing {ticker}...\n\n"
+            f"Running parallel analysis:\n"
+            f"  \U0001F426 Grok (sentiment)\n"
+            f"  \U0001F3AF Perplexity (fundamentals)\n"
+            f"  \U0001F9E0 ChatGPT (patterns)\n"
+            f"  \U0001F916 Claude (synthesis)\n\n"
+            f"This may take 30-45 seconds...",
+            parse_mode=None
+        )
+
+        try:
+            # Get portfolio context
+            portfolio_obj = await self.executor.get_portfolio_snapshot()
+            if hasattr(portfolio_obj, 'to_dict'):
+                portfolio = portfolio_obj.to_dict()
+            elif isinstance(portfolio_obj, dict):
+                portfolio = portfolio_obj
+            else:
+                portfolio = {
+                    "equity": getattr(portfolio_obj, 'equity', 100000),
+                    "cash": getattr(portfolio_obj, 'cash', 100000),
+                    "positions": []
+                }
+
+            # Get technical analysis
+            technical_data = None
+            if self.technical.is_configured:
+                try:
+                    tech_signal = await self.technical.scan_ticker(ticker, "1W", 5.0)
+                    if tech_signal:
+                        technical_data = tech_signal.to_dict()
+                except Exception as e:
+                    logger.warning(f"Technical analysis failed for {ticker}: {e}")
+
+            # Run MACA ticker check
+            result = await self.maca.run_ticker_check(
+                ticker=ticker,
+                portfolio=portfolio,
+                fred_signals=[],
+                polymarket_signals=[],
+                technical_analysis=technical_data
+            )
+
+            # Format and send MACA result
+            message = self.telegram.format_maca_check_result(result)
+            await self.telegram.send_message(message, parse_mode=None, message_type="maca_check")
+
+            # Check if we should create a trade
+            synthesis = result.get("synthesis", {})
+            conviction = synthesis.get("recommendation", {}).get("conviction_score", 0)
+            side = synthesis.get("recommendation", {}).get("side")
+
+            if conviction >= 80 and side == "BUY":
+                # Create pending trade for approval
+                await self._create_maca_trade(ticker, result, portfolio)
+
+            # Log completion
+            cycle_cost = result.get("cycle_cost", {})
+            logger.info(f"MACA check completed for {ticker}: "
+                       f"conviction={conviction}, "
+                       f"cost=${cycle_cost.get('total_cost_usd', 0):.4f}")
+
+        except Exception as e:
+            logger.error(f"MACA check failed for {ticker}: {e}")
+            logger.error(traceback.format_exc())
+            await self.telegram.send_message(
+                f"{EMOJI_CROSS} MACA analysis failed for {ticker}\n\nError: {str(e)[:100]}",
+                parse_mode=None
+            )
+
+    async def _create_maca_trade(
+        self,
+        ticker: str,
+        maca_result: Dict[str, Any],
+        portfolio: Dict[str, Any]
+    ) -> Optional[str]:
+        """Create a pending trade from MACA result."""
+        try:
+            synthesis = maca_result.get("synthesis", {})
+            rec = synthesis.get("recommendation", {})
+
+            conviction = rec.get("conviction_score", 0)
+            position_size_pct = rec.get("position_size_pct", 10)
+            stop_loss_pct = rec.get("stop_loss_pct", 8)
+            thesis = rec.get("thesis", "MACA consensus recommendation")
+
+            # Get current price
+            quote = await self.executor.get_quote(ticker)
+            current_price = quote.get("mid", 0)
+
+            if current_price <= 0:
+                logger.warning(f"Cannot create trade for {ticker}: no price")
+                return None
+
+            # Calculate shares
+            equity = portfolio.get("equity", 100000)
+            position_value = equity * (position_size_pct / 100)
+            shares = int(position_value / current_price)
+
+            if shares <= 0:
+                return None
+
+            # Create trade
+            trade = Trade(
+                id=str(uuid.uuid4()),
+                analysis_id=maca_result.get("cycle_id"),
+                ticker=ticker,
+                side=OrderSide.BUY,
+                quantity=shares,
+                order_type=OrderType.MARKET,
+                status=TradeStatus.PENDING_APPROVAL,
+                thesis=thesis,
+                conviction_score=conviction,
+                stop_loss_price=current_price * (1 - stop_loss_pct / 100)
+            )
+
+            self.db.save_trade(trade.to_dict())
+
+            # Send approval message
+            await self.telegram.send_message(
+                f"\n{EMOJI_BULLET} Trade pending approval:\n"
+                f"  {trade.side.value} {trade.quantity} {ticker}\n"
+                f"  Conviction: {conviction}/100\n"
+                f"  ID: {trade.id[:8]}\n\n"
+                f"Reply /approve {trade.id[:8]} or /reject {trade.id[:8]}",
+                parse_mode=None
+            )
+
+            return trade.id
+
+        except Exception as e:
+            logger.error(f"Failed to create MACA trade: {e}")
+            return None
+
+    async def _handle_standard_check(self, ticker: str) -> None:
+        """Handle /check using standard analysis (Grok + Technical + Claude)."""
         # Acknowledge the request
         await self.telegram.send_message(
             f"{EMOJI_SEARCH} Analyzing {ticker}...\n\nGathering signals, chart analysis, and running Claude analysis.",
@@ -1018,8 +1216,9 @@ class GannSentinelAgent:
 /approve [ID] - Approve a trade
 /reject [ID] - Reject a trade
 /scan - Run manual scan cycle
-/check [TICKER] - Analyze any stock
+/check [TICKER] - Analyze any stock (MACA)
 /export [csv/parquet] - Export data
+/cost [days] - API cost summary
 /logs - View recent activity
 /digest - Send daily digest
 /stop - Emergency halt
@@ -1030,6 +1229,7 @@ EXAMPLES:
   /check NVDA
   /history 20
   /export csv
+  /cost 30
 """
         await self.telegram.send_message(help_text, parse_mode=None)
 
@@ -1132,6 +1332,27 @@ EXAMPLES:
             logger.error(f"Error in export command: {e}")
             await self.telegram.send_message(
                 f"{EMOJI_CROSS} Export error: {str(e)[:50]}",
+                parse_mode=None
+            )
+
+    async def _handle_cost_command(self, days: int = 7) -> None:
+        """Handle /cost command - show API cost summary."""
+        try:
+            # Get cost summary from database
+            summary = self.db.get_cost_summary(days=days)
+
+            # Get daily breakdown
+            daily = self.db.get_cost_by_day(days=days)
+            summary["by_day"] = daily
+
+            # Format and send
+            message = self.telegram.format_cost_message(summary)
+            await self.telegram.send_message(message, parse_mode=None, message_type="cost_summary")
+
+        except Exception as e:
+            logger.error(f"Error in cost command: {e}")
+            await self.telegram.send_message(
+                f"{EMOJI_CROSS} Error getting cost summary: {str(e)[:50]}",
                 parse_mode=None
             )
 
