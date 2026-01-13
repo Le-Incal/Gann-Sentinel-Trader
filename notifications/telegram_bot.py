@@ -2,12 +2,12 @@
 Telegram Bot for Gann Sentinel Trader
 Handles notifications and command processing for trade approvals and system control.
 
-Version: 2.2.0 - MACA Telegram Upgrade
-- Inline buttons for approve/reject (no typing commands)
+Version: 2.2.1 - Added Cost Tracking & MACA Check Formatting
+- format_maca_check_result() for /check with MACA output
+- format_cost_message() for /cost command
+- format_positions_message() and format_history_message()
+- Inline buttons for approve/reject
 - AI Council view (Grok, Perplexity, ChatGPT thesis display)
-- Enhanced chart analysis with 5-year context
-- Claude's synthesis as "Senior Trader" decision
-- Callback query handling for button presses
 
 Uses Unicode escape sequences for all emojis and special characters.
 """
@@ -1692,6 +1692,363 @@ class TelegramBot:
                 reply_markup=keyboard,
                 message_type="maca_decision"
             )
+
+    # =========================================================================
+    # POSITIONS & HISTORY FORMATTING
+    # =========================================================================
+
+    def format_positions_message(self, positions: List[Dict[str, Any]]) -> str:
+        """
+        Format current positions for Telegram display.
+
+        Args:
+            positions: List of position dicts from database/executor
+
+        Returns:
+            Formatted string for Telegram
+        """
+        if not positions:
+            return (
+                f"{EMOJI_CHART} CURRENT POSITIONS\n"
+                f"{'=' * 35}\n\n"
+                f"No open positions.\n\n"
+                f"Use /check [TICKER] to analyze stocks."
+            )
+
+        lines = [
+            f"{EMOJI_CHART} CURRENT POSITIONS",
+            "=" * 35,
+            ""
+        ]
+
+        total_value = 0
+        total_pnl = 0
+
+        for pos in positions:
+            ticker = pos.get("ticker", "???")
+            qty = pos.get("quantity", 0)
+            entry = pos.get("avg_entry_price", 0)
+            current = pos.get("current_price", entry)
+            value = pos.get("market_value", qty * current)
+            pnl = pos.get("unrealized_pnl", 0)
+            pnl_pct = pos.get("unrealized_pnl_pct", 0)
+            entry_date = pos.get("entry_date", "")
+
+            total_value += value
+            total_pnl += pnl
+
+            # P&L indicator
+            if pnl > 0:
+                pnl_emoji = EMOJI_GREEN_CIRCLE
+                pnl_str = f"+${pnl:,.2f} (+{pnl_pct*100:.1f}%)"
+            elif pnl < 0:
+                pnl_emoji = EMOJI_RED_CIRCLE
+                pnl_str = f"-${abs(pnl):,.2f} ({pnl_pct*100:.1f}%)"
+            else:
+                pnl_emoji = EMOJI_WHITE_CIRCLE
+                pnl_str = "$0.00 (0.0%)"
+
+            # Format entry date
+            if entry_date:
+                try:
+                    dt = datetime.fromisoformat(entry_date.replace("Z", "+00:00"))
+                    date_str = dt.strftime("%m/%d")
+                except:
+                    date_str = ""
+            else:
+                date_str = ""
+
+            lines.append(f"{pnl_emoji} {ticker}")
+            lines.append(f"   Qty: {qty} @ ${entry:,.2f}")
+            lines.append(f"   Now: ${current:,.2f} = ${value:,.2f}")
+            lines.append(f"   P&L: {pnl_str}")
+            if date_str:
+                lines.append(f"   Entry: {date_str}")
+            lines.append("")
+
+        # Summary
+        lines.append("-" * 35)
+        if total_pnl >= 0:
+            lines.append(f"Total Value: ${total_value:,.2f}")
+            lines.append(f"Total P&L: +${total_pnl:,.2f} {EMOJI_GREEN_CIRCLE}")
+        else:
+            lines.append(f"Total Value: ${total_value:,.2f}")
+            lines.append(f"Total P&L: -${abs(total_pnl):,.2f} {EMOJI_RED_CIRCLE}")
+
+        return "\n".join(lines)
+
+    def format_history_message(
+        self,
+        trades: List[Dict[str, Any]],
+        limit: int = 10
+    ) -> str:
+        """
+        Format trade history for Telegram display.
+
+        Args:
+            trades: List of trade dicts from database
+            limit: Maximum trades to show
+
+        Returns:
+            Formatted string for Telegram
+        """
+        if not trades:
+            return (
+                f"{EMOJI_SCROLL} TRADE HISTORY\n"
+                f"{'=' * 35}\n\n"
+                f"No trade history yet.\n\n"
+                f"Trades will appear here after execution."
+            )
+
+        lines = [
+            f"{EMOJI_SCROLL} TRADE HISTORY (Last {min(len(trades), limit)})",
+            "=" * 35,
+            ""
+        ]
+
+        # Status emoji mapping
+        status_emoji = {
+            "filled": EMOJI_CHECK,
+            "submitted": EMOJI_HOURGLASS,
+            "pending_approval": EMOJI_BELL,
+            "rejected": EMOJI_CROSS,
+            "cancelled": EMOJI_CROSS,
+            "failed": EMOJI_WARNING
+        }
+
+        for trade in trades[:limit]:
+            trade_id = trade.get("id", "???")[:8]
+            ticker = trade.get("ticker", "???")
+            side = trade.get("side", "???").upper()
+            qty = trade.get("quantity", 0)
+            status = trade.get("status", "unknown")
+            conviction = trade.get("conviction_score", 0)
+            fill_price = trade.get("fill_price")
+            created = trade.get("created_at", "")
+
+            emoji = status_emoji.get(status, EMOJI_WHITE_CIRCLE)
+
+            # Format date
+            if created:
+                try:
+                    dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    date_str = dt.strftime("%m/%d %H:%M")
+                except:
+                    date_str = created[:10]
+            else:
+                date_str = ""
+
+            lines.append(f"{emoji} {side} {ticker}")
+            lines.append(f"   Qty: {qty} | Conv: {conviction}")
+
+            if fill_price:
+                lines.append(f"   Fill: ${fill_price:,.2f}")
+
+            lines.append(f"   Status: {status}")
+
+            if date_str:
+                lines.append(f"   Date: {date_str}")
+
+            # Show rejection reason if applicable
+            if status == "rejected" and trade.get("rejection_reason"):
+                reason = trade.get("rejection_reason", "")[:40]
+                lines.append(f"   Reason: {reason}")
+
+            lines.append(f"   ID: {trade_id}")
+            lines.append("")
+
+        # Summary
+        filled = sum(1 for t in trades if t.get("status") == "filled")
+        rejected = sum(1 for t in trades if t.get("status") == "rejected")
+        pending = sum(1 for t in trades if t.get("status") == "pending_approval")
+
+        lines.append("-" * 35)
+        lines.append(f"Filled: {filled} | Rejected: {rejected} | Pending: {pending}")
+
+        return "\n".join(lines)
+
+    def format_maca_check_result(self, result: Dict[str, Any]) -> str:
+        """
+        Format MACA ticker check result for Telegram.
+
+        Shows all 4 AI theses and Claude's final synthesis.
+
+        Args:
+            result: Output from MACAOrchestrator.run_ticker_check()
+
+        Returns:
+            Formatted string for Telegram
+        """
+        ticker = result.get("ticker", "???")
+        proposals = result.get("proposals", [])
+        synthesis = result.get("synthesis", {})
+        cycle_cost = result.get("cycle_cost", {})
+
+        lines = [
+            "=" * 40,
+            f"{EMOJI_BRAIN} MACA CHECK: {ticker}",
+            "=" * 40,
+            ""
+        ]
+
+        # AI Council Theses
+        lines.append(f"{EMOJI_TARGET} AI COUNCIL ANALYSIS")
+        lines.append("-" * 35)
+
+        # Source emoji mapping
+        source_emoji = {
+            "grok": EMOJI_BIRD,
+            "perplexity": EMOJI_TARGET,
+            "chatgpt": EMOJI_BRAIN
+        }
+
+        for proposal in proposals:
+            source = proposal.get("ai_source", "unknown")
+            emoji = source_emoji.get(source, EMOJI_CHART)
+            rec = proposal.get("recommendation", {})
+
+            side = rec.get("side", "N/A")
+            conviction = rec.get("conviction_score", 0)
+            thesis = rec.get("thesis", "No thesis")[:100]
+
+            # Conviction bar
+            bar = self._build_conviction_bar(conviction)
+
+            # Side indicator
+            if side == "BUY":
+                side_emoji = EMOJI_GREEN_CIRCLE
+            elif side == "SELL":
+                side_emoji = EMOJI_RED_CIRCLE
+            else:
+                side_emoji = EMOJI_WHITE_CIRCLE
+
+            lines.append(f"\n{emoji} {source.upper()}")
+            lines.append(f"   {side_emoji} {side} | Conv: {conviction}/100")
+            lines.append(f"   {bar}")
+            lines.append(f"   {thesis}...")
+
+        # Claude Synthesis
+        lines.append("")
+        lines.append("=" * 35)
+        lines.append(f"{EMOJI_BRAIN} CLAUDE'S SYNTHESIS")
+        lines.append("-" * 35)
+
+        synth_rec = synthesis.get("recommendation", {})
+        decision_type = synthesis.get("decision_type", "NO_TRADE")
+        final_conviction = synth_rec.get("conviction_score", 0)
+        final_thesis = synth_rec.get("thesis", "No synthesis available")[:150]
+        final_side = synth_rec.get("side", "HOLD")
+
+        # Decision indicator
+        if decision_type == "TRADE" and final_conviction >= 80:
+            decision_emoji = EMOJI_CHECK
+            decision_text = "ACTIONABLE"
+        else:
+            decision_emoji = EMOJI_WHITE_CIRCLE
+            decision_text = "WATCH ONLY"
+
+        lines.append(f"Decision: {decision_type}")
+        lines.append(f"Side: {final_side}")
+        lines.append(f"Conviction: {final_conviction}/100 {decision_emoji} {decision_text}")
+        lines.append(f"{self._build_conviction_bar(final_conviction)}")
+        lines.append(f"\n{final_thesis}")
+
+        # Cross-validation
+        cross_val = synthesis.get("cross_validation", {})
+        if cross_val:
+            lines.append("")
+            lines.append("Cross-Validation:")
+            for source, status in cross_val.items():
+                lines.append(f"  {source}: {status}")
+
+        # Cost tracking
+        lines.append("")
+        lines.append("-" * 35)
+        total_cost = cycle_cost.get("total_cost_usd", 0)
+        total_tokens = cycle_cost.get("total_tokens", 0)
+        lines.append(f"API Cost: ${total_cost:.4f} ({total_tokens:,} tokens)")
+
+        # By source
+        by_source = cycle_cost.get("by_source", {})
+        if by_source:
+            cost_parts = []
+            for src, data in by_source.items():
+                cost_parts.append(f"{src}=${data.get('cost_usd', 0):.3f}")
+            lines.append(f"  ({', '.join(cost_parts)})")
+
+        lines.append("=" * 40)
+
+        return "\n".join(lines)
+
+    def format_cost_message(self, cost_summary: Dict[str, Any]) -> str:
+        """
+        Format API cost summary for Telegram display.
+
+        Args:
+            cost_summary: Output from Database.get_cost_summary()
+
+        Returns:
+            Formatted string for Telegram
+        """
+        total_cost = cost_summary.get("total_cost_usd", 0)
+        total_tokens = cost_summary.get("total_tokens", 0)
+        cycle_count = cost_summary.get("cycle_count", 0)
+        period_days = cost_summary.get("period_days", 7)
+        by_source = cost_summary.get("by_source", {})
+        by_day = cost_summary.get("by_day", [])
+
+        lines = [
+            f"{EMOJI_CHART} API COST SUMMARY",
+            "=" * 35,
+            f"Period: Last {period_days} days",
+            "",
+            f"Total Cost: ${total_cost:.4f}",
+            f"Total Tokens: {total_tokens:,}",
+            f"Scan Cycles: {cycle_count}",
+        ]
+
+        if cycle_count > 0:
+            avg_cost = total_cost / cycle_count
+            lines.append(f"Avg Cost/Cycle: ${avg_cost:.4f}")
+
+        # By source breakdown
+        if by_source:
+            lines.append("")
+            lines.append("-" * 35)
+            lines.append("BY AI SOURCE:")
+
+            # Sort by cost descending
+            sorted_sources = sorted(by_source.items(), key=lambda x: x[1].get("cost_usd", 0), reverse=True)
+
+            for source, data in sorted_sources:
+                cost = data.get("cost_usd", 0)
+                tokens = data.get("tokens", 0)
+                pct = (cost / total_cost * 100) if total_cost > 0 else 0
+                lines.append(f"  {source}: ${cost:.4f} ({pct:.0f}%)")
+
+        # Daily breakdown (last 3 days)
+        if by_day:
+            lines.append("")
+            lines.append("-" * 35)
+            lines.append("RECENT DAYS:")
+
+            for day in by_day[:3]:
+                date = day.get("date", "")
+                cost = day.get("cost_usd", 0)
+                count = day.get("cycle_count", 0)
+                lines.append(f"  {date}: ${cost:.4f} ({count} cycles)")
+
+        # Projection
+        if cycle_count > 0 and period_days > 0:
+            daily_avg = total_cost / period_days
+            monthly_proj = daily_avg * 30
+            lines.append("")
+            lines.append("-" * 35)
+            lines.append(f"Monthly Projection: ~${monthly_proj:.2f}")
+
+        lines.append("=" * 35)
+
+        return "\n".join(lines)
 
 
 async def send_telegram_message(text: str) -> bool:

@@ -2,10 +2,12 @@
 MACA Orchestrator for Gann Sentinel Trader
 Coordinates the Multi-Agent Consensus Architecture 4-phase process.
 
-Version: 1.1.0 - MACA Telegram Integration
+Version: 1.2.0 - Per-Cycle Cost Tracking
 - Uses send_maca_scan_summary() for AI Council + Decision display
 - Inline buttons for approve/reject
 - Enhanced notification with technical signals and portfolio
+- Per-cycle API cost tracking with aggregate_cycle_costs()
+- is_configured property for component status check
 
 Phases:
 1. Parallel thesis generation (Grok, Perplexity, ChatGPT)
@@ -65,6 +67,60 @@ class MACAOrchestrator:
         self.chatgpt = chatgpt
         self.claude = claude
         self.telegram = telegram
+
+        # Track API costs per cycle
+        self._cycle_costs: Dict[str, Dict[str, Any]] = {}
+
+    @property
+    def is_configured(self) -> bool:
+        """Check if all AI components are properly configured."""
+        components = [self.grok, self.perplexity, self.chatgpt, self.claude]
+        for component in components:
+            if component is None:
+                return False
+            # Check if component has is_configured attribute
+            if hasattr(component, 'is_configured'):
+                if not component.is_configured:
+                    return False
+        return True
+
+    def aggregate_cycle_costs(self) -> Dict[str, Any]:
+        """
+        Aggregate API costs from current scan cycle.
+
+        Returns:
+            Dict with total_tokens, total_cost_usd, and by_source breakdown
+        """
+        total_tokens = 0
+        total_cost = 0.0
+
+        for source, cost_data in self._cycle_costs.items():
+            total_tokens += cost_data.get("tokens", 0)
+            total_cost += cost_data.get("cost_usd", 0.0)
+
+        return {
+            "total_tokens": total_tokens,
+            "total_cost_usd": total_cost,
+            "by_source": self._cycle_costs.copy()
+        }
+
+    def reset_cycle_costs(self) -> None:
+        """Reset cycle costs for a new scan cycle."""
+        self._cycle_costs = {}
+
+    def record_cost(self, source: str, tokens: int, cost_usd: float) -> None:
+        """
+        Record API cost for a specific AI source.
+
+        Args:
+            source: AI source name (grok, perplexity, chatgpt, claude)
+            tokens: Number of tokens used
+            cost_usd: Cost in USD
+        """
+        self._cycle_costs[source] = {
+            "tokens": tokens,
+            "cost_usd": cost_usd
+        }
 
     async def run_scan_cycle(
         self,

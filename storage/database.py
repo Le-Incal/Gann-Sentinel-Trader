@@ -27,24 +27,38 @@ class Database:
 
     def __init__(self, db_path: Optional[Path] = None):
         """Initialize database connection."""
-        self.db_path = db_path or Config.DATABASE_PATH
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._persistent_conn = None  # For in-memory mode
+
+        if db_path == ":memory:" or str(db_path) == ":memory:":
+            # In-memory mode for testing - needs persistent connection
+            self.db_path = ":memory:"
+            self._persistent_conn = sqlite3.connect(":memory:")
+            self._persistent_conn.row_factory = sqlite3.Row
+        else:
+            self.db_path = db_path or Config.DATABASE_PATH
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
         self._init_schema()
 
     @contextmanager
     def _get_connection(self):
         """Context manager for database connections."""
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Database error: {e}")
-            raise
-        finally:
-            conn.close()
+        if self._persistent_conn:
+            # Use persistent connection for in-memory mode
+            yield self._persistent_conn
+            self._persistent_conn.commit()
+        else:
+            conn = sqlite3.connect(str(self.db_path))
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"Database error: {e}")
+                raise
+            finally:
+                conn.close()
 
     def _init_schema(self) -> None:
         """Initialize database schema."""
