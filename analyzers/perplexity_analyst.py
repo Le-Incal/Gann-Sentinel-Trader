@@ -314,25 +314,49 @@ Be specific about any concerns. Cite sources if you find conflicting information
         return "\n".join(lines)
 
     def _parse_json_response(self, content: str) -> Optional[Dict]:
-        """Parse JSON from response, handling markdown code blocks."""
+        """Parse JSON from response, handling markdown code blocks and trailing text."""
         content = content.strip()
 
         # Remove markdown code blocks if present
         if content.startswith("```"):
             lines = content.split("\n")
-            content = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+            # Handle ```json or just ```
+            start_idx = 1
+            end_idx = -1 if lines[-1].strip() in ["```", ""] else len(lines)
+            content = "\n".join(lines[start_idx:end_idx]).strip()
+            # Remove trailing ``` if still present
+            if content.endswith("```"):
+                content = content[:-3].strip()
 
+        # First try: direct parse
         try:
             return json.loads(content)
         except json.JSONDecodeError:
-            # Try to find JSON object in response
-            start = content.find("{")
-            end = content.rfind("}") + 1
-            if start >= 0 and end > start:
-                try:
-                    return json.loads(content[start:end])
-                except json.JSONDecodeError:
-                    pass
+            pass
+
+        # Second try: find JSON object boundaries with proper brace matching
+        start = content.find("{")
+        if start == -1:
+            return None
+
+        # Find matching closing brace (handle nested objects)
+        depth = 0
+        end = -1
+        for i, char in enumerate(content[start:], start):
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+
+        if end > start:
+            try:
+                return json.loads(content[start:end])
+            except json.JSONDecodeError:
+                logger.error(f"JSON parse failed. Extracted: {content[start:end][:200]}")
+
         return None
 
     def _build_proposal(
