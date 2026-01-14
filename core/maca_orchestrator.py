@@ -61,6 +61,11 @@ class MACAOrchestrator:
             claude: Claude analyst with MACA synthesis capability
             telegram: Optional Telegram bot for notifications
         """
+        # Defensive check: ensure db is an instance, not a class
+        logger.info(f"MACA init: db type = {type(db)}, is_class = {isinstance(db, type)}")
+        if isinstance(db, type):
+            logger.warning("MACA received Database class instead of instance - auto-creating instance")
+            db = db()
         self.db = db
         self.grok = grok
         self.perplexity = perplexity
