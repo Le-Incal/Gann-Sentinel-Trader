@@ -3,6 +3,7 @@ Gann Sentinel Trader - Main Agent
 Orchestrates the trading system: scan signals, analyze, approve, execute.
 
 Version: 2.4.2 - Full MACA Integration for Scheduled Scans
+- FIX: analysis.id → analysis.analysis_id (was breaking trade creation)
 - MACA for ALL scans: Grok + Perplexity + ChatGPT + Claude synthesis
 - New Telegram format: AI Council views + Claude decision (2 messages)
 - Trade blocker visibility: Shows exactly why trades fail
@@ -743,7 +744,7 @@ class GannSentinelAgent:
         # Create trade record
         trade = Trade(
             id=str(uuid.uuid4()),
-            analysis_id=analysis.id,
+            analysis_id=analysis.analysis_id,
             ticker=analysis.ticker,
             side=OrderSide.BUY if analysis.recommendation == Recommendation.BUY else OrderSide.SELL,
             quantity=shares,
@@ -1434,7 +1435,7 @@ class GannSentinelAgent:
                 if shares > 0:
                     trade = Trade(
                         id=str(uuid.uuid4()),
-                        analysis_id=analysis.id,
+                        analysis_id=analysis.analysis_id,
                         ticker=ticker,
                         side=OrderSide.BUY,
                         quantity=shares,
