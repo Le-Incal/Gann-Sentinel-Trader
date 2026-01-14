@@ -146,8 +146,13 @@ class MACAOrchestrator:
             Final decision result including all phase outputs
         """
         # Create scan cycle record
-        cycle_id = self.db.create_scan_cycle()
         start_time = datetime.now(timezone.utc)
+        cycle_id = self.db.create_scan_cycle({
+            "cycle_id": str(uuid.uuid4()),
+            "timestamp_utc": start_time.isoformat(),
+            "cycle_type": "scheduled",
+            "status": "started"
+        })
 
         logger.info(f"Starting MACA scan cycle {cycle_id}")
 
