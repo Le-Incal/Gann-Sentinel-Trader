@@ -2,13 +2,13 @@
 Gann Sentinel Trader - Main Agent
 Orchestrates the trading system: scan signals, analyze, approve, execute.
 
-Version: 2.4.0 - Event Scanner + MACA + Learning Engine + Smart Scheduling
+Version: 2.4.2 - Full MACA Integration for Scheduled Scans
+- MACA for ALL scans: Grok + Perplexity + ChatGPT + Claude synthesis
+- New Telegram format: AI Council views + Claude decision (2 messages)
+- Trade blocker visibility: Shows exactly why trades fail
 - Event Scanner: 27 corporate event types (LevelFields-style)
-- MACA: Multi-Agent Consensus Architecture for /check command
 - Learning Engine tracks performance vs SPY
 - Smart scheduling: 2 scans/day (9:35 AM, 12:30 PM ET), no weekends
-- Context injection: Claude sees historical performance
-- 75% reduction in API costs
 
 DISCLAIMER: Trading involves substantial risk of loss. This is an experimental
 system and nothing here constitutes financial advice. Only trade what you can
@@ -83,7 +83,7 @@ class GannSentinelAgent:
     def __init__(self):
         """Initialize all components."""
         logger.info("=" * 60)
-        logger.info("INITIALIZING GANN SENTINEL TRADER v2.4.0")
+        logger.info("INITIALIZING GANN SENTINEL TRADER v2.4.2")
         logger.info("=" * 60)
 
         # Validate configuration
@@ -540,77 +540,136 @@ class GannSentinelAgent:
         portfolio_dict = portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio
         self.db.save_snapshot(portfolio_dict)
 
-        # Run Claude analysis with learning context
-        logger.info("Running Claude analysis with learning context...")
-        analysis = None
-        analysis_dict = None
+        # Separate signal types for MACA
+        fred_signals_dict = [s for s in signals_dict if s.get("source") == "fred"]
+        polymarket_signals_dict = [s for s in signals_dict if s.get("source") == "polymarket"]
 
-        # Enrich portfolio context with learning data
-        enriched_portfolio = {
-            **portfolio_dict,
-            "learning_context": learning_context,
-            "learning_summary": self.learning_engine.format_context_for_prompt(learning_context)
-        }
+        # =================================================================
+        # MACA MODE: Full AI Council (Grok + Perplexity + ChatGPT + Claude)
+        # =================================================================
+        if self.maca and self.maca.is_configured:
+            logger.info("Running MACA scan cycle (4 AI Council)...")
 
-        try:
-            analysis = await self.analyst.analyze_signals(
-                signals=signals,
-                portfolio_context=enriched_portfolio,
-                watchlist=self.watchlist
-            )
+            try:
+                # Run full MACA cycle
+                maca_result = await self.maca.run_scan_cycle(
+                    portfolio=portfolio_dict,
+                    available_cash=portfolio_dict.get("cash", 0),
+                    fred_signals=fred_signals_dict,
+                    polymarket_signals=polymarket_signals_dict,
+                    technical_analysis=technical_signals[0] if technical_signals else None,
+                    market_context=learning_context.get("learning_summary", "")
+                )
 
-            analysis_dict = analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis
-            self.db.save_analysis(analysis_dict)
+                # Handle trade creation from MACA result
+                final_decision = maca_result.get("final_decision", {})
+                if final_decision.get("proceed"):
+                    # Create trade from MACA recommendation
+                    trade_id = await self._create_maca_trade_from_scan(
+                        maca_result=maca_result,
+                        portfolio=portfolio_dict,
+                        positions=positions
+                    )
+                    if trade_id:
+                        self._current_pending_trade_id = trade_id
+                        maca_result["final_decision"]["trade_id"] = trade_id
 
-            if analysis.is_actionable:
-                logger.info(f"Actionable trade identified: {analysis.ticker} - {analysis.recommendation.value}")
+                # Add portfolio to result for telegram display
+                maca_result["portfolio"] = portfolio_dict
+                maca_result["technical_analysis"] = technical_signals
 
-                self.telegram.record_decision({
-                    "decision_type": "TRADE",
-                    "trade_details": {
-                        "ticker": analysis.ticker,
-                        "side": analysis.recommendation.value,
-                        "conviction_score": analysis.conviction_score
-                    },
-                    "reasoning": {"rationale": analysis.thesis},
-                    "status": "pending_approval" if Config.APPROVAL_GATE else "approved"
-                })
+                # Send MACA-formatted Telegram summary (AI Council views + Claude synthesis)
+                await self.maca.send_maca_summary(maca_result)
 
-                await self._handle_trade_recommendation(analysis, portfolio, positions)
-            else:
-                logger.info(f"No actionable trade. Conviction: {analysis.conviction_score}")
+                logger.info(f"MACA scan complete: status={maca_result.get('status')}, "
+                           f"duration={maca_result.get('duration_seconds', 0):.1f}s")
+
+            except Exception as e:
+                logger.error(f"Error in MACA scan cycle: {e}")
+                logger.error(traceback.format_exc())
+                self.db.log_error("maca_error", "maca_orchestrator", str(e), traceback.format_exc())
+                self.telegram.record_system_error("maca_orchestrator", str(e))
+
+                # Fallback to basic error message
+                await self.telegram.send_message(
+                    f"{EMOJI_CROSS} MACA scan failed: {str(e)[:100]}",
+                    parse_mode=None
+                )
+
+        # =================================================================
+        # STANDARD MODE: Claude-only analysis (fallback)
+        # =================================================================
+        else:
+            logger.info("Running Claude-only analysis (MACA disabled)...")
+            analysis = None
+            analysis_dict = None
+
+            # Enrich portfolio context with learning data
+            enriched_portfolio = {
+                **portfolio_dict,
+                "learning_context": learning_context,
+                "learning_summary": self.learning_engine.format_context_for_prompt(learning_context)
+            }
+
+            try:
+                analysis = await self.analyst.analyze_signals(
+                    signals=signals,
+                    portfolio_context=enriched_portfolio,
+                    watchlist=self.watchlist
+                )
+
+                analysis_dict = analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis
+                self.db.save_analysis(analysis_dict)
+
+                if analysis.is_actionable:
+                    logger.info(f"Actionable trade identified: {analysis.ticker} - {analysis.recommendation.value}")
+
+                    self.telegram.record_decision({
+                        "decision_type": "TRADE",
+                        "trade_details": {
+                            "ticker": analysis.ticker,
+                            "side": analysis.recommendation.value,
+                            "conviction_score": analysis.conviction_score
+                        },
+                        "reasoning": {"rationale": analysis.thesis},
+                        "status": "pending_approval" if Config.APPROVAL_GATE else "approved"
+                    })
+
+                    await self._handle_trade_recommendation(analysis, portfolio, positions)
+                else:
+                    logger.info(f"No actionable trade. Conviction: {analysis.conviction_score}")
+
+                    self.telegram.record_decision({
+                        "decision_type": "NO_TRADE",
+                        "trade_details": {
+                            "ticker": getattr(analysis, 'ticker', None),
+                            "conviction_score": analysis.conviction_score
+                        },
+                        "reasoning": {"rationale": f"Conviction {analysis.conviction_score} below threshold"}
+                    })
+
+            except Exception as e:
+                logger.error(f"Error in Claude analysis: {e}")
+                self.db.log_error("analysis_error", "claude", str(e), traceback.format_exc())
+                self.telegram.record_system_error("claude_analyst", str(e))
 
                 self.telegram.record_decision({
                     "decision_type": "NO_TRADE",
-                    "trade_details": {
-                        "ticker": getattr(analysis, 'ticker', None),
-                        "conviction_score": analysis.conviction_score
-                    },
-                    "reasoning": {"rationale": f"Conviction {analysis.conviction_score} below threshold"}
+                    "reasoning": {"rationale": f"Analysis error: {str(e)[:50]}"}
                 })
 
-        except Exception as e:
-            logger.error(f"Error in Claude analysis: {e}")
-            self.db.log_error("analysis_error", "claude", str(e), traceback.format_exc())
-            self.telegram.record_system_error("claude_analyst", str(e))
-
-            self.telegram.record_decision({
-                "decision_type": "NO_TRADE",
-                "reasoning": {"rationale": f"Analysis error: {str(e)[:50]}"}
-            })
-
-        # Send consolidated scan summary
-        try:
-            await self.telegram.send_scan_summary(
-                signals=signals_dict,
-                analysis=analysis_dict,
-                portfolio=portfolio_dict,
-                pending_trade_id=self._current_pending_trade_id,
-                technical_signals=technical_signals
-            )
-        except Exception as e:
-            logger.error(f"Error sending scan summary: {e}")
-            self.telegram.record_system_error("scan_summary", str(e))
+            # Send consolidated scan summary (old format)
+            try:
+                await self.telegram.send_scan_summary(
+                    signals=signals_dict,
+                    analysis=analysis_dict,
+                    portfolio=portfolio_dict,
+                    pending_trade_id=self._current_pending_trade_id,
+                    technical_signals=technical_signals
+                )
+            except Exception as e:
+                logger.error(f"Error sending scan summary: {e}")
+                self.telegram.record_system_error("scan_summary", str(e))
 
     async def _handle_trade_recommendation(
         self,
@@ -643,23 +702,42 @@ class GannSentinelAgent:
 
         # Calculate position size
         portfolio_dict = portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio
-        position_value = portfolio_dict.get("equity", 100000) * (analysis.position_size_pct / 100)
+        equity = portfolio_dict.get("equity", 100000)
+        position_pct = analysis.position_size_pct if analysis.position_size_pct else 10  # Default 10%
+        position_value = equity * (position_pct / 100)
 
-        # Get current price
+        logger.info(f"Position calculation: equity=${equity:,.2f}, size_pct={position_pct}%, value=${position_value:,.2f}")
+
+        # Get current price - WITH BLOCKER RECORDING FOR VISIBILITY
         try:
             quote = await self.executor.get_quote(analysis.ticker)
             current_price = quote.get("mid", quote.get("last", 0))
+            logger.info(f"Quote for {analysis.ticker}: price=${current_price}")
         except Exception as e:
-            logger.error(f"Error getting quote: {e}")
+            logger.error(f"Error getting quote for {analysis.ticker}: {e}")
+            self.telegram.record_trade_blocker({
+                "type": "QUOTE_FETCH_FAILED",
+                "details": f"Could not get price for {analysis.ticker}: {str(e)[:100]}"
+            })
             return
 
         if current_price <= 0:
-            logger.error(f"Invalid price for {analysis.ticker}")
+            logger.error(f"Invalid price for {analysis.ticker}: {current_price}")
+            self.telegram.record_trade_blocker({
+                "type": "INVALID_PRICE",
+                "details": f"Price was {current_price} for {analysis.ticker}"
+            })
             return
 
         shares = int(position_value / current_price)
+        logger.info(f"Share calculation: ${position_value:,.2f} / ${current_price:.2f} = {shares} shares")
+
         if shares <= 0:
             logger.warning(f"Position size too small for {analysis.ticker}")
+            self.telegram.record_trade_blocker({
+                "type": "POSITION_TOO_SMALL",
+                "details": f"0 shares: ${position_value:,.2f} position / ${current_price:.2f} price"
+            })
             return
 
         # Create trade record
@@ -681,12 +759,131 @@ class GannSentinelAgent:
         # Store for scan summary
         self._current_pending_trade_id = trade.id
 
+        logger.info(f"Trade created: {trade.id[:8]} - {trade.side.value} {trade.quantity} {trade.ticker} @ ${current_price:.2f}")
+
         # Send approval request
         await self.telegram.send_trade_approval_request(
             trade=trade.to_dict(),
             analysis=analysis.to_dict() if hasattr(analysis, 'to_dict') else analysis,
             current_price=current_price
         )
+
+    async def _create_maca_trade_from_scan(
+        self,
+        maca_result: Dict[str, Any],
+        portfolio: Dict[str, Any],
+        positions: List[Position]
+    ) -> Optional[str]:
+        """
+        Create a pending trade from MACA scan cycle result.
+
+        Returns trade_id if created, None otherwise.
+        """
+        try:
+            final_decision = maca_result.get("final_decision", {})
+            if not final_decision.get("proceed"):
+                return None
+
+            rec = final_decision.get("recommendation", {})
+            ticker = rec.get("ticker")
+            side = rec.get("side", "BUY")
+            conviction = final_decision.get("final_conviction", 0)
+            position_size_pct = rec.get("position_size_pct", 10)
+            stop_loss_pct = rec.get("stop_loss_pct", 8)
+            thesis = rec.get("thesis", "MACA consensus recommendation")
+
+            if not ticker:
+                logger.warning("MACA trade creation failed: no ticker")
+                return None
+
+            # Run risk checks
+            analysis_dict = {
+                "ticker": ticker,
+                "recommendation": side,
+                "conviction_score": conviction,
+                "position_size_pct": position_size_pct,
+                "stop_loss_pct": stop_loss_pct,
+                "thesis": thesis
+            }
+
+            positions_dict = [p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
+            passed, results = self.risk_engine.validate_trade(
+                analysis=analysis_dict,
+                portfolio=portfolio,
+                current_positions=positions_dict
+            )
+
+            if not passed:
+                failed_checks = [r for r in results if not r.passed and r.severity == "error"]
+                reasons = "; ".join([r.message for r in failed_checks])
+                logger.info(f"MACA trade rejected by risk engine: {reasons}")
+                for result in results:
+                    if not result.passed:
+                        self.telegram.record_risk_rejection({
+                            "check_name": result.check_name,
+                            "message": result.message,
+                            "severity": result.severity
+                        })
+                return None
+
+            # Get current price
+            try:
+                quote = await self.executor.get_quote(ticker)
+                current_price = quote.get("mid", quote.get("last", 0))
+                logger.info(f"MACA quote for {ticker}: price=${current_price}")
+            except Exception as e:
+                logger.error(f"MACA quote fetch failed for {ticker}: {e}")
+                self.telegram.record_trade_blocker({
+                    "type": "QUOTE_FETCH_FAILED",
+                    "details": f"Could not get price for {ticker}: {str(e)[:100]}"
+                })
+                return None
+
+            if current_price <= 0:
+                logger.error(f"MACA invalid price for {ticker}: {current_price}")
+                self.telegram.record_trade_blocker({
+                    "type": "INVALID_PRICE",
+                    "details": f"Price was {current_price} for {ticker}"
+                })
+                return None
+
+            # Calculate shares
+            equity = portfolio.get("equity", 100000)
+            position_value = equity * (position_size_pct / 100)
+            shares = int(position_value / current_price)
+
+            logger.info(f"MACA share calc: ${position_value:,.2f} / ${current_price:.2f} = {shares} shares")
+
+            if shares <= 0:
+                logger.warning(f"MACA position too small for {ticker}")
+                self.telegram.record_trade_blocker({
+                    "type": "POSITION_TOO_SMALL",
+                    "details": f"0 shares: ${position_value:,.2f} / ${current_price:.2f}"
+                })
+                return None
+
+            # Create trade
+            trade = Trade(
+                id=str(uuid.uuid4()),
+                analysis_id=maca_result.get("cycle_id"),
+                ticker=ticker,
+                side=OrderSide.BUY if side == "BUY" else OrderSide.SELL,
+                quantity=shares,
+                order_type=OrderType.MARKET,
+                status=TradeStatus.PENDING_APPROVAL,
+                thesis=thesis,
+                conviction_score=conviction,
+                stop_loss_price=current_price * (1 - stop_loss_pct / 100)
+            )
+
+            self.db.save_trade(trade.to_dict())
+            logger.info(f"MACA trade created: {trade.id[:8]} - {trade.side.value} {trade.quantity} {ticker} @ ${current_price:.2f}")
+
+            return trade.id
+
+        except Exception as e:
+            logger.error(f"Error creating MACA trade: {e}")
+            return None
 
     async def _check_positions(self) -> None:
         """Check positions for stop-loss and take-profit triggers."""
