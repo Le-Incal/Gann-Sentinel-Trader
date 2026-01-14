@@ -550,7 +550,7 @@ class GannSentinelAgent:
         # =================================================================
         if self.maca and self.maca.is_configured:
             logger.info("Running MACA scan cycle (4 AI Council)...")
-
+            
             try:
                 # Run full MACA cycle
                 maca_result = await self.maca.run_scan_cycle(
@@ -561,7 +561,7 @@ class GannSentinelAgent:
                     technical_analysis=technical_signals[0] if technical_signals else None,
                     market_context=learning_context.get("learning_summary", "")
                 )
-
+                
                 # Handle trade creation from MACA result
                 final_decision = maca_result.get("final_decision", {})
                 if final_decision.get("proceed"):
@@ -574,29 +574,29 @@ class GannSentinelAgent:
                     if trade_id:
                         self._current_pending_trade_id = trade_id
                         maca_result["final_decision"]["trade_id"] = trade_id
-
+                
                 # Add portfolio to result for telegram display
                 maca_result["portfolio"] = portfolio_dict
                 maca_result["technical_analysis"] = technical_signals
-
+                
                 # Send MACA-formatted Telegram summary (AI Council views + Claude synthesis)
                 await self.maca.send_maca_summary(maca_result)
-
+                
                 logger.info(f"MACA scan complete: status={maca_result.get('status')}, "
                            f"duration={maca_result.get('duration_seconds', 0):.1f}s")
-
+                
             except Exception as e:
                 logger.error(f"Error in MACA scan cycle: {e}")
                 logger.error(traceback.format_exc())
                 self.db.log_error("maca_error", "maca_orchestrator", str(e), traceback.format_exc())
                 self.telegram.record_system_error("maca_orchestrator", str(e))
-
+                
                 # Fallback to basic error message
                 await self.telegram.send_message(
                     f"{EMOJI_CROSS} MACA scan failed: {str(e)[:100]}",
                     parse_mode=None
                 )
-
+        
         # =================================================================
         # STANDARD MODE: Claude-only analysis (fallback)
         # =================================================================
@@ -706,7 +706,7 @@ class GannSentinelAgent:
         equity = portfolio_dict.get("equity", 100000)
         position_pct = analysis.position_size_pct if analysis.position_size_pct else 10  # Default 10%
         position_value = equity * (position_pct / 100)
-
+        
         logger.info(f"Position calculation: equity=${equity:,.2f}, size_pct={position_pct}%, value=${position_value:,.2f}")
 
         # Get current price - WITH BLOCKER RECORDING FOR VISIBILITY
@@ -777,14 +777,14 @@ class GannSentinelAgent:
     ) -> Optional[str]:
         """
         Create a pending trade from MACA scan cycle result.
-
+        
         Returns trade_id if created, None otherwise.
         """
         try:
             final_decision = maca_result.get("final_decision", {})
             if not final_decision.get("proceed"):
                 return None
-
+            
             rec = final_decision.get("recommendation", {})
             ticker = rec.get("ticker")
             side = rec.get("side", "BUY")
@@ -792,11 +792,11 @@ class GannSentinelAgent:
             position_size_pct = rec.get("position_size_pct", 10)
             stop_loss_pct = rec.get("stop_loss_pct", 8)
             thesis = rec.get("thesis", "MACA consensus recommendation")
-
+            
             if not ticker:
                 logger.warning("MACA trade creation failed: no ticker")
                 return None
-
+            
             # Run risk checks
             analysis_dict = {
                 "ticker": ticker,
@@ -806,14 +806,14 @@ class GannSentinelAgent:
                 "stop_loss_pct": stop_loss_pct,
                 "thesis": thesis
             }
-
+            
             positions_dict = [p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
             passed, results = self.risk_engine.validate_trade(
                 analysis=analysis_dict,
                 portfolio=portfolio,
                 current_positions=positions_dict
             )
-
+            
             if not passed:
                 failed_checks = [r for r in results if not r.passed and r.severity == "error"]
                 reasons = "; ".join([r.message for r in failed_checks])
@@ -826,7 +826,7 @@ class GannSentinelAgent:
                             "severity": result.severity
                         })
                 return None
-
+            
             # Get current price
             try:
                 quote = await self.executor.get_quote(ticker)
@@ -839,7 +839,7 @@ class GannSentinelAgent:
                     "details": f"Could not get price for {ticker}: {str(e)[:100]}"
                 })
                 return None
-
+            
             if current_price <= 0:
                 logger.error(f"MACA invalid price for {ticker}: {current_price}")
                 self.telegram.record_trade_blocker({
@@ -847,14 +847,14 @@ class GannSentinelAgent:
                     "details": f"Price was {current_price} for {ticker}"
                 })
                 return None
-
+            
             # Calculate shares
             equity = portfolio.get("equity", 100000)
             position_value = equity * (position_size_pct / 100)
             shares = int(position_value / current_price)
-
+            
             logger.info(f"MACA share calc: ${position_value:,.2f} / ${current_price:.2f} = {shares} shares")
-
+            
             if shares <= 0:
                 logger.warning(f"MACA position too small for {ticker}")
                 self.telegram.record_trade_blocker({
@@ -862,7 +862,7 @@ class GannSentinelAgent:
                     "details": f"0 shares: ${position_value:,.2f} / ${current_price:.2f}"
                 })
                 return None
-
+            
             # Create trade
             trade = Trade(
                 id=str(uuid.uuid4()),
@@ -876,12 +876,12 @@ class GannSentinelAgent:
                 conviction_score=conviction,
                 stop_loss_price=current_price * (1 - stop_loss_pct / 100)
             )
-
+            
             self.db.save_trade(trade.to_dict())
             logger.info(f"MACA trade created: {trade.id[:8]} - {trade.side.value} {trade.quantity} {ticker} @ ${current_price:.2f}")
-
+            
             return trade.id
-
+            
         except Exception as e:
             logger.error(f"Error creating MACA trade: {e}")
             return None
