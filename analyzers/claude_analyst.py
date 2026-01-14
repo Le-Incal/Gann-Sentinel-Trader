@@ -35,6 +35,9 @@ from scanners.temporal import (
     get_temporal_context,
 )
 
+# Import MACA mixin for combined class
+from analyzers.claude_maca_extension import ClaudeMACAMixin
+
 logger = logging.getLogger(__name__)
 
 
@@ -1199,6 +1202,21 @@ Respond with your analysis in JSON format.
             signals_used=signals_used,
             market_context="Error during analysis",
         )
+
+
+# =============================================================================
+# MACA-ENABLED ANALYST (Combined Class)
+# =============================================================================
+
+class ClaudeMACAAnalyst(ClaudeAnalyst, ClaudeMACAMixin):
+    """
+    Claude Analyst with MACA synthesis capabilities.
+
+    Use this class when MACA is enabled to get both:
+    - Standard signal analysis (from ClaudeAnalyst)
+    - Multi-proposal synthesis (from ClaudeMACAMixin)
+    """
+    pass
 
 
 # =============================================================================

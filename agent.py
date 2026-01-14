@@ -32,7 +32,7 @@ from scanners.fred_scanner import FREDScanner
 from scanners.polymarket_scanner import PolymarketScanner
 from scanners.technical_scanner import TechnicalScanner
 from scanners.event_scanner import EventScanner
-from analyzers.claude_analyst import ClaudeAnalyst
+from analyzers.claude_analyst import ClaudeAnalyst, ClaudeMACAAnalyst
 from executors.risk_engine import RiskEngine
 from executors.alpaca_executor import AlpacaExecutor
 from notifications.telegram_bot import TelegramBot
@@ -111,7 +111,6 @@ class GannSentinelAgent:
         self.polymarket = PolymarketScanner()
         self.technical = TechnicalScanner()
         self.event_scanner = EventScanner()
-        self.analyst = ClaudeAnalyst()
         self.risk_engine = RiskEngine()
         self.executor = AlpacaExecutor()
         self.telegram = TelegramBot(
@@ -126,6 +125,14 @@ class GannSentinelAgent:
         # Initialize MACA Orchestrator if enabled
         self.maca: Optional[MACAOrchestrator] = None
         self.maca_enabled = os.getenv("MACA_ENABLED", "false").lower() == "true"
+
+        # Use ClaudeMACAAnalyst when MACA is enabled (has synthesize_proposals method)
+        if self.maca_enabled and MACA_AVAILABLE:
+            self.analyst = ClaudeMACAAnalyst()
+            logger.info("Using ClaudeMACAAnalyst (MACA-enabled)")
+        else:
+            self.analyst = ClaudeAnalyst()
+            logger.info("Using standard ClaudeAnalyst")
 
         if self.maca_enabled and MACA_AVAILABLE:
             try:
