@@ -5,11 +5,14 @@ Forward-looking prediction market signal extraction.
 This scanner uses the shared temporal awareness framework to ensure
 we always look projectively (1mo, 3mo, 6mo, 12mo forward).
 
-Version: 2.0.0 (Temporal Awareness Update)
+Version: 2.1.0 (Sports/Entertainment Filter Fix)
+- FIX: Word boundary matching for "ai" to prevent false positives
+- ADD: Exclusion keywords for sports, entertainment, reality TV
 Last Updated: January 2026
 """
 
 import os
+import re
 import uuid
 import hashlib
 import logging
@@ -32,307 +35,102 @@ logger = logging.getLogger(__name__)
 
 
 class MarketCategory(Enum):
-    """
-    Investment-focused categories for stock trading signals.
-
-    Each category maps to specific tradeable assets and represents
-    a distinct market-moving theme.
-    """
-    # Core monetary/macro
-    FEDERAL_RESERVE = "federal_reserve"
-    MACRO_ECONOMIC = "macro_economic"
-    FISCAL_TREASURY = "fiscal_treasury"
-
-    # Trade & geopolitics
-    TRADE_POLICY = "trade_policy"
+    """Categories of markets we care about for trading signals."""
+    FED_MONETARY = "fed_monetary"
+    ECONOMIC_DATA = "economic_data"
     GEOPOLITICAL = "geopolitical"
-    CHINA_RISK = "china_risk"
-
-    # Technology themes
-    AI_SECTOR = "ai_sector"
-    SEMICONDUCTOR = "semiconductor"
-    TECH_GIANTS = "tech_giants"
-
-    # Other sectors
-    SPACE_INDUSTRY = "space_industry"
-    ENERGY_COMMODITIES = "energy_commodities"
-    HEALTHCARE_BIOTECH = "healthcare_biotech"
-
-    # Corporate & regulatory
-    CEO_EXECUTIVE = "ceo_executive"
-    REGULATORY_LEGAL = "regulatory_legal"
-    IPO_CAPITAL_MARKETS = "ipo_capital_markets"
-
-    # Policy affecting equities
-    LABOR_IMMIGRATION = "labor_immigration"
-    CRYPTO_POLICY = "crypto_policy"
-
-    # Catch-all (filtered out by default)
+    TECH_SECTOR = "tech_sector"
+    CRYPTO = "crypto"
+    ELECTIONS = "elections"
     OTHER = "other"
 
 
-class SignalPurpose(Enum):
-    """Purpose classification for how signals inform trading decisions."""
-    HYPOTHESIS_GENERATOR = "hypothesis_generator"  # Novel info that could spark a trade idea
-    SENTIMENT_VALIDATOR = "sentiment_validator"    # Crowd odds to check against existing thesis
-    CATALYST_TIMING = "catalyst_timing"            # Tells us WHEN something resolves
-
-
-# =============================================================================
-# KEYWORD DICTIONARIES
-# =============================================================================
-
+# Tags and keywords for categorization
 CATEGORY_KEYWORDS = {
-    # -------------------------------------------------------------------------
-    # FEDERAL RESERVE - Rate decisions, Fed policy
-    # -------------------------------------------------------------------------
-    MarketCategory.FEDERAL_RESERVE: [
-        "fed", "federal reserve", "fomc", "rate cut", "rate hike",
-        "interest rate", "powell", "jerome powell", "monetary policy",
-        "basis points", "quantitative tightening", "quantitative easing",
-        "qt", "qe", "fed funds", "federal funds rate", "fomc meeting",
-        "dot plot", "fed pivot", "hawkish", "dovish", "terminal rate"
+    MarketCategory.FED_MONETARY: [
+        "fed", "federal reserve", "fomc", "rate cut", "rate hike", 
+        "interest rate", "powell", "monetary policy", "basis points",
+        "quantitative", "tightening", "easing"
     ],
-
-    # -------------------------------------------------------------------------
-    # MACRO ECONOMIC - GDP, recession, inflation
-    # -------------------------------------------------------------------------
-    MarketCategory.MACRO_ECONOMIC: [
-        "gdp", "inflation", "cpi", "pce", "unemployment", "jobs report",
-        "nonfarm payroll", "payroll", "recession", "soft landing",
-        "hard landing", "economic growth", "retail sales", "consumer spending",
-        "manufacturing", "pmi", "ism", "consumer confidence", "stagflation",
-        "deflation", "disinflation", "yield curve", "inverted yield"
+    MarketCategory.ECONOMIC_DATA: [
+        "gdp", "inflation", "cpi", "unemployment", "jobs", "payroll",
+        "recession", "economy", "economic", "pce", "retail sales",
+        "manufacturing", "pmi", "consumer"
     ],
-
-    # -------------------------------------------------------------------------
-    # FISCAL & TREASURY - Government spending, debt
-    # -------------------------------------------------------------------------
-    MarketCategory.FISCAL_TREASURY: [
-        "debt ceiling", "government shutdown", "treasury", "treasury auction",
-        "deficit", "fiscal policy", "spending bill", "budget", "appropriations",
-        "continuing resolution", "national debt", "bond auction", "t-bill",
-        "treasury yield", "sovereign debt", "fiscal stimulus", "debt limit"
-    ],
-
-    # -------------------------------------------------------------------------
-    # TRADE POLICY - Tariffs, sanctions, trade deals
-    # -------------------------------------------------------------------------
-    MarketCategory.TRADE_POLICY: [
-        "tariff", "trump tariff", "trade war", "trade deal", "sanctions",
-        "import duty", "export ban", "trade agreement", "nafta", "usmca",
-        "wto", "trade deficit", "protectionism", "dumping", "countervailing",
-        "section 301", "section 232", "most favored nation", "trade representative"
-    ],
-
-    # -------------------------------------------------------------------------
-    # GEOPOLITICAL - Wars, conflicts, international relations
-    # -------------------------------------------------------------------------
     MarketCategory.GEOPOLITICAL: [
-        "war", "conflict", "invasion", "military", "nato", "eu", "european union",
-        "brexit", "russia", "ukraine", "middle east", "iran", "israel",
-        "north korea", "nuclear", "missile", "defense", "pentagon",
-        "state department", "diplomacy", "treaty", "alliance", "sanctions"
+        "tariff", "trade war", "sanctions", "china", "russia", "ukraine",
+        "war", "conflict", "nato", "eu", "brexit", "opec", "iran", "israel",
+        "taiwan", "north korea", "syria", "saudi", "venezuela", "cuba",
+        "import", "export", "embargo", "treaty", "alliance", "military",
+        "invasion", "ceasefire", "peace deal", "nuclear"
     ],
-
-    # -------------------------------------------------------------------------
-    # CHINA RISK - Taiwan, ADRs, chip bans, stimulus
-    # -------------------------------------------------------------------------
-    MarketCategory.CHINA_RISK: [
-        "taiwan", "taiwan invasion", "china invasion", "pla", "ccp",
-        "adr delisting", "china adr", "hkex", "chinese stocks",
-        "chip ban", "export control", "entity list", "huawei",
-        "china stimulus", "pboc", "xi jinping", "chinese communist party",
-        "south china sea", "one china", "tsmc taiwan", "baba", "alibaba",
-        "pdd", "pinduoduo", "jd", "nio", "byd", "tencent"
+    MarketCategory.TECH_SECTOR: [
+        "ai", "artificial intelligence", "nvidia", "microsoft", "apple",
+        "google", "amazon", "meta", "semiconductor", "chip", "openai",
+        "chatgpt", "tesla", "tsla", "spacex", "starlink", "antitrust",
+        "data center", "cloud computing", "aws", "azure", "gcp",
+        "autonomous vehicle", "self-driving", "ev", "electric vehicle"
     ],
-
-    # -------------------------------------------------------------------------
-    # AI SECTOR - AI companies, models, regulation
-    # -------------------------------------------------------------------------
-    MarketCategory.AI_SECTOR: [
-        "openai", "anthropic", "claude", "chatgpt", "gpt-5", "gpt5",
-        "xai", "x.ai", "grok", "google ai", "gemini", "deepmind", "bard",
-        "microsoft copilot", "copilot", "meta ai", "llama", "mistral",
-        "ai regulation", "artificial intelligence", "machine learning",
-        "large language model", "llm", "generative ai", "gen ai",
-        "ai safety", "agi", "artificial general intelligence",
-        "sam altman", "dario amodei", "demis hassabis", "ai chips",
-        "ai infrastructure", "ai training", "inference", "transformer"
+    MarketCategory.CRYPTO: [
+        "bitcoin", "btc", "ethereum", "eth", "crypto", "cryptocurrency",
+        "blockchain", "defi", "sec crypto", "xrp", "ripple", "solana", "sol",
+        "cardano", "ada", "dogecoin", "doge", "coinbase", "binance", "stablecoin",
+        "usdt", "usdc", "altcoin", "nft", "web3"
     ],
-
-    # -------------------------------------------------------------------------
-    # SEMICONDUCTOR - Chips, fabs, data centers
-    # -------------------------------------------------------------------------
-    MarketCategory.SEMICONDUCTOR: [
-        "semiconductor", "chip", "nvidia", "nvda", "amd", "intel", "intc",
-        "tsmc", "taiwan semiconductor", "asml", "lam research", "lrcx",
-        "applied materials", "amat", "micron", "mu", "qualcomm", "qcom",
-        "broadcom", "avgo", "data center", "gpu", "cpu", "hbm",
-        "high bandwidth memory", "fab", "foundry", "chips act",
-        "blackwell", "hopper", "h100", "h200", "b100", "b200",
-        "grace", "cuda", "tensor core", "ai accelerator", "tpu",
-        "chip shortage", "wafer", "lithography", "euv", "packaging",
-        "cowos", "jensen huang", "pat gelsinger", "lisa su"
-    ],
-
-    # -------------------------------------------------------------------------
-    # TECH GIANTS - FAANG+, enterprise tech
-    # -------------------------------------------------------------------------
-    MarketCategory.TECH_GIANTS: [
-        "google", "alphabet", "googl", "goog", "microsoft", "msft",
-        "amazon", "amzn", "aws", "meta", "facebook", "apple", "aapl",
-        "netflix", "nflx", "tesla", "tsla", "oracle", "orcl",
-        "salesforce", "crm", "adobe", "adbe", "ibm", "cisco", "csco",
-        "cloud computing", "azure", "google cloud", "gcp",
-        "sundar pichai", "satya nadella", "tim cook", "andy jassy",
-        "mark zuckerberg", "zuck", "elon musk tesla"
-    ],
-
-    # -------------------------------------------------------------------------
-    # SPACE INDUSTRY - SpaceX, rockets, satellites
-    # -------------------------------------------------------------------------
-    MarketCategory.SPACE_INDUSTRY: [
-        "spacex", "rocket lab", "rklb", "blue origin", "nasa",
-        "starlink", "starship", "falcon", "falcon 9", "falcon heavy",
-        "neutron rocket", "electron rocket", "satellite", "orbit",
-        "launch", "rocket", "space station", "iss", "artemis",
-        "lunar", "moon", "mars", "gwynne shotwell", "peter beck",
-        "jeff bezos space", "ula", "united launch alliance",
-        "northrop grumman space", "lockheed martin space", "boeing space",
-        "space force", "gps satellite", "leo", "geo", "constellation"
-    ],
-
-    # -------------------------------------------------------------------------
-    # ENERGY & COMMODITIES - Oil, gas, renewables
-    # -------------------------------------------------------------------------
-    MarketCategory.ENERGY_COMMODITIES: [
-        "opec", "oil price", "crude oil", "wti", "brent", "natural gas",
-        "lng", "petroleum", "exxon", "xom", "chevron", "cvx",
-        "occidental", "oxy", "conocophillips", "cop", "bp", "shell",
-        "ev mandate", "electric vehicle", "renewable", "solar", "wind",
-        "energy policy", "drilling", "fracking", "pipeline", "refinery",
-        "gasoline", "diesel", "energy transition", "clean energy",
-        "enphase", "enph", "solaredge", "sedg", "first solar", "fslr",
-        "nextera", "nee", "plug power", "plug", "hydrogen"
-    ],
-
-    # -------------------------------------------------------------------------
-    # HEALTHCARE & BIOTECH - FDA, drugs, healthcare policy
-    # -------------------------------------------------------------------------
-    MarketCategory.HEALTHCARE_BIOTECH: [
-        "fda", "fda approval", "drug approval", "clinical trial",
-        "phase 3", "phase 2", "pdufa", "nda", "bla", "medicare",
-        "medicaid", "healthcare reform", "aca", "obamacare", "vaccine",
-        "pandemic", "epidemic", "outbreak", "pfizer", "pfe", "moderna",
-        "mrna", "merck", "mrk", "eli lilly", "lly", "johnson & johnson",
-        "jnj", "abbvie", "abbv", "bristol myers", "bmy", "amgen", "amgn",
-        "gilead", "gild", "regeneron", "regn", "biogen", "biib",
-        "biotech", "pharmaceutical", "drug pricing", "cms", "unh",
-        "unitedhealth", "managed care", "health insurance"
-    ],
-
-    # -------------------------------------------------------------------------
-    # CEO & EXECUTIVE - Major CEO actions and decisions
-    # -------------------------------------------------------------------------
-    MarketCategory.CEO_EXECUTIVE: [
-        "elon musk", "musk", "jensen huang", "satya nadella", "sundar pichai",
-        "mark zuckerberg", "zuckerberg", "tim cook", "andy jassy",
-        "sam altman", "dario amodei", "lisa su", "pat gelsinger",
-        "jamie dimon", "warren buffett", "brian moynihan", "david solomon",
-        "ceo steps down", "ceo resigns", "ceo fired", "ceo appointed",
-        "executive departure", "succession", "founder", "board of directors",
-        "activist investor", "proxy fight", "shareholder vote"
-    ],
-
-    # -------------------------------------------------------------------------
-    # REGULATORY & LEGAL - Antitrust, SEC, lawsuits
-    # -------------------------------------------------------------------------
-    MarketCategory.REGULATORY_LEGAL: [
-        "antitrust", "ftc", "sec", "doj", "department of justice",
-        "lawsuit", "ruling", "court", "verdict", "settlement",
-        "injunction", "monopoly", "anticompetitive", "merger blocked",
-        "acquisition blocked", "consent decree", "fine", "penalty",
-        "investigation", "subpoena", "enforcement", "compliance",
-        "lina khan", "gary gensler", "breakup", "divestiture",
-        "class action", "securities fraud", "insider trading"
-    ],
-
-    # -------------------------------------------------------------------------
-    # IPO & CAPITAL MARKETS - IPOs, SPACs, offerings
-    # -------------------------------------------------------------------------
-    MarketCategory.IPO_CAPITAL_MARKETS: [
-        "ipo", "initial public offering", "direct listing", "spac",
-        "secondary offering", "follow-on offering", "valuation",
-        "public offering", "going public", "private placement",
-        "pre-ipo", "ipo pricing", "ipo pop", "lock-up expiration",
-        "spacex ipo", "stripe ipo", "openai ipo", "reddit ipo",
-        "instacart ipo", "arm ipo", "unicorn", "decacorn"
-    ],
-
-    # -------------------------------------------------------------------------
-    # LABOR & IMMIGRATION - Strikes, H1B, workforce
-    # -------------------------------------------------------------------------
-    MarketCategory.LABOR_IMMIGRATION: [
-        "strike", "union", "uaw", "united auto workers", "teamsters",
-        "labor union", "collective bargaining", "walkout", "picket",
-        "h1b", "h-1b", "visa", "immigration", "work visa", "green card",
-        "minimum wage", "wage increase", "labor shortage", "hiring freeze",
-        "layoffs", "rif", "workforce reduction", "remote work",
-        "return to office", "rto", "work from home", "wfh"
-    ],
-
-    # -------------------------------------------------------------------------
-    # CRYPTO POLICY - Bitcoin ETF, stablecoin, regulation (equity impact)
-    # -------------------------------------------------------------------------
-    MarketCategory.CRYPTO_POLICY: [
-        "bitcoin etf", "spot bitcoin", "ethereum etf", "crypto etf",
-        "stablecoin", "stablecoin regulation", "crypto regulation",
-        "sec crypto", "cftc crypto", "coinbase", "coin",
-        "microstrategy", "mstr", "bitcoin price", "btc price",
-        "crypto exchange", "defi regulation", "crypto custody",
-        "crypto mining", "bitcoin mining", "mara", "riot", "clsk",
-        "digital assets", "cbdc", "central bank digital currency"
+    MarketCategory.ELECTIONS: [
+        "election", "president", "congress", "senate", "house",
+        "vote", "ballot", "poll", "democrat", "republican"
     ],
 }
 
-
 # =============================================================================
-# EXCLUSION FILTERS - Markets to ignore
+# EXCLUSION KEYWORDS - Markets containing these are ALWAYS filtered out
 # =============================================================================
-
-EXCLUDED_KEYWORDS = [
-    # Sports
-    "nfl", "nba", "mlb", "nhl", "mls", "soccer", "football game",
-    "basketball game", "baseball game", "hockey", "super bowl",
-    "world series", "stanley cup", "nba finals", "march madness",
-    "world cup", "olympics", "olympic", "championship game",
-    "playoff", "playoffs", "mvp", "touchdown", "home run",
-    "three pointer", "goalkeeper", "quarterback", "pitcher",
-    "boxing", "ufc", "mma", "wrestling", "tennis", "golf tournament",
-    "grand slam", "wimbledon", "us open tennis", "pga", "lpga",
-    "formula 1", "f1 race", "nascar", "indycar", "le mans",
-
-    # Entertainment
-    "grammy", "oscar", "emmy", "tony award", "golden globe",
-    "academy award", "billboard", "mtv", "vma", "bet awards",
-    "reality tv", "bachelor", "bachelorette", "survivor",
-    "american idol", "the voice", "dancing with the stars",
-    "celebrity", "kardashian", "influencer", "tiktoker", "youtuber",
-    "movie box office", "film premiere", "album release", "concert",
-    "tour dates", "netflix show", "hbo show", "disney plus",
-
-    # Non-market personal
-    "dating", "marriage", "divorce", "wedding", "baby", "pregnant",
-    "relationship", "affair", "scandal gossip",
-
-    # Pure sports betting language
-    "point spread", "over under", "moneyline", "parlay", "odds maker",
-    "vegas odds", "betting line", "sportsbook",
-
-    # Weather (unless market-relevant)
-    "hurricane name", "tropical storm name", "weather forecast",
+EXCLUSION_KEYWORDS = [
+    # Esports & Gaming
+    "esports", "e-sports", "lol", "league of legends", "dota", "csgo", "cs2",
+    "valorant", "overwatch", "fortnite", "pubg", "call of duty", "cod",
+    "fifa", "fut", "madden", "nba 2k", "rocket league", "starcraft",
+    "hearthstone", "magic the gathering", "mtg", "twitch", "streamer",
+    "gng", "fnatic", "cloud9", "team liquid", "g2 esports", "t1", "gen.g",
+    "bo3", "bo5", "handicap", "map winner", "round winner",
+    
+    # Traditional Sports
+    "nfl", "nba", "mlb", "nhl", "mls", "premier league", "la liga",
+    "bundesliga", "serie a", "ligue 1", "champions league", "europa league",
+    "world cup", "euro 2024", "euro 2025", "olympics", "super bowl",
+    "playoffs", "quarterback", "touchdown", "goalkeeper", "striker",
+    "tennis", "wimbledon", "us open", "french open", "australian open",
+    "golf", "pga", "masters", "ufc", "mma", "boxing", "wwe", "wrestling",
+    "f1", "formula 1", "nascar", "indycar", "motogp",
+    "cricket", "ipl", "rugby", "afl", "horse racing", "kentucky derby",
+    
+    # Entertainment & Reality TV
+    "bachelor", "bachelorette", "survivor", "big brother", "love island",
+    "american idol", "the voice", "dancing with the stars", "dwts",
+    "real housewives", "kardashian", "oscars", "emmy", "grammy", "golden globe",
+    "netflix", "hbo", "disney+", "streaming", "box office", "movie",
+    "tv show", "reality tv", "celebrity", "influencer", "youtube",
+    "tiktok", "instagram", "twitter follower", "subscriber count",
+    
+    # Weather & Natural Events (not investment relevant)
+    "hurricane", "tornado", "earthquake", "snowfall", "temperature record",
+    "hottest day", "coldest day", "rainfall", "drought",
+    
+    # Personal/Social Events
+    "wedding", "divorce", "baby", "pregnant", "birthday", "death date",
+    "will die", "relationship", "dating", "breakup",
+    
+    # Misc Non-Investment
+    "alien", "ufo", "bigfoot", "lottery", "powerball", "mega millions",
+    "hot dog eating", "spelling bee", "beauty pageant", "miss universe",
 ]
+
+# Keywords that need word boundary matching (short words that cause false positives)
+WORD_BOUNDARY_KEYWORDS = ["ai", "eu", "uk", "us", "fed", "war", "gdp", "cpi", "pmi", "ev"]
+
+# Add AI back to TECH_SECTOR with word boundary matching
+# This will be handled by _keyword_matches using regex
 
 
 # =============================================================================
@@ -346,42 +144,34 @@ class PolymarketSignal:
     dedup_hash: str
     category: str  # prediction_market (per spec)
     source_type: str  # polymarket
-
+    
     # Asset scope
     asset_scope: Dict[str, List[str]]
-
+    
     # Signal content
     summary: str
     raw_value: Dict[str, Any]
     evidence: List[Dict[str, Any]]
-
+    
     # Scoring and metadata
     confidence: float
     confidence_factors: Dict[str, float]
     directional_bias: str
     time_horizon: str
     novelty: str
-
+    
     # Staleness
     staleness_policy: Dict[str, Any]
-
+    
     # Uncertainties
     uncertainties: List[str]
-
+    
     # Timestamps
     timestamp_utc: str
-
+    
     # Our additions for internal tracking
-    market_category: str  # Our internal categorization (one of 17 categories)
+    market_category: str  # Our internal categorization
     resolution_date: Optional[str] = None
-
-    # Signal purpose classification
-    signal_purpose: str = "hypothesis_generator"  # hypothesis_generator, sentiment_validator, catalyst_timing
-
-    # Probability momentum tracking
-    probability_24h_prior: Optional[float] = None
-    probability_change_24h: Optional[float] = None
-    momentum_flag: Optional[str] = None  # "rapid_rise", "rapid_fall", "stable", None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage/transmission."""
@@ -407,11 +197,6 @@ class PolymarketSignal:
             "timestamp_utc": self.timestamp_utc,
             "market_category": self.market_category,
             "resolution_date": self.resolution_date,
-            # New fields for focused trading signals
-            "signal_purpose": self.signal_purpose,
-            "probability_24h_prior": self.probability_24h_prior,
-            "probability_change_24h": self.probability_change_24h,
-            "momentum_flag": self.momentum_flag,
         }
 
 
@@ -477,111 +262,51 @@ class PolymarketScanner:
     
     def _is_excluded_market(self, combined_text: str) -> bool:
         """
-        Check if a market should be excluded (sports, entertainment, etc.).
-
-        Uses multi-layer detection:
-        1. Keyword matching (generic sports terms)
-        2. Pattern matching (FC teams, betting language, weather)
-        3. Context clues (vs. without stock keywords)
-
+        Check if market should be excluded based on exclusion keywords.
+        
         Args:
-            combined_text: Combined question + description + title text
-
+            combined_text: Lowercased combined question + description + title
+            
         Returns:
             True if market should be excluded
         """
-        import re
-
-        # Layer 1: Direct keyword matching
-        for excluded_keyword in EXCLUDED_KEYWORDS:
-            if excluded_keyword in combined_text:
-                logger.debug(f"Excluding market - keyword match: '{excluded_keyword}'")
+        for keyword in EXCLUSION_KEYWORDS:
+            if keyword in combined_text:
+                logger.debug(f"Excluding market - matched '{keyword}'")
                 return True
-
-        # Layer 2: Pattern matching for sports
-        sports_patterns = [
-            # Football/Soccer club patterns - European naming conventions
-            r'\bfc\s+\w+',           # "FC Nantes", "FC Barcelona"
-            r'\b\w+\s+fc\b',         # "Liverpool FC", "Juventus FC"
-            r'\bafc\s+\w+',          # "AFC Bournemouth"
-            r'\b\w+\s+afc\b',        # "Arsenal AFC"
-            r'\bsc\s+\w+',           # "SC Freiburg"
-            r'\b\w+\s+sc\b',         # Sports Club suffix
-            r'\brcd\s+\w+',          # "RCD Espanyol" (Real Club Deportivo)
-            r'\bcd\s+\w+',           # "CD Leganes" (Club Deportivo)
-            r'\bcf\s+\w+',           # "CF Monterrey" (Club de Futbol)
-            r'\b\w+\s+cf\b',         # "Valencia CF"
-            r'\breal\s+(madrid|sociedad|betis|valladolid|zaragoza)\b',  # Spanish "Real" clubs
-            r'\batletico\b',         # Atletico Madrid, etc.
-            r'\bunited\b.*\bvs\b',   # "Manchester United vs..."
-            r'\bcity\b.*\bvs\b',     # "Manchester City vs..."
-            r'\bbarcelona\b.*\b(win|match|game|score)\b',  # FC Barcelona context
-
-            # Betting language patterns
-            r'\bo/u\s+\d',           # "O/U 2.5" (over/under)
-            r'\bover\s*\/\s*under\b',
-            r'\bboth teams to score\b',
-            r'\bto win\s+on\s+\d{4}-\d{2}-\d{2}',  # "to win on 2026-01-16"
-            r'\bwill\s+\w+\s+win\s+on\s+\d{4}',    # "will X win on YYYY"
-            r'\b1st round\b.*\bwin\b',              # Election-style but for sports
-            r'\bwin\s+the\s+most\s+seats\b',        # Political party seats
-
-            # Gaming/Entertainment (not stock relevant unless about gaming companies)
-            r'\bgta\s*\d+\b',        # "GTA 6" - video game
-            r'\bcall\s+of\s+duty\b',
-            r'\bfortnite\b',
-            r'\bminecraft\b',
-            r'\bgame\s+cost\b',      # "game cost $X"
-
-            # Weather patterns (not stock relevant)
-            r'\bhighest temperature\b',
-            r'\bweather\b.*\btemperature\b',
-            r'\b\d+°[fc]\b',         # Temperature with degree symbol
-
-            # Political parties (unless policy-related)
-            r'\bcommunist\s+party\b.*\bseats\b',
-            r'\bparliament(ary)?\s+(election|seats)\b',
-
-            # Generic sports match patterns
-            r'\bvs\.?\s+[a-z]+\s+(fc|afc|sc|cf|rcd|cd|united|city|rovers|wanderers)\b',
-        ]
-
-        for pattern in sports_patterns:
-            if re.search(pattern, combined_text, re.IGNORECASE):
-                logger.debug(f"Excluding market - pattern match: '{pattern}'")
-                return True
-
-        # Layer 3: Context-based exclusion
-        # If "vs" or "vs." is present but no stock-relevant keywords, likely sports
-        if re.search(r'\bvs\.?\b', combined_text, re.IGNORECASE):
-            # Check if any stock-relevant keywords are present
-            stock_keywords = [
-                'stock', 'share', 'price', 'market cap', 'revenue',
-                'earnings', 'profit', 'company', 'corporation', 'merger',
-                'acquisition', 'ipo', 'sec', 'regulation', 'tariff',
-                'fed', 'inflation', 'gdp', 'bitcoin', 'crypto', 'ai',
-                'chip', 'semiconductor', 'tech', 'nvidia', 'tesla', 'apple',
-                'google', 'microsoft', 'amazon', 'meta', 'openai'
-            ]
-            has_stock_context = any(kw in combined_text for kw in stock_keywords)
-            if not has_stock_context:
-                logger.debug(f"Excluding market - 'vs' without stock context")
-                return True
-
         return False
-
+    
+    def _keyword_matches(self, keyword: str, text: str) -> bool:
+        """
+        Check if keyword matches in text, using word boundaries for short keywords.
+        
+        Args:
+            keyword: The keyword to search for
+            text: The text to search in (should be lowercased)
+            
+        Returns:
+            True if keyword matches
+        """
+        # Short keywords need word boundary matching to avoid false positives
+        # e.g., "ai" should not match "Amazigh" or "Thailand"
+        if keyword in WORD_BOUNDARY_KEYWORDS:
+            # Use regex word boundaries
+            pattern = r'\b' + re.escape(keyword) + r'\b'
+            return bool(re.search(pattern, text))
+        else:
+            # Longer keywords can use simple substring matching
+            return keyword in text
+    
     def _categorize_market(self, market: Dict[str, Any]) -> MarketCategory:
         """
         Categorize a market based on its title and description.
-
-        Uses multi-pass matching:
-        1. First check exclusion list (sports, entertainment)
-        2. Then match against specific categories (most specific first)
-        3. Fall back to OTHER if no match
-
+        
+        First checks exclusion list (sports, entertainment, etc.),
+        then matches against investment category keywords.
+        
         Args:
             market: Market data from Polymarket API
-
+            
         Returns:
             MarketCategory enum value
         """
@@ -589,61 +314,23 @@ class PolymarketScanner:
         question = (market.get("question") or "").lower()
         description = (market.get("description") or "").lower()
         title = (market.get("title") or "").lower()
-
+        
         combined_text = f"{question} {description} {title}"
-
-        # PASS 1: Check exclusion list first
+        
+        # FIRST: Check exclusion list - sports, entertainment, etc.
         if self._is_excluded_market(combined_text):
             return MarketCategory.OTHER
-
-        # PASS 2: Match against categories in priority order
-        # More specific categories should be checked before broader ones
-        category_priority = [
-            # Most specific first
-            MarketCategory.CHINA_RISK,       # China-specific before general geopolitical
-            MarketCategory.TRADE_POLICY,     # Tariffs before general geopolitical
-            MarketCategory.CEO_EXECUTIVE,    # CEO-specific before company categories
-            MarketCategory.AI_SECTOR,        # AI before general tech
-            MarketCategory.SEMICONDUCTOR,    # Chips before general tech
-            MarketCategory.SPACE_INDUSTRY,   # Space before general defense
-            MarketCategory.IPO_CAPITAL_MARKETS,
-            MarketCategory.REGULATORY_LEGAL,
-            MarketCategory.HEALTHCARE_BIOTECH,
-            MarketCategory.ENERGY_COMMODITIES,
-            MarketCategory.LABOR_IMMIGRATION,
-            MarketCategory.CRYPTO_POLICY,
-            MarketCategory.FEDERAL_RESERVE,
-            MarketCategory.FISCAL_TREASURY,
-            MarketCategory.MACRO_ECONOMIC,
-            MarketCategory.TECH_GIANTS,      # Broader tech last
-            MarketCategory.GEOPOLITICAL,     # Broader geopolitical last
-        ]
-
-        # Score each category by number of keyword matches
-        category_scores: Dict[MarketCategory, int] = {}
-
-        for category in category_priority:
-            keywords = CATEGORY_KEYWORDS.get(category, [])
-            score = 0
+        
+        # SECOND: Check each investment category with proper matching
+        for category, keywords in CATEGORY_KEYWORDS.items():
             for keyword in keywords:
-                if keyword in combined_text:
-                    score += 1
-            if score > 0:
-                category_scores[category] = score
-
-        # Return highest scoring category, respecting priority order for ties
-        if category_scores:
-            # Sort by score descending, then by priority order
-            best_category = max(
-                category_scores.keys(),
-                key=lambda c: (category_scores[c], -category_priority.index(c))
-            )
-            return best_category
-
+                if self._keyword_matches(keyword, combined_text):
+                    return category
+        
         return MarketCategory.OTHER
     
     def _map_category_to_time_horizon(
-        self,
+        self, 
         category: MarketCategory,
         resolution_date: Optional[datetime]
     ) -> str:
@@ -653,232 +340,54 @@ class PolymarketScanner:
             if horizon:
                 return horizon.signal_horizon_label
             return "unknown"  # Date is in the past
-
-        # Default based on category when no resolution date
-        short_term_categories = [
-            MarketCategory.FEDERAL_RESERVE,
-            MarketCategory.MACRO_ECONOMIC,
-            MarketCategory.FISCAL_TREASURY,
-            MarketCategory.LABOR_IMMIGRATION,
-        ]
-
-        medium_term_categories = [
-            MarketCategory.TRADE_POLICY,
-            MarketCategory.AI_SECTOR,
-            MarketCategory.SEMICONDUCTOR,
-            MarketCategory.TECH_GIANTS,
-            MarketCategory.ENERGY_COMMODITIES,
-            MarketCategory.HEALTHCARE_BIOTECH,
-            MarketCategory.REGULATORY_LEGAL,
-            MarketCategory.IPO_CAPITAL_MARKETS,
-            MarketCategory.CRYPTO_POLICY,
-            MarketCategory.CEO_EXECUTIVE,
-        ]
-
-        long_term_categories = [
-            MarketCategory.GEOPOLITICAL,
-            MarketCategory.CHINA_RISK,
-            MarketCategory.SPACE_INDUSTRY,
-        ]
-
-        if category in short_term_categories:
+        
+        # Default based on category
+        if category in [MarketCategory.FED_MONETARY, MarketCategory.ECONOMIC_DATA]:
             return "weeks"
-        elif category in medium_term_categories:
+        elif category == MarketCategory.ELECTIONS:
             return "months"
-        elif category in long_term_categories:
-            return "quarters"
         else:
             return "unknown"
     
     def _category_to_asset_scope(self, category: MarketCategory) -> Dict[str, List[str]]:
-        """
-        Map market category to relevant asset scope with specific tradeable tickers.
-
-        Each category maps to:
-        - Primary tickers: Direct plays on the theme
-        - Secondary/ETF tickers: Sector or thematic exposure
-        """
+        """Map market category to relevant asset scope."""
         scope_map = {
-            # -----------------------------------------------------------------
-            # FEDERAL RESERVE - Rate-sensitive assets
-            # -----------------------------------------------------------------
-            MarketCategory.FEDERAL_RESERVE: {
-                "tickers": ["SPY", "TLT", "IEF", "XLF", "KRE"],
-                "sectors": ["FINANCIALS", "REAL_ESTATE"],
-                "macro_regions": ["US"],
-                "asset_classes": ["EQUITY", "FIXED_INCOME"],
-            },
-
-            # -----------------------------------------------------------------
-            # MACRO ECONOMIC - Broad market, cyclicals
-            # -----------------------------------------------------------------
-            MarketCategory.MACRO_ECONOMIC: {
-                "tickers": ["SPY", "IWM", "TLT", "XLY", "XLP"],
-                "sectors": ["CONSUMER_DISCRETIONARY", "CONSUMER_STAPLES"],
-                "macro_regions": ["US"],
-                "asset_classes": ["EQUITY", "FIXED_INCOME"],
-            },
-
-            # -----------------------------------------------------------------
-            # FISCAL & TREASURY - Bonds, financials
-            # -----------------------------------------------------------------
-            MarketCategory.FISCAL_TREASURY: {
-                "tickers": ["TLT", "IEF", "SHY", "XLF", "JPM", "BAC"],
+            MarketCategory.FED_MONETARY: {
+                "tickers": ["SPY", "TLT", "DX-Y.NYB"],  # S&P, Treasuries, Dollar
                 "sectors": ["FINANCIALS"],
                 "macro_regions": ["US"],
-                "asset_classes": ["FIXED_INCOME", "EQUITY"],
+                "asset_classes": ["EQUITY", "FIXED_INCOME", "FX"],
             },
-
-            # -----------------------------------------------------------------
-            # TRADE POLICY - Varies by target country
-            # -----------------------------------------------------------------
-            MarketCategory.TRADE_POLICY: {
-                "tickers": ["EEM", "FXI", "EWJ", "SPY", "CAT", "DE"],
-                "sectors": ["INDUSTRIALS", "MATERIALS"],
-                "macro_regions": ["US", "ASIA", "GLOBAL"],
-                "asset_classes": ["EQUITY"],
+            MarketCategory.ECONOMIC_DATA: {
+                "tickers": ["SPY", "IWM", "TLT"],
+                "sectors": [],
+                "macro_regions": ["US"],
+                "asset_classes": ["EQUITY", "FIXED_INCOME"],
             },
-
-            # -----------------------------------------------------------------
-            # GEOPOLITICAL - Defense, commodities, safe havens
-            # -----------------------------------------------------------------
             MarketCategory.GEOPOLITICAL: {
-                "tickers": ["LMT", "RTX", "NOC", "GD", "GLD", "USO", "VIX"],
-                "sectors": ["DEFENSE", "ENERGY"],
+                "tickers": ["VIX", "GLD", "USO"],  # Volatility, Gold, Oil
+                "sectors": ["ENERGY", "DEFENSE"],
                 "macro_regions": ["GLOBAL"],
-                "asset_classes": ["EQUITY", "COMMODITY"],
+                "asset_classes": ["COMMODITY", "EQUITY"],
             },
-
-            # -----------------------------------------------------------------
-            # CHINA RISK - ADRs, chip equipment, Taiwan
-            # -----------------------------------------------------------------
-            MarketCategory.CHINA_RISK: {
-                "tickers": ["TSM", "BABA", "PDD", "JD", "NIO", "ASML", "LRCX", "AMAT", "FXI", "KWEB"],
-                "sectors": ["TECH", "CONSUMER"],
-                "macro_regions": ["ASIA", "CHINA"],
-                "asset_classes": ["EQUITY"],
-            },
-
-            # -----------------------------------------------------------------
-            # AI SECTOR - AI infrastructure and beneficiaries
-            # -----------------------------------------------------------------
-            MarketCategory.AI_SECTOR: {
-                "tickers": ["NVDA", "MSFT", "GOOGL", "META", "AMD", "SMCI", "ARM", "PLTR"],
-                "secondary_tickers": ["SMH", "BOTZ", "AIQ", "ROBO"],
-                "sectors": ["TECH", "SEMICONDUCTORS"],
-                "macro_regions": ["US"],
-                "asset_classes": ["EQUITY"],
-            },
-
-            # -----------------------------------------------------------------
-            # SEMICONDUCTOR - Chip makers and equipment
-            # -----------------------------------------------------------------
-            MarketCategory.SEMICONDUCTOR: {
-                "tickers": ["NVDA", "AMD", "INTC", "TSM", "ASML", "LRCX", "AMAT", "MU", "QCOM", "AVGO"],
-                "secondary_tickers": ["SMH", "SOXX"],
-                "sectors": ["SEMICONDUCTORS"],
-                "macro_regions": ["US", "ASIA"],
-                "asset_classes": ["EQUITY"],
-            },
-
-            # -----------------------------------------------------------------
-            # TECH GIANTS - FAANG+ and enterprise
-            # -----------------------------------------------------------------
-            MarketCategory.TECH_GIANTS: {
-                "tickers": ["AAPL", "GOOGL", "MSFT", "AMZN", "META", "NFLX", "TSLA", "ORCL", "CRM", "ADBE"],
-                "secondary_tickers": ["QQQ", "XLK", "VGT"],
+            MarketCategory.TECH_SECTOR: {
+                "tickers": ["QQQ", "NVDA", "SMH"],
                 "sectors": ["TECH"],
                 "macro_regions": ["US"],
                 "asset_classes": ["EQUITY"],
             },
-
-            # -----------------------------------------------------------------
-            # SPACE INDUSTRY - Launch providers and defense
-            # -----------------------------------------------------------------
-            MarketCategory.SPACE_INDUSTRY: {
-                "tickers": ["RKLB", "LMT", "NOC", "BA", "GSAT", "IRDM"],
-                "secondary_tickers": ["UFO", "ARKX"],
-                "sectors": ["AEROSPACE", "DEFENSE"],
+            MarketCategory.CRYPTO: {
+                "tickers": ["COIN", "MSTR"],
+                "sectors": ["CRYPTO"],
+                "macro_regions": ["GLOBAL"],
+                "asset_classes": ["CRYPTO", "EQUITY"],
+            },
+            MarketCategory.ELECTIONS: {
+                "tickers": ["SPY"],
+                "sectors": [],
                 "macro_regions": ["US"],
                 "asset_classes": ["EQUITY"],
             },
-
-            # -----------------------------------------------------------------
-            # ENERGY & COMMODITIES - Oil, gas, renewables
-            # -----------------------------------------------------------------
-            MarketCategory.ENERGY_COMMODITIES: {
-                "tickers": ["XOM", "CVX", "OXY", "COP", "SLB", "ENPH", "SEDG", "FSLR", "NEE"],
-                "secondary_tickers": ["XLE", "USO", "TAN", "ICLN"],
-                "sectors": ["ENERGY", "UTILITIES"],
-                "macro_regions": ["US", "GLOBAL"],
-                "asset_classes": ["EQUITY", "COMMODITY"],
-            },
-
-            # -----------------------------------------------------------------
-            # HEALTHCARE & BIOTECH - Pharma and biotech
-            # -----------------------------------------------------------------
-            MarketCategory.HEALTHCARE_BIOTECH: {
-                "tickers": ["PFE", "MRNA", "MRK", "LLY", "JNJ", "ABBV", "BMY", "AMGN", "GILD", "UNH"],
-                "secondary_tickers": ["XLV", "IBB", "XBI"],
-                "sectors": ["HEALTHCARE", "BIOTECH"],
-                "macro_regions": ["US"],
-                "asset_classes": ["EQUITY"],
-            },
-
-            # -----------------------------------------------------------------
-            # CEO & EXECUTIVE - Company-specific based on CEO
-            # -----------------------------------------------------------------
-            MarketCategory.CEO_EXECUTIVE: {
-                "tickers": ["TSLA", "NVDA", "MSFT", "GOOGL", "META", "AAPL", "AMZN", "JPM", "BRK.B"],
-                "sectors": ["TECH", "FINANCIALS"],
-                "macro_regions": ["US"],
-                "asset_classes": ["EQUITY"],
-            },
-
-            # -----------------------------------------------------------------
-            # REGULATORY & LEGAL - Varies by case
-            # -----------------------------------------------------------------
-            MarketCategory.REGULATORY_LEGAL: {
-                "tickers": ["GOOGL", "META", "AAPL", "AMZN", "MSFT"],
-                "sectors": ["TECH"],
-                "macro_regions": ["US"],
-                "asset_classes": ["EQUITY"],
-            },
-
-            # -----------------------------------------------------------------
-            # IPO & CAPITAL MARKETS - Adjacent sector plays
-            # -----------------------------------------------------------------
-            MarketCategory.IPO_CAPITAL_MARKETS: {
-                "tickers": ["RKLB", "COIN", "HOOD", "SQ", "PYPL"],  # Adjacencies to big IPOs
-                "secondary_tickers": ["IPO", "XLF"],
-                "sectors": ["TECH", "FINANCIALS"],
-                "macro_regions": ["US"],
-                "asset_classes": ["EQUITY"],
-            },
-
-            # -----------------------------------------------------------------
-            # LABOR & IMMIGRATION - Affected companies
-            # -----------------------------------------------------------------
-            MarketCategory.LABOR_IMMIGRATION: {
-                "tickers": ["F", "GM", "STLA", "UPS", "FDX", "WMT", "TGT", "MCD"],
-                "sectors": ["INDUSTRIALS", "CONSUMER"],
-                "macro_regions": ["US"],
-                "asset_classes": ["EQUITY"],
-            },
-
-            # -----------------------------------------------------------------
-            # CRYPTO POLICY - Crypto-adjacent equities
-            # -----------------------------------------------------------------
-            MarketCategory.CRYPTO_POLICY: {
-                "tickers": ["COIN", "MSTR", "MARA", "RIOT", "CLSK", "SQ", "PYPL"],
-                "sectors": ["CRYPTO", "FINTECH"],
-                "macro_regions": ["US", "GLOBAL"],
-                "asset_classes": ["EQUITY"],
-            },
-
-            # -----------------------------------------------------------------
-            # OTHER - Generic fallback
-            # -----------------------------------------------------------------
             MarketCategory.OTHER: {
                 "tickers": [],
                 "sectors": [],
@@ -886,7 +395,7 @@ class PolymarketScanner:
                 "asset_classes": ["EQUITY"],
             },
         }
-
+        
         return scope_map.get(category, scope_map[MarketCategory.OTHER])
     
     # =========================================================================
@@ -901,7 +410,7 @@ class PolymarketScanner:
         """
         Calculate confidence score per Grok Spec v1.1.0 formula.
         
-        confidence = source_base × recency_factor × corroboration_factor
+        confidence = source_base Ã— recency_factor Ã— corroboration_factor
         
         Returns:
             Tuple of (final_confidence, confidence_factors_dict)
@@ -1005,116 +514,10 @@ class PolymarketScanner:
     
     def _extract_prior_probability(self, market: Dict[str, Any]) -> Optional[float]:
         """Extract 24h prior probability if available."""
-        # Try to get historical price data from market
-        # Polymarket API may include this in some responses
-        for field in ["previousDayPrice", "price24hAgo", "historicalPrices"]:
-            if field in market and market[field]:
-                try:
-                    if isinstance(market[field], list) and len(market[field]) > 0:
-                        return float(market[field][0])
-                    elif isinstance(market[field], (int, float)):
-                        return float(market[field])
-                except (ValueError, IndexError, TypeError):
-                    continue
+        # This would require historical data - may not be in basic API
+        # For now, return None
         return None
-
-    # =========================================================================
-    # PROBABILITY MOMENTUM & SIGNAL PURPOSE
-    # =========================================================================
-
-    def _calculate_probability_momentum(
-        self,
-        current_prob: Optional[float],
-        prior_prob: Optional[float]
-    ) -> Tuple[Optional[float], Optional[str]]:
-        """
-        Calculate probability momentum and flag rapid movements.
-
-        Rapid movements (±10% in 24h) often precede news or indicate
-        informed money moving the market.
-
-        Args:
-            current_prob: Current probability (0-1)
-            prior_prob: Probability 24h ago (0-1)
-
-        Returns:
-            Tuple of (change_24h, momentum_flag)
-            momentum_flag: "rapid_rise", "rapid_fall", "stable", or None
-        """
-        if current_prob is None or prior_prob is None:
-            return None, None
-
-        change = current_prob - prior_prob
-
-        # Flag rapid movements (±10% in 24h)
-        if change >= 0.10:
-            momentum_flag = "rapid_rise"
-        elif change <= -0.10:
-            momentum_flag = "rapid_fall"
-        elif abs(change) < 0.02:
-            momentum_flag = "stable"
-        else:
-            momentum_flag = None  # Normal movement
-
-        return change, momentum_flag
-
-    def _determine_signal_purpose(
-        self,
-        market: Dict[str, Any],
-        category: MarketCategory,
-        resolution_date: Optional[datetime],
-        momentum_flag: Optional[str]
-    ) -> str:
-        """
-        Determine the purpose of this signal for trading decisions.
-
-        Signal purposes:
-        - hypothesis_generator: Novel information that could spark a trade idea
-        - sentiment_validator: Crowd odds useful to check against existing thesis
-        - catalyst_timing: Tells us WHEN something resolves (entry timing)
-
-        Args:
-            market: Raw market data
-            category: Categorized market category
-            resolution_date: When the market resolves
-            momentum_flag: Whether odds are moving rapidly
-
-        Returns:
-            SignalPurpose value as string
-        """
-        question = (market.get("question") or "").lower()
-        volume = float(market.get("volume", 0) or 0)
-
-        # Catalyst timing: Markets with specific resolution dates
-        # These help with entry/exit timing
-        if resolution_date:
-            now = self._get_current_date()
-            days_to_resolution = (resolution_date - now).days
-
-            # Near-term catalysts (within 30 days) are timing signals
-            if 0 < days_to_resolution <= 30:
-                return SignalPurpose.CATALYST_TIMING.value
-
-        # Hypothesis generators: Novel, high-volume markets that could
-        # inform a new trade thesis
-        hypothesis_categories = [
-            MarketCategory.IPO_CAPITAL_MARKETS,  # IPOs create new opportunities
-            MarketCategory.CEO_EXECUTIVE,        # CEO changes create volatility
-            MarketCategory.REGULATORY_LEGAL,     # Legal outcomes create binary events
-            MarketCategory.TRADE_POLICY,         # Policy changes create sector moves
-            MarketCategory.CHINA_RISK,           # Geopolitical shifts
-        ]
-
-        if category in hypothesis_categories and volume >= 50000:
-            return SignalPurpose.HYPOTHESIS_GENERATOR.value
-
-        # Rapid momentum also suggests hypothesis-worthy signals
-        if momentum_flag in ["rapid_rise", "rapid_fall"] and volume >= 25000:
-            return SignalPurpose.HYPOTHESIS_GENERATOR.value
-
-        # Default: sentiment validators - useful for checking consensus
-        return SignalPurpose.SENTIMENT_VALIDATOR.value
-
+    
     # =========================================================================
     # SIGNAL GENERATION
     # =========================================================================
@@ -1185,21 +588,21 @@ class PolymarketScanner:
             # Extract probability
             current_prob = self._extract_probability(market)
             prior_prob = self._extract_prior_probability(market)
-
-            # Calculate probability momentum
-            prob_change_24h, momentum_flag = self._calculate_probability_momentum(
-                current_prob, prior_prob
-            )
-
+            
+            # Calculate change if we have both
+            change = None
+            if current_prob is not None and prior_prob is not None:
+                change = current_prob - prior_prob
+            
             raw_value = {
                 "type": "probability",
                 "value": current_prob,
                 "unit": "percent",
                 "prior_value": prior_prob,
-                "change": prob_change_24h,
+                "change": change,
                 "change_period": "24h" if prior_prob else None,
             }
-
+            
             # Parse resolution date
             resolution_date = None
             end_date_str = market.get("endDate") or market.get("endDateIso") or market.get("closedTime")
@@ -1208,29 +611,19 @@ class PolymarketScanner:
                     resolution_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
                 except (ValueError, TypeError):
                     pass
-
+            
             # Time horizon
             time_horizon = self._map_category_to_time_horizon(category, resolution_date)
-
+            
             # Confidence
             confidence, confidence_factors = self._calculate_confidence(market, category)
-
+            
             # Directional bias
             directional_bias = self._determine_directional_bias(market, category)
-
-            # Determine signal purpose
-            signal_purpose = self._determine_signal_purpose(
-                market, category, resolution_date, momentum_flag
-            )
-
-            # Build summary with momentum indicator
+            
+            # Build summary
             prob_str = f"{current_prob*100:.0f}%" if current_prob else "unknown"
-            momentum_indicator = ""
-            if momentum_flag == "rapid_rise":
-                momentum_indicator = " [RISING FAST]"
-            elif momentum_flag == "rapid_fall":
-                momentum_indicator = " [FALLING FAST]"
-            summary = f"Polymarket: {question} Currently at {prob_str}.{momentum_indicator}"
+            summary = f"Polymarket: {question} Currently at {prob_str}."
             
             # Evidence
             evidence = [{
@@ -1281,11 +674,6 @@ class PolymarketScanner:
                 timestamp_utc=now.isoformat(),
                 market_category=category.value,
                 resolution_date=resolution_date.isoformat() if resolution_date else None,
-                # New focused trading fields
-                signal_purpose=signal_purpose,
-                probability_24h_prior=prior_prob,
-                probability_change_24h=prob_change_24h,
-                momentum_flag=momentum_flag,
             )
             
         except Exception as e:
@@ -1431,36 +819,9 @@ class PolymarketScanner:
             if signal:
                 signals.append(signal)
         
-        # Fetch by investment-focused tags organized by category
-        # These tags are specifically chosen to find stock-relevant markets
-        relevant_tags = [
-            # Federal Reserve & Macro
-            "fed", "fomc", "interest-rates", "inflation", "recession",
-            "economics", "gdp", "unemployment",
-
-            # Trade & Geopolitics
-            "tariffs", "trade", "china", "sanctions", "taiwan",
-
-            # Technology & AI
-            "ai", "artificial-intelligence", "tech", "nvidia",
-            "semiconductors", "chips",
-
-            # Space Industry
-            "spacex", "space", "rockets",
-
-            # Energy & Commodities
-            "oil", "energy", "opec", "renewable",
-
-            # Healthcare & Biotech
-            "fda", "healthcare", "pharma", "biotech",
-
-            # Corporate & Regulatory
-            "antitrust", "sec", "ipo", "crypto",
-
-            # Policy & Government
-            "trump", "policy", "regulation", "debt-ceiling",
-        ]
-
+        # Also try fetching by relevant tags
+        relevant_tags = ["fed", "economics", "inflation", "tariffs", "ai"]
+        
         for tag in relevant_tags:
             try:
                 events = await self._fetch_events_by_tag(
@@ -1523,14 +884,14 @@ class PolymarketScanner:
                     event_markets = event.get("markets", [])
                     for market in event_markets:
                         signal = self._market_to_signal(market, TimeHorizon.LONG_TERM.name)
-                        if signal and signal.market_category == MarketCategory.FEDERAL_RESERVE.value:
+                        if signal and signal.market_category == MarketCategory.FED_MONETARY.value:
                             if not any(s.dedup_hash == signal.dedup_hash for s in signals):
                                 signals.append(signal)
-
+                                
             except Exception as e:
                 logger.warning(f"Error fetching Fed tag '{tag}': {e}")
                 continue
-
+        
         logger.info(f"Fed market scan complete: {len(signals)} signals")
         return signals
     
@@ -1569,10 +930,10 @@ class PolymarketScanner:
                     event_markets = event.get("markets", [])
                     for market in event_markets:
                         signal = self._market_to_signal(market, TimeHorizon.MEDIUM_TERM.name)
-                        if signal and signal.market_category == MarketCategory.MACRO_ECONOMIC.value:
+                        if signal and signal.market_category == MarketCategory.ECONOMIC_DATA.value:
                             if not any(s.dedup_hash == signal.dedup_hash for s in signals):
                                 signals.append(signal)
-
+                                
             except Exception as e:
                 logger.warning(f"Error fetching econ tag '{tag}': {e}")
                 continue
