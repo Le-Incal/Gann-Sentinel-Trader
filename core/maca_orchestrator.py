@@ -479,18 +479,27 @@ class MACAOrchestrator:
             if not best_signal:
                 return self._empty_proposal(cycle_id, "grok", "No best signal found")
 
-            logger.info(f"Grok best signal: ticker={best_signal.get('asset_scope', {}).get('tickers', ['?'])[0]}, "
+            # Debug: Log full signal structure to diagnose issues
+            logger.info(f"DEBUG Grok best_signal keys: {list(best_signal.keys())}")
+            logger.info(f"DEBUG Grok asset_scope: {best_signal.get('asset_scope')}")
+            logger.info(f"DEBUG Grok full signal: {best_signal}")
+
+            # Extract ticker from asset_scope (defensive)
+            asset_scope = best_signal.get("asset_scope", {})
+            if asset_scope is None:
+                asset_scope = {}
+            tickers = asset_scope.get("tickers", [])
+            if tickers is None:
+                tickers = []
+            ticker = tickers[0] if tickers else None
+
+            logger.info(f"Grok best signal: ticker={ticker}, "
                        f"confidence={best_signal.get('confidence', 0)}, "
                        f"bias={best_signal.get('directional_bias', 'N/A')}")
 
             # Convert confidence (0-1) to conviction_score (0-100)
             confidence_raw = best_signal.get("confidence", 0.5)
             conviction_score = int(confidence_raw * 100)
-
-            # Extract ticker from asset_scope
-            asset_scope = best_signal.get("asset_scope", {})
-            tickers = asset_scope.get("tickers", [])
-            ticker = tickers[0] if tickers else None
 
             # Map directional_bias to side
             bias = best_signal.get("directional_bias", "neutral")

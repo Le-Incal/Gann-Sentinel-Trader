@@ -166,11 +166,14 @@ IMPORTANT:
                 data = response.json()
                 content = data["choices"][0]["message"]["content"]
 
+                # Debug: Log raw response before parsing
+                logger.info(f"DEBUG Perplexity raw response (first 500 chars): {content[:500]}")
+
                 # Parse JSON from response
                 parsed = self._parse_json_response(content)
 
                 if not parsed:
-                    logger.error(f"Failed to parse Perplexity response: {content[:500]}")
+                    logger.error(f"Failed to parse Perplexity response. Full content: {content}")
                     return self._empty_proposal(scan_cycle_id, "Failed to parse response")
 
                 # Build full proposal
