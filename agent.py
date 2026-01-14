@@ -2,14 +2,13 @@
 Gann Sentinel Trader - Main Agent
 Orchestrates the trading system: scan signals, analyze, approve, execute.
 
-Version: 2.4.2 - Full MACA Integration for Scheduled Scans
-- FIX: analysis.id → analysis.analysis_id (was breaking trade creation)
-- MACA for ALL scans: Grok + Perplexity + ChatGPT + Claude synthesis
-- New Telegram format: AI Council views + Claude decision (2 messages)
-- Trade blocker visibility: Shows exactly why trades fail
-- Event Scanner: 27 corporate event types (LevelFields-style)
-- Learning Engine tracks performance vs SPY
-- Smart scheduling: 2 scans/day (9:35 AM, 12:30 PM ET), no weekends
+Version: 2.4.3 - MACA 2-Phase Architecture
+- Simplified MACA: Phase 1 (thesis) + Phase 2 (Claude synthesis) only
+- FIX: Uses proceed_to_execution key (matches orchestrator output)
+- FIX: Accepts WATCH + high conviction as actionable (not just TRADE)
+- FIX: Grok signal parsing with proper confidence→conviction conversion
+- FIX: Perplexity JSON parsing with nested brace matching
+- Debug logging throughout MACA flow for troubleshooting
 
 DISCLAIMER: Trading involves substantial risk of loss. This is an experimental
 system and nothing here constitutes financial advice. Only trade what you can
