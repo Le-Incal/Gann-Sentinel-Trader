@@ -1,320 +1,342 @@
-# Gann Sentinel Trader
+# Gann Sentinel Trader (GST)
 
-An autonomous trading agent that combines Grok's real-time sentiment analysis with Claude's strategic reasoning to identify high-conviction position trades.
+**AI-Powered Autonomous Trading System**
 
-## ⚠️ DISCLAIMER
+An experimental trading system that combines multiple AI agents for market analysis and decision-making. Built on the philosophy of "ANCHOR in history, ORIENT toward future."
 
-**Trading involves substantial risk of loss.** This is an experimental system and nothing here constitutes financial advice. Only trade what you can afford to lose.
+[![Railway](https://img.shields.io/badge/Deployed%20on-Railway-blueviolet)](https://railway.app)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/License-Private-red.svg)]()
 
-## Features
+---
 
-- **Hybrid AI Brain**: Grok scans X/Twitter sentiment and news, Claude reasons about trades
-- **Multi-Source Signals**: FRED macro data, Polymarket predictions, social sentiment
-- **Risk Management**: Position limits, stop-losses, daily loss limits, conviction thresholds
-- **Approval Gate**: Human-in-the-loop for trade approval via Telegram
-- **Full Audit Trail**: Every signal, analysis, and trade logged to SQLite
-- **Paper Trading**: Test with Alpaca paper trading before going live
+## Overview
+
+GST is a sophisticated trading system that:
+
+- **Scans multiple data sources** for market signals (sentiment, macro, predictions, events)
+- **Leverages 4 AI systems** to generate and validate investment theses
+- **Applies strict risk management** before any trade recommendation
+- **Requires human approval** via Telegram for all trades
+- **Learns from outcomes** to improve future decisions
+
+> ⚠️ **Disclaimer:** Trading involves substantial risk of loss. This is an experimental system and nothing here constitutes financial advice. Only trade what you can afford to lose.
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    GANN SENTINEL TRADER                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │   GROK   │  │   FRED   │  │POLYMARKET│  │  ALPACA  │       │
-│  │ X Search │  │ Treasury │  │ Fed odds │  │  Prices  │       │
-│  │ Web News │  │ GDP/CPI  │  │ Election │  │ Positions│       │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘       │
-│       │             │             │             │              │
-│       └─────────────┴─────────────┴─────────────┘              │
-│                           │                                    │
-│                    ┌──────▼──────┐                             │
-│                    │   SIGNAL    │                             │
-│                    │  PROCESSOR  │                             │
-│                    └──────┬──────┘                             │
-│                           │                                    │
-│                    ┌──────▼──────┐                             │
-│                    │   CLAUDE    │                             │
-│                    │   ANALYST   │                             │
-│                    └──────┬──────┘                             │
-│                           │                                    │
-│                    ┌──────▼──────┐                             │
-│                    │    RISK     │                             │
-│                    │   ENGINE    │                             │
-│                    └──────┬──────┘                             │
-│                           │                                    │
-│              ┌────────────┴────────────┐                       │
-│              ▼                         ▼                       │
-│     ┌────────────────┐       ┌────────────────┐               │
-│     │ APPROVAL GATE  │       │ AUTO-EXECUTE   │               │
-│     │   (Telegram)   │       │   (Optional)   │               │
-│     └───────┬────────┘       └───────┬────────┘               │
-│             │                         │                        │
-│             └────────────┬────────────┘                        │
-│                          ▼                                     │
-│                  ┌───────────────┐                             │
-│                  │    ALPACA     │                             │
-│                  │   EXECUTOR    │                             │
-│                  └───────────────┘                             │
-│                                                                │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         GANN SENTINEL TRADER v2.4.2                         │
+│                    "ANCHOR in history, ORIENT toward future"                │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+          ┌───────────────────────────┼───────────────────────────┐
+          ▼                           ▼                           ▼
+┌─────────────────┐           ┌─────────────────┐           ┌─────────────────┐
+│    SCANNERS     │           │   AI COUNCIL    │           │    EXECUTORS    │
+│  (Data Input)   │           │     (MACA)      │           │    (Output)     │
+└─────────────────┘           └─────────────────┘           └─────────────────┘
+          │                           │                           │
+          ▼                           ▼                           ▼
+┌─────────────────┐           ┌─────────────────┐           ┌─────────────────┐
+│ • Grok          │           │ • Grok Thesis   │           │ • Risk Engine   │
+│ • FRED          │    ───►   │ • Perplexity    │    ───►   │ • Alpaca        │
+│ • Polymarket    │           │ • ChatGPT       │           │ • Telegram      │
+│ • Technical     │           │ • Claude        │           │                 │
+│ • Event (27)    │           │   (Synthesis)   │           │                 │
+└─────────────────┘           └─────────────────┘           └─────────────────┘
 ```
 
-## Quick Start
+---
 
-### 1. Clone Repository
+## Key Features
 
-```bash
-git clone https://github.com/YOUR_USERNAME/gann-sentinel-trader.git
-cd gann-sentinel-trader
-```
+### Multi-Agent Consensus Architecture (MACA)
 
-### 2. Install Dependencies
+Four AI systems work together to reduce bias and improve decision quality:
 
-```bash
-pip install -r requirements.txt
-```
+| AI | Role | Specialty |
+|----|------|-----------|
+| **Grok** | Signal Generator | Social sentiment, X/Twitter trends |
+| **Perplexity** | Researcher | Fundamental analysis, citations |
+| **ChatGPT** | Pattern Finder | Technical patterns, risk scenarios |
+| **Claude** | Senior Trader | Synthesis, final decision |
 
-### 3. Configure Environment
+### Signal Scanners
 
-```bash
-cp .env.example .env
-# Edit .env with your API keys
-```
+| Scanner | Source | Signals |
+|---------|--------|---------|
+| **Grok** | xAI API | Sentiment, catalysts, trending narratives |
+| **FRED** | Federal Reserve | Macro indicators (yields, CPI, GDP, unemployment) |
+| **Polymarket** | Prediction Markets | 17 investment categories with probability tracking |
+| **Technical** | Alpaca | 5-year price history, support/resistance, trends |
+| **Event** | Grok (parsed) | 27 corporate event types (FDA, M&A, insider buying) |
 
-### 4. Run the Agent
+### Risk Management
 
-```bash
-python agent.py
-```
+- Position size limits (max 20% per position)
+- Daily loss limits (max 3% drawdown)
+- Sector concentration limits (max 40%)
+- Liquidity requirements (min $1M daily volume)
+- Human approval required for all trades
 
-## Configuration
+### Smart Scheduling
 
-### Required API Keys
+- 2 scans per day (9:35 AM, 12:30 PM ET)
+- No weekend scans
+- Manual `/scan` and `/check` always available
+- 75% cost reduction vs hourly scanning
 
-| Service | Get Key From | Required |
-|---------|--------------|----------|
-| Telegram | [@BotFather](https://t.me/botfather) | Yes |
-| xAI (Grok) | [console.x.ai](https://console.x.ai) | Yes |
-| Anthropic | [console.anthropic.com](https://console.anthropic.com) | Yes |
-| Alpaca | [alpaca.markets](https://alpaca.markets) | Yes |
-| FRED | [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html) | Yes |
-
-### Environment Variables
-
-```bash
-# Telegram
-TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_chat_id
-
-# xAI (Grok)
-XAI_API_KEY=xai-...
-
-# Anthropic (Claude)
-ANTHROPIC_API_KEY=sk-ant-...
-
-# Alpaca
-ALPACA_API_KEY=your_key
-ALPACA_SECRET_KEY=your_secret
-ALPACA_BASE_URL=https://paper-api.alpaca.markets  # Use paper trading first!
-
-# FRED
-FRED_API_KEY=your_fred_key
-
-# System
-MODE=PAPER              # PAPER or LIVE
-APPROVAL_GATE=ON        # ON or OFF
-LOG_LEVEL=INFO          # DEBUG, INFO, WARNING, ERROR
-```
-
-### Risk Parameters
-
-```bash
-MAX_POSITION_PCT=0.25      # Max 25% of portfolio per position
-MAX_POSITIONS=5            # Max 5 concurrent positions
-MIN_CONVICTION=80          # Only trade with 80+ conviction
-STOP_LOSS_PCT=0.15         # 15% stop loss
-DAILY_LOSS_LIMIT_PCT=0.05  # 5% daily loss halts trading
-```
+---
 
 ## Telegram Commands
 
 | Command | Description |
 |---------|-------------|
-| `/status` | System and portfolio status |
-| `/pending` | List pending trade approvals |
-| `/approve [id]` | Approve a pending trade |
-| `/reject [id]` | Reject a pending trade |
-| `/stop` | Emergency halt (cancel orders, stop trading) |
-| `/resume` | Resume trading after halt |
-| `/help` | Show help message |
+| `/scan` | Run full MACA scan cycle |
+| `/check [TICKER]` | Analyze specific stock |
+| `/status` | Portfolio and system health |
+| `/positions` | Current open positions |
+| `/pending` | Trades awaiting approval |
+| `/approve [ID]` | Approve pending trade |
+| `/reject [ID]` | Reject pending trade |
+| `/history [N]` | Last N trades |
+| `/export [csv/parquet]` | Export data |
+| `/cost [days]` | API cost summary |
+| `/logs` | View recent activity |
+| `/stop` | Emergency halt |
+| `/resume` | Resume trading |
+| `/help` | Show all commands |
+
+---
 
 ## Project Structure
 
 ```
 gann-sentinel-trader/
-├── agent.py              # Main orchestration loop
-├── config.py             # Configuration management
-├── requirements.txt      # Python dependencies
-├── .env.example          # Environment template
+├── agent.py                    # Main orchestrator
+├── config.py                   # Configuration
+├── learning_engine.py          # Performance tracking
 │
-├── models/               # Data structures
-│   ├── signals.py        # Signal models
-│   ├── analysis.py       # Analysis models
-│   └── trades.py         # Trade and position models
+├── scanners/
+│   ├── temporal.py             # Shared time framework
+│   ├── grok_scanner.py         # Sentiment/catalysts
+│   ├── fred_scanner.py         # Macro data
+│   ├── polymarket_scanner.py   # Prediction markets
+│   ├── technical_scanner.py    # Chart analysis
+│   └── event_scanner.py        # Corporate events
 │
-├── scanners/             # Data ingestion
-│   ├── grok_scanner.py   # X/Twitter sentiment via Grok
-│   ├── fred_scanner.py   # FRED macro data
-│   └── polymarket_scanner.py  # Prediction markets
+├── analyzers/
+│   ├── claude_analyst.py       # Claude analysis
+│   ├── claude_maca_extension.py
+│   ├── perplexity_analyst.py   
+│   └── chatgpt_analyst.py      
 │
-├── analyzers/            # Decision making
-│   └── claude_analyst.py # Claude reasoning engine
+├── core/
+│   └── maca_orchestrator.py    # 4-phase MACA cycle
 │
-├── executors/            # Trade execution
-│   ├── risk_engine.py    # Risk validation
-│   └── alpaca_executor.py # Alpaca trading
+├── executors/
+│   ├── risk_engine.py          # Risk validation
+│   └── alpaca_executor.py      # Trade execution
 │
-├── notifications/        # Alerts
-│   └── telegram_bot.py   # Telegram integration
+├── notifications/
+│   └── telegram_bot.py         # Bot interface
 │
-├── storage/              # Persistence
-│   └── database.py       # SQLite operations
+├── storage/
+│   └── database.py             # SQLite database
 │
-├── data/                 # Generated at runtime
-│   └── sentinel.db       # SQLite database
+├── api/
+│   └── logs_api.py             # HTTP API
 │
-└── logs/                 # Generated at runtime
-    └── agent.log         # Application logs
+└── docs/
+    ├── GST_MASTER_FRAMEWORK.md # Full documentation
+    ├── MACA_SPEC_v1.md         # MACA architecture
+    └── PHASE2_DEPLOYMENT_GUIDE.md
 ```
-
-## How It Works
-
-### 1. Signal Gathering (Every Hour)
-
-- **Grok** scans X/Twitter for sentiment on watchlist stocks
-- **Grok** searches web for relevant news
-- **FRED** pulls latest macro data (Treasury yields, unemployment, etc.)
-- **Polymarket** fetches prediction market probabilities
-
-### 2. Analysis (After Each Scan)
-
-Claude receives all signals and:
-- Synthesizes them into a coherent market view
-- Identifies potential trading opportunities
-- Scores conviction (0-100) for any recommendation
-- Only recommends trades with conviction >= 80
-
-### 3. Risk Check
-
-Before any trade, the Risk Engine validates:
-- Position size limits
-- Maximum positions
-- Daily loss limits
-- Stop-loss requirements
-- Conviction threshold
-
-### 4. Approval (If Gate Enabled)
-
-Trade recommendation sent to Telegram for human approval:
-- Review thesis and conviction
-- Approve or reject with a simple command
-- Trades expire if not approved
-
-### 5. Execution
-
-Approved trades are submitted to Alpaca:
-- Market or limit orders
-- Stop-loss orders placed automatically
-- Fills tracked and logged
-
-### 6. Monitoring
-
-Continuous position monitoring:
-- Stop-loss trigger checks
-- Thesis breaker detection (via periodic re-analysis)
-- Daily P&L tracking
-
-## Trading Philosophy
-
-1. **Sentiment precedes price** - Crowd psychology often signals moves before price action
-2. **Second-order effects** - Best trades are adjacent plays (SpaceX IPO → Rocket Lab benefits)
-3. **High conviction, low frequency** - Only trade with 80%+ conviction
-4. **Thesis-driven** - Every trade has a clear, falsifiable thesis
-
-## Database Schema
-
-### Tables
-
-- `signals` - All raw signals from all sources
-- `analyses` - Claude's reasoning for each analysis
-- `trades` - Full trade lifecycle
-- `positions` - Current holdings
-- `portfolio_snapshots` - Daily portfolio state
-- `errors` - All failures for debugging
-
-## Deployment (Railway)
-
-1. Connect GitHub repo to Railway
-2. Add environment variables in Railway dashboard
-3. Railway auto-deploys on push
-
-### Procfile (if needed)
-
-```
-web: python agent.py
-```
-
-## Development
-
-### Run Tests
-
-```bash
-pytest tests/
-```
-
-### Format Code
-
-```bash
-black .
-flake8 .
-```
-
-## Phase Roadmap
-
-### Phase 1: Build It Lean (Current)
-- Core hybrid system
-- Paper trading
-- Basic logging
-- Human approval gate
-
-### Phase 2: Add Complexity (If Needed)
-- Pattern library from observed successes/failures
-- Economic regime detection
-- Targeted paid APIs if gaps identified
-
-### Phase 3: Sophistication (If Working)
-- Full pattern library with backreferences
-- Multi-strategy framework
-- Portfolio-level optimization
-
-## Security Notes
-
-- **Never commit `.env` to Git**
-- Regenerate API keys if accidentally exposed
-- Start with paper trading before live
-- Keep approval gate ON until comfortable
-
-## License
-
-MIT
-
-## Contributing
-
-This is an experimental personal project. Feel free to fork and adapt for your own use.
 
 ---
 
-**Remember: Trading is risky. This system can and will lose money. Only trade what you can afford to lose.**
+## Environment Variables
+
+### Required
+
+```bash
+# AI APIs
+XAI_API_KEY=           # Grok
+ANTHROPIC_API_KEY=     # Claude
+
+# Trading
+ALPACA_API_KEY=        
+ALPACA_SECRET_KEY=     
+ALPACA_PAPER=true      # Use paper trading
+
+# Notifications
+TELEGRAM_BOT_TOKEN=    
+TELEGRAM_CHAT_ID=      
+```
+
+### Optional (MACA)
+
+```bash
+MACA_ENABLED=true
+PERPLEXITY_API_KEY=    # Perplexity Sonar Pro
+OPENAI_API_KEY=        # GPT-4o
+```
+
+### Optional (Logs API)
+
+```bash
+LOGS_API_TOKEN=        # For remote monitoring
+```
+
+---
+
+## Installation
+
+### Prerequisites
+
+- Python 3.11+
+- Railway account (or other hosting)
+- API keys for all services
+
+### Local Development
+
+```bash
+# Clone repository
+git clone https://github.com/Le-Incal/Gann-Sentinel-Trader.git
+cd Gann-Sentinel-Trader
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# or: venv\Scripts\activate  # Windows
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Set environment variables
+cp .env.example .env
+# Edit .env with your API keys
+
+# Run
+python agent.py
+```
+
+### Railway Deployment
+
+1. Connect GitHub repository to Railway
+2. Set environment variables in Railway dashboard
+3. Deploy automatically on push to main
+
+---
+
+## API Endpoints
+
+The Logs API provides remote monitoring:
+
+| Endpoint | Auth | Description |
+|----------|------|-------------|
+| `GET /health` | No | Service health |
+| `GET /api/status` | Token | Full system status |
+| `GET /api/logs` | Token | Telegram history |
+| `GET /api/errors` | Token | System errors |
+| `GET /api/signals` | Token | Recent signals |
+
+---
+
+## The 27 Event Types
+
+GST monitors corporate events that historically move stock prices:
+
+**Leadership:** CEO exits, appointments, insider buying/selling
+
+**Capital Allocation:** Buybacks, dividend changes
+
+**Regulatory:** FDA approvals/rejections, DOJ investigations
+
+**Index Changes:** S&P 500 additions/removals
+
+**External Pressure:** Activist investors, short seller reports
+
+**Contracts:** Government contracts, major partnerships
+
+**Corporate Actions:** M&A, spinoffs, bankruptcies
+
+---
+
+## Philosophy
+
+### ANCHOR in History, ORIENT Toward Future
+
+GST combines historical pattern recognition with forward-looking catalyst analysis:
+
+1. **Historical Context** - "When has this happened before?"
+2. **Forward Catalysts** - "What events are coming?"
+3. **Second-Order Thinking** - "Who benefits that isn't obvious?"
+
+### Example: SpaceX IPO
+
+```
+Signal: "SpaceX IPO expected H2 2026"
+
+First-Order: "Buy SpaceX" → Can't, it's private
+
+Second-Order: 
+→ SpaceX IPO brings attention to space sector
+→ Investors comparison shop for public alternatives
+→ Rocket Lab (RKLB) is most comparable public company
+→ Trade: BUY RKLB ahead of SpaceX IPO
+```
+
+---
+
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 2.4.2 | Jan 2026 | Full MACA for scheduled scans, sports filter fix |
+| 2.4.1 | Jan 2026 | Trade blocker visibility |
+| 2.4.0 | Jan 2026 | Learning Engine, Smart Scheduling |
+| 2.3.0 | Jan 2026 | Event Scanner (27 types) |
+| 2.2.0 | Jan 2026 | MACA for /check command |
+| 2.0.0 | Jan 2026 | Forward-predictive system |
+| 1.0.0 | Dec 2025 | Initial release |
+
+---
+
+## Documentation
+
+- [Master Framework](docs/GST_MASTER_FRAMEWORK.md) - Complete system documentation
+- [MACA Specification](docs/MACA_SPEC_v1.md) - Multi-Agent architecture details
+- [Deployment Guide](docs/PHASE2_DEPLOYMENT_GUIDE.md) - Setup instructions
+
+---
+
+## Contributing
+
+This is a private project. Contact the maintainer for access.
+
+---
+
+## License
+
+Private - All rights reserved.
+
+---
+
+## Acknowledgments
+
+Built with:
+- [Anthropic Claude](https://anthropic.com) - AI synthesis and decision-making
+- [xAI Grok](https://x.ai) - Real-time sentiment analysis
+- [Perplexity](https://perplexity.ai) - Research and citations
+- [OpenAI GPT-4](https://openai.com) - Pattern recognition
+- [Alpaca](https://alpaca.markets) - Trading execution
+- [Polymarket](https://polymarket.com) - Prediction market data
+- [FRED](https://fred.stlouisfed.org) - Economic data
+
+---
+
+*"The market is a device for transferring money from the impatient to the patient." - Warren Buffett*
