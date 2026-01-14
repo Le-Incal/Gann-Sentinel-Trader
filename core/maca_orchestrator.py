@@ -1,19 +1,19 @@
 """
 MACA Orchestrator for Gann Sentinel Trader
-Coordinates the Multi-Agent Consensus Architecture 4-phase process.
+Coordinates the Multi-Agent Consensus Architecture 2-phase process.
 
-Version: 1.2.0 - Per-Cycle Cost Tracking
-- Uses send_maca_scan_summary() for AI Council + Decision display
-- Inline buttons for approve/reject
-- Enhanced notification with technical signals and portfolio
+Version: 2.0.0 - Simplified 2-Phase Architecture
+- Phase 1: Parallel thesis generation (Grok, Perplexity, ChatGPT)
+- Phase 2: Claude synthesis with direct decision
+- Removed peer review (Phase 3) - was causing complexity without clear benefit
+- Removed final decision phase (Phase 4) - synthesis now makes direct decision
+- Fixed Grok signal parsing (GrokSignal.to_dict(), confidence not conviction)
 - Per-cycle API cost tracking with aggregate_cycle_costs()
 - is_configured property for component status check
 
-Phases:
-1. Parallel thesis generation (Grok, Perplexity, ChatGPT)
-2. Claude synthesis
-3. Peer review (all three AIs)
-4. Final decision (Claude)
+Trade Decision Logic:
+- If synthesis.decision_type == "TRADE" AND conviction >= 80: proceed = True
+- Direct path from synthesis to trade creation
 """
 
 import asyncio
@@ -127,6 +127,9 @@ class MACAOrchestrator:
             "cost_usd": cost_usd
         }
 
+    # Conviction threshold for trade execution
+    CONVICTION_THRESHOLD = 80
+
     async def run_scan_cycle(
         self,
         portfolio: Dict[str, Any],
@@ -137,7 +140,10 @@ class MACAOrchestrator:
         market_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Execute a full MACA scan cycle.
+        Execute a simplified 2-phase MACA scan cycle.
+
+        Phase 1: Parallel thesis generation (Grok, Perplexity, ChatGPT)
+        Phase 2: Claude synthesis with direct decision
 
         Args:
             portfolio: Current portfolio state with positions
@@ -148,7 +154,7 @@ class MACAOrchestrator:
             market_context: Additional market context string
 
         Returns:
-            Final decision result including all phase outputs
+            Result including synthesis and final_decision with proceed_to_execution flag
         """
         # Create scan cycle record
         start_time = datetime.now(timezone.utc)
@@ -159,10 +165,12 @@ class MACAOrchestrator:
             "status": "started"
         })
 
-        logger.info(f"Starting MACA scan cycle {cycle_id}")
+        logger.info(f"Starting MACA scan cycle {cycle_id} (2-phase architecture)")
 
         try:
-            # Phase 1: Parallel thesis generation
+            # ================================================================
+            # PHASE 1: Parallel thesis generation
+            # ================================================================
             proposals = await self._phase1_generate_theses(
                 cycle_id=cycle_id,
                 portfolio=portfolio,
@@ -173,7 +181,9 @@ class MACAOrchestrator:
             phase1_complete = datetime.now(timezone.utc)
             logger.info(f"Phase 1 complete: {len(proposals)} proposals generated")
 
-            # Phase 2: Claude synthesis
+            # ================================================================
+            # PHASE 2: Claude synthesis
+            # ================================================================
             synthesis = await self._phase2_synthesize(
                 cycle_id=cycle_id,
                 proposals=proposals,
@@ -184,91 +194,79 @@ class MACAOrchestrator:
             )
 
             phase2_complete = datetime.now(timezone.utc)
-            logger.info(f"Phase 2 complete: decision_type={synthesis.get('decision_type')}, "
-                       f"conviction={synthesis.get('recommendation', {}).get('conviction_score', 0)}")
 
-            # Check if we should proceed to review
-            if not synthesis.get("proceed_to_review", False):
-                # No trade opportunity above threshold
-                self.db.update_scan_cycle(
-                    cycle_id=cycle_id,
-                    status="completed",
-                    decision_type=synthesis.get("decision_type", "NO_TRADE"),
-                    final_conviction=synthesis.get("recommendation", {}).get("conviction_score", 0)
-                )
+            # Extract conviction from synthesis
+            recommendation = synthesis.get("recommendation", {})
+            conviction = recommendation.get("conviction_score", 0)
+            decision_type = synthesis.get("decision_type", "NO_TRADE")
 
-                if self.telegram:
-                    await self._notify_no_trade(synthesis)
+            logger.info(f"Phase 2 complete: decision_type={decision_type}, conviction={conviction}")
 
-                return {
-                    "cycle_id": cycle_id,
-                    "status": "completed",
-                    "decision_type": synthesis.get("decision_type", "NO_TRADE"),
-                    "synthesis": synthesis,
-                    "proposals": proposals,
-                    "reviews": [],
-                    "final_decision": None,
-                    "proceed_to_execution": False,
-                    "timing": {
-                        "total_ms": int((phase2_complete - start_time).total_seconds() * 1000),
-                        "phase1_ms": int((phase1_complete - start_time).total_seconds() * 1000),
-                        "phase2_ms": int((phase2_complete - phase1_complete).total_seconds() * 1000)
-                    }
-                }
-
-            # Phase 3: Peer review
-            reviews = await self._phase3_peer_review(
-                cycle_id=cycle_id,
-                synthesis=synthesis
+            # ================================================================
+            # DIRECT DECISION FROM SYNTHESIS (no Phase 3/4)
+            # ================================================================
+            # Simple decision logic: TRADE + conviction >= 80 = proceed
+            proceed = (
+                decision_type == "TRADE" and
+                conviction >= self.CONVICTION_THRESHOLD
             )
 
-            phase3_complete = datetime.now(timezone.utc)
-            approve_count = sum(1 for r in reviews if r.get("verdict") == "APPROVE")
-            logger.info(f"Phase 3 complete: {approve_count}/3 approvals")
+            # Build final_decision directly from synthesis
+            final_decision = {
+                "decision_id": str(uuid.uuid4()),
+                "cycle_id": cycle_id,
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "decision_type": decision_type,
+                "final_conviction": conviction,
+                "proceed_to_execution": proceed,
+                "recommendation": recommendation if proceed else None,
+                "source": "claude_synthesis_direct",
+                "rationale": synthesis.get("rationale", ""),
+            }
 
-            # Phase 4: Final decision
-            final_decision = await self._phase4_final_decision(
-                cycle_id=cycle_id,
-                synthesis=synthesis,
-                reviews=reviews,
-                proposals=proposals,
-                technical_analysis=technical_analysis,
-                portfolio=portfolio
-            )
-
-            phase4_complete = datetime.now(timezone.utc)
+            logger.info(f"MACA decision: proceed_to_execution={proceed}, conviction={conviction}")
 
             # Update scan cycle record
             self.db.update_scan_cycle(
                 cycle_id=cycle_id,
                 status="completed",
-                decision_type=final_decision.get("decision_type", "NO_TRADE"),
-                final_conviction=final_decision.get("final_conviction", 0)
+                decision_type=decision_type,
+                final_conviction=conviction
             )
 
-            logger.info(f"MACA cycle {cycle_id} complete: {final_decision.get('decision_type')} "
-                       f"(conviction: {final_decision.get('final_conviction', 0)})")
+            # Notify via Telegram
+            if self.telegram:
+                await self._notify_decision(
+                    final_decision=final_decision,
+                    synthesis=synthesis,
+                    proposals=proposals,
+                    technical_analysis=technical_analysis,
+                    portfolio=portfolio
+                )
+
+            logger.info(f"MACA cycle {cycle_id} complete: {decision_type} (conviction: {conviction})")
 
             return {
                 "cycle_id": cycle_id,
                 "status": "completed",
-                "decision_type": final_decision.get("decision_type"),
+                "decision_type": decision_type,
                 "synthesis": synthesis,
                 "proposals": proposals,
-                "reviews": reviews,
+                "reviews": [],  # No reviews in 2-phase architecture
                 "final_decision": final_decision,
-                "proceed_to_execution": final_decision.get("proceed_to_execution", False),
+                "proceed_to_execution": proceed,
                 "timing": {
-                    "total_ms": int((phase4_complete - start_time).total_seconds() * 1000),
+                    "total_ms": int((phase2_complete - start_time).total_seconds() * 1000),
                     "phase1_ms": int((phase1_complete - start_time).total_seconds() * 1000),
-                    "phase2_ms": int((phase2_complete - phase1_complete).total_seconds() * 1000),
-                    "phase3_ms": int((phase3_complete - phase2_complete).total_seconds() * 1000),
-                    "phase4_ms": int((phase4_complete - phase3_complete).total_seconds() * 1000)
-                }
+                    "phase2_ms": int((phase2_complete - phase1_complete).total_seconds() * 1000)
+                },
+                "cycle_cost": self.aggregate_cycle_costs()
             }
 
         except Exception as e:
             logger.error(f"MACA cycle {cycle_id} failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
             self.db.update_scan_cycle(
                 cycle_id=cycle_id,
@@ -281,7 +279,8 @@ class MACAOrchestrator:
                 "cycle_id": cycle_id,
                 "status": "failed",
                 "error": str(e),
-                "proceed_to_execution": False
+                "proceed_to_execution": False,
+                "final_decision": None
             }
 
     async def _phase1_generate_theses(
@@ -408,42 +407,111 @@ class MACAOrchestrator:
         """
         Adapter for Grok scanner to match thesis generation interface.
 
-        The Grok scanner may have a different interface, so this adapts it
+        The Grok scanner returns GrokSignal objects which need to be converted
         to the standard ThesisProposal schema.
+
+        Key conversions:
+        - GrokSignal.confidence (0-1) -> conviction_score (0-100)
+        - GrokSignal.to_dict() for serialization
         """
         try:
             # Grok scanner uses scan_market_overview for general market thesis
-            if hasattr(self.grok, 'scan_market_overview'):
-                signals = await asyncio.wait_for(
-                    self.grok.scan_market_overview(),
-                    timeout=30.0
-                )
-                # Convert first signal to sentiment_result format
-                sentiment_result = signals[0].to_dict() if signals else {}
-
-                # Convert sentiment result to thesis format
-                return {
-                    "schema_version": "1.0.0",
-                    "proposal_id": str(uuid.uuid4()),
-                    "ai_source": "grok",
-                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                    "scan_cycle_id": cycle_id,
-                    "proposal_type": sentiment_result.get("proposal_type", "NO_OPPORTUNITY"),
-                    "recommendation": sentiment_result.get("recommendation", {}),
-                    "rotation_details": sentiment_result.get("rotation_details", {}),
-                    "supporting_evidence": sentiment_result.get("supporting_evidence", {}),
-                    "raw_data": sentiment_result.get("raw_data", {}),
-                    "time_sensitive": sentiment_result.get("time_sensitive", False),
-                    "metadata": {
-                        "model": "grok-3-fast-beta",
-                        "adapter": "grok_thesis_adapter"
-                    }
-                }
-            else:
+            if not hasattr(self.grok, 'scan_market_overview'):
                 return self._empty_proposal(cycle_id, "grok", "No compatible method found")
 
+            signals = await asyncio.wait_for(
+                self.grok.scan_market_overview(),
+                timeout=30.0
+            )
+
+            # Handle empty signals
+            if not signals:
+                logger.warning("Grok returned no signals")
+                return self._empty_proposal(cycle_id, "grok", "No signals returned")
+
+            # Convert GrokSignal objects to dicts
+            signals_dicts = []
+            for s in signals:
+                if hasattr(s, 'to_dict'):
+                    signals_dicts.append(s.to_dict())
+                elif isinstance(s, dict):
+                    signals_dicts.append(s)
+                else:
+                    logger.warning(f"Unknown signal type: {type(s)}")
+
+            if not signals_dicts:
+                return self._empty_proposal(cycle_id, "grok", "No valid signals after conversion")
+
+            # Find highest CONFIDENCE signal (not conviction - GrokSignal uses confidence 0-1)
+            best_signal = max(
+                signals_dicts,
+                key=lambda s: s.get("confidence", 0),
+                default=None
+            )
+
+            if not best_signal:
+                return self._empty_proposal(cycle_id, "grok", "No best signal found")
+
+            logger.info(f"Grok best signal: ticker={best_signal.get('asset_scope', {}).get('tickers', ['?'])[0]}, "
+                       f"confidence={best_signal.get('confidence', 0)}, "
+                       f"bias={best_signal.get('directional_bias', 'N/A')}")
+
+            # Convert confidence (0-1) to conviction_score (0-100)
+            confidence_raw = best_signal.get("confidence", 0.5)
+            conviction_score = int(confidence_raw * 100)
+
+            # Extract ticker from asset_scope
+            asset_scope = best_signal.get("asset_scope", {})
+            tickers = asset_scope.get("tickers", [])
+            ticker = tickers[0] if tickers else None
+
+            # Map directional_bias to side
+            bias = best_signal.get("directional_bias", "neutral")
+            if bias == "bullish":
+                side = "BUY"
+            elif bias == "bearish":
+                side = "SELL"
+            else:
+                side = None
+
+            # Build thesis proposal from Grok signal
+            return {
+                "schema_version": "1.0.0",
+                "proposal_id": str(uuid.uuid4()),
+                "ai_source": "grok",
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "scan_cycle_id": cycle_id,
+                "proposal_type": "NEW_POSITION" if ticker and side else "NO_OPPORTUNITY",
+                "recommendation": {
+                    "ticker": ticker,
+                    "side": side,
+                    "conviction_score": conviction_score,
+                    "thesis": best_signal.get("narrative", "Grok market signal"),
+                    "time_horizon": best_signal.get("time_horizon"),
+                    "catalyst": best_signal.get("event_type"),
+                    "catalyst_deadline": best_signal.get("validity", {}).get("expires_at")
+                },
+                "supporting_evidence": {
+                    "signal_source": best_signal.get("source", "grok"),
+                    "event_type": best_signal.get("event_type"),
+                    "raw_confidence": confidence_raw,
+                    "signals_count": len(signals_dicts)
+                },
+                "raw_data": best_signal,
+                "time_sensitive": best_signal.get("validity", {}).get("requires_immediate_action", False),
+                "metadata": {
+                    "model": "grok-3-fast-beta",
+                    "adapter": "grok_thesis_adapter_v2"
+                }
+            }
+
+        except asyncio.TimeoutError:
+            logger.warning("Grok thesis generation timed out")
+            return self._empty_proposal(cycle_id, "grok", "Timeout")
         except Exception as e:
             logger.error(f"Grok adapter error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return self._empty_proposal(cycle_id, "grok", str(e))
 
     async def _phase2_synthesize(
@@ -671,8 +739,87 @@ class MACAOrchestrator:
 
         return final_decision
 
+    async def _notify_decision(
+        self,
+        final_decision: Dict[str, Any],
+        synthesis: Dict[str, Any],
+        proposals: List[Dict[str, Any]],
+        technical_analysis: Optional[Dict[str, Any]] = None,
+        portfolio: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Send Telegram notification for MACA decision (2-phase architecture).
+
+        Uses send_maca_scan_summary() for rich display with:
+        - AI Council views (all proposals)
+        - Chart analysis with technical signals
+        - Claude's synthesis decision
+        - Inline approve/reject buttons (if actionable)
+        """
+        try:
+            # Build technical signals list for display
+            technical_signals = []
+            if technical_analysis:
+                if isinstance(technical_analysis, dict):
+                    if "ticker" in technical_analysis:
+                        technical_signals.append(technical_analysis)
+                    else:
+                        for key, value in technical_analysis.items():
+                            if isinstance(value, dict) and "ticker" in value:
+                                technical_signals.append(value)
+
+            # Use the MACA scan summary method
+            await self.telegram.send_maca_scan_summary(
+                proposals=proposals,
+                synthesis=synthesis,
+                technical_signals=technical_signals,
+                portfolio=portfolio or {},
+                trade_id=None  # Trade ID comes from agent.py after trade creation
+            )
+
+            logger.info(f"MACA notification sent: decision_type={final_decision.get('decision_type')}, "
+                       f"conviction={final_decision.get('final_conviction')}")
+
+        except Exception as e:
+            logger.error(f"Failed to send MACA decision notification: {e}")
+            # Fallback to simple message
+            try:
+                rec = synthesis.get("recommendation", {})
+                ticker = rec.get("ticker", "N/A")
+                side = rec.get("side", "N/A")
+                conviction = final_decision.get("final_conviction", 0)
+                proceed = final_decision.get("proceed_to_execution", False)
+
+                if proceed:
+                    message = (
+                        f"MACA Trade Signal\n\n"
+                        f"Ticker: {ticker}\n"
+                        f"Side: {side}\n"
+                        f"Conviction: {conviction}/100\n"
+                        f"Status: ACTIONABLE\n\n"
+                        f"Thesis: {rec.get('thesis', 'N/A')[:200]}"
+                    )
+                else:
+                    message = (
+                        f"MACA Cycle Complete\n\n"
+                        f"Decision: NO TRADE\n"
+                        f"Highest Conviction: {conviction}/100\n"
+                        f"Rationale: {synthesis.get('rationale', 'Below threshold')[:200]}"
+                    )
+
+                await self.telegram.send_message(
+                    message,
+                    message_type="maca_decision"
+                )
+            except Exception as fallback_error:
+                logger.error(f"Fallback notification also failed: {fallback_error}")
+
+    # =========================================================================
+    # DEPRECATED: Phase 3/4 methods kept for reference but not used in 2-phase
+    # =========================================================================
+
     async def _notify_no_trade(self, synthesis: Dict[str, Any]) -> None:
-        """Send Telegram notification for no-trade decision."""
+        """[DEPRECATED] Send Telegram notification for no-trade decision."""
         try:
             rationale = synthesis.get("rationale", "No compelling opportunities above 80 conviction threshold")
             conviction = synthesis.get("recommendation", {}).get("conviction_score", 0)
