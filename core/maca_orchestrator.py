@@ -412,14 +412,14 @@ class MACAOrchestrator:
         to the standard ThesisProposal schema.
         """
         try:
-            # Grok scanner typically uses scan_sentiment or similar
-            if hasattr(self.grok, 'scan_sentiment'):
-                sentiment_result = await asyncio.wait_for(
-                    self.grok.scan_sentiment(
-                        context=market_context or "investment opportunities"
-                    ),
+            # Grok scanner uses scan_market_overview for general market thesis
+            if hasattr(self.grok, 'scan_market_overview'):
+                signals = await asyncio.wait_for(
+                    self.grok.scan_market_overview(),
                     timeout=30.0
                 )
+                # Convert first signal to sentiment_result format
+                sentiment_result = signals[0].to_dict() if signals else {}
 
                 # Convert sentiment result to thesis format
                 return {
@@ -857,3 +857,17 @@ class MACAOrchestrator:
             },
             "raw_response": f"Error: {reason}"
         }
+
+    async def send_maca_summary(self, maca_result: Dict[str, Any]) -> None:
+        """
+        Send MACA scan summary to Telegram.
+
+        Wraps the telegram bot's send_maca_scan_summary method.
+        """
+        if self.telegram and hasattr(self.telegram, 'send_maca_scan_summary'):
+            try:
+                await self.telegram.send_maca_scan_summary(maca_result)
+            except Exception as e:
+                logger.error(f"Failed to send MACA summary: {e}")
+        else:
+            logger.warning("Telegram bot not configured or missing send_maca_scan_summary method")
