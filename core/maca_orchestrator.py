@@ -195,21 +195,46 @@ class MACAOrchestrator:
 
             phase2_complete = datetime.now(timezone.utc)
 
+            # ================================================================
+            # DEBUG: Log full synthesis response to trace issue
+            # ================================================================
+            logger.info(f"DEBUG SYNTHESIS: Full response keys = {list(synthesis.keys())}")
+            logger.info(f"DEBUG SYNTHESIS: Full response = {synthesis}")
+
             # Extract conviction from synthesis
             recommendation = synthesis.get("recommendation", {})
+            logger.info(f"DEBUG SYNTHESIS: recommendation = {recommendation}")
+            logger.info(f"DEBUG SYNTHESIS: recommendation type = {type(recommendation)}")
+
             conviction = recommendation.get("conviction_score", 0)
             decision_type = synthesis.get("decision_type", "NO_TRADE")
+
+            logger.info(f"DEBUG SYNTHESIS: decision_type = '{decision_type}' (type={type(decision_type)})")
+            logger.info(f"DEBUG SYNTHESIS: conviction = {conviction} (type={type(conviction)})")
+            logger.info(f"DEBUG SYNTHESIS: CONVICTION_THRESHOLD = {self.CONVICTION_THRESHOLD}")
 
             logger.info(f"Phase 2 complete: decision_type={decision_type}, conviction={conviction}")
 
             # ================================================================
             # DIRECT DECISION FROM SYNTHESIS (no Phase 3/4)
             # ================================================================
-            # Simple decision logic: TRADE + conviction >= 80 = proceed
-            proceed = (
-                decision_type == "TRADE" and
-                conviction >= self.CONVICTION_THRESHOLD
-            )
+            # Decision logic: conviction >= 80 AND has valid ticker/side = proceed
+            # Note: Claude may return "WATCH" even with high conviction, so we
+            # prioritize conviction over decision_type for actionability
+            meets_threshold = conviction >= self.CONVICTION_THRESHOLD
+            has_ticker = bool(recommendation.get("ticker"))
+            has_side = recommendation.get("side") in ["BUY", "SELL"]
+            is_actionable = decision_type in ["TRADE", "WATCH"]  # Either TRADE or WATCH can be actionable
+
+            # Proceed if: high conviction + valid ticker/side + not explicitly NO_TRADE
+            proceed = meets_threshold and has_ticker and has_side and is_actionable
+
+            logger.info(f"DEBUG DECISION: meets_threshold={meets_threshold}, has_ticker={has_ticker}, "
+                       f"has_side={has_side}, is_actionable={is_actionable}, proceed={proceed}")
+
+            # If conviction is high but decision_type was WATCH, log a note
+            if proceed and decision_type == "WATCH":
+                logger.info(f"NOTE: Proceeding with WATCH decision due to high conviction ({conviction})")
 
             # Build final_decision directly from synthesis
             final_decision = {
@@ -224,6 +249,8 @@ class MACAOrchestrator:
                 "rationale": synthesis.get("rationale", ""),
             }
 
+            logger.info(f"DEBUG FINAL_DECISION: proceed_to_execution={final_decision.get('proceed_to_execution')}")
+            logger.info(f"DEBUG FINAL_DECISION: recommendation={final_decision.get('recommendation')}")
             logger.info(f"MACA decision: proceed_to_execution={proceed}, conviction={conviction}")
 
             # Update scan cycle record
