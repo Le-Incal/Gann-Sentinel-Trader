@@ -571,11 +571,13 @@ class GannSentinelAgent:
                 
                 # Handle trade creation from MACA result
                 final_decision = maca_result.get("final_decision", {})
-                logger.info(f"MACA SCAN: final_decision.proceed = {final_decision.get('proceed')}, "
+                # MACA orchestrator uses "proceed_to_execution" not "proceed"
+                proceed = final_decision.get("proceed_to_execution", False)
+                logger.info(f"MACA SCAN: final_decision.proceed_to_execution = {proceed}, "
                            f"conviction = {final_decision.get('final_conviction')}, "
-                           f"status = {final_decision.get('status')}")
+                           f"decision_type = {final_decision.get('decision_type')}")
 
-                if final_decision.get("proceed"):
+                if proceed:
                     logger.info("MACA SCAN: proceed=True, calling _create_maca_trade_from_scan...")
                     # Create trade from MACA recommendation
                     trade_id = await self._create_maca_trade_from_scan(
@@ -588,9 +590,10 @@ class GannSentinelAgent:
                         self._current_pending_trade_id = trade_id
                         maca_result["final_decision"]["trade_id"] = trade_id
                 else:
-                    logger.info(f"MACA SCAN: proceed=False, NOT creating trade. "
+                    logger.info(f"MACA SCAN: proceed_to_execution=False, NOT creating trade. "
                                f"Conviction={final_decision.get('final_conviction')}, "
-                               f"Recommendation={final_decision.get('recommendation')}")
+                               f"decision_type={final_decision.get('decision_type')}, "
+                               f"approval_count={final_decision.get('approval_count')}/{final_decision.get('total_reviews')}")
                 
                 # Add portfolio to result for telegram display
                 maca_result["portfolio"] = portfolio_dict
@@ -801,15 +804,16 @@ class GannSentinelAgent:
             # === DEBUG: Log full final_decision structure ===
             final_decision = maca_result.get("final_decision", {})
             logger.info(f"MACA TRADE DEBUG: final_decision keys = {list(final_decision.keys())}")
-            logger.info(f"MACA TRADE DEBUG: proceed = {final_decision.get('proceed')}")
+            logger.info(f"MACA TRADE DEBUG: proceed_to_execution = {final_decision.get('proceed_to_execution')}")
             logger.info(f"MACA TRADE DEBUG: final_conviction = {final_decision.get('final_conviction')}")
-            logger.info(f"MACA TRADE DEBUG: status = {final_decision.get('status')}")
+            logger.info(f"MACA TRADE DEBUG: decision_type = {final_decision.get('decision_type')}")
             logger.info(f"MACA TRADE DEBUG: full final_decision = {final_decision}")
 
-            if not final_decision.get("proceed"):
-                logger.warning(f"MACA TRADE DEBUG: proceed=False, skipping trade creation. "
+            # MACA orchestrator uses "proceed_to_execution" not "proceed"
+            if not final_decision.get("proceed_to_execution"):
+                logger.warning(f"MACA TRADE DEBUG: proceed_to_execution=False, skipping trade creation. "
                              f"Conviction={final_decision.get('final_conviction')}, "
-                             f"Status={final_decision.get('status')}")
+                             f"decision_type={final_decision.get('decision_type')}")
                 return None
 
             rec = final_decision.get("recommendation", {})
