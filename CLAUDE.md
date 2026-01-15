@@ -6,7 +6,7 @@
 
 | Item | Value |
 |------|-------|
-| Version | 2.4.2 |
+| Version | 2.4.3 |
 | Status | Production (Paper Trading) |
 | Deployment | Railway (auto-deploy from GitHub main) |
 | URL | https://gann-sentinel-trader-production.up.railway.app |
@@ -37,7 +37,7 @@ Second-Order: SpaceX IPO → attention to space sector → investors comparison 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         GANN SENTINEL TRADER v2.4.2                         │
+│                         GANN SENTINEL TRADER v2.4.3                         │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
           ┌───────────────────────────┼───────────────────────────┐
@@ -229,7 +229,7 @@ LOG_LEVEL=INFO
 
 ---
 
-## 8. Current State (v2.4.2)
+## 8. Current State (v2.4.3)
 
 ### What's Working
 - Full MACA for both scheduled scans and `/check` command
@@ -239,6 +239,7 @@ LOG_LEVEL=INFO
 - Sports/entertainment filter for Polymarket
 - Trade blocker visibility in Telegram
 - Logs API for remote monitoring
+- **Trade execution pipeline** (scan → approve → Alpaca order)
 
 ### Smart Schedule
 ```
@@ -306,6 +307,7 @@ curl https://gann-sentinel-trader-production.up.railway.app/api/status \
 
 ## 11. Documentation Links
 
+- **Changelog:** `CHANGELOG.md` - Version history and bug fixes
 - **Master Framework:** `GST_MASTER_FRAMEWORK.md` - Complete system docs
 - **MACA Spec:** `MACA_SPEC_v1.md` - Multi-agent architecture
 - **Deployment:** `PHASE2_DEPLOYMENT_GUIDE.md` - Setup instructions
@@ -318,6 +320,7 @@ curl https://gann-sentinel-trader-production.up.railway.app/api/status \
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.4.3 | Jan 2026 | Trade execution pipeline fixes (see CHANGELOG.md) |
 | 2.4.2 | Jan 2026 | Full MACA for scheduled scans, analysis.id fix |
 | 2.4.1 | Jan 2026 | Trade blocker visibility |
 | 2.4.0 | Jan 2026 | Learning Engine, Smart Scheduling |
