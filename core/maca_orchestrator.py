@@ -261,8 +261,10 @@ class MACAOrchestrator:
                 final_conviction=conviction
             )
 
-            # Notify via Telegram
-            if self.telegram:
+            # Notify via Telegram ONLY if NOT proceeding to trade
+            # If proceeding, agent.py will send notification AFTER creating the trade
+            # (so trade_id can be included for approve/reject buttons)
+            if self.telegram and not proceed:
                 await self._notify_decision(
                     final_decision=final_decision,
                     synthesis=synthesis,
@@ -1045,12 +1047,42 @@ class MACAOrchestrator:
         """
         Send MACA scan summary to Telegram.
 
-        Wraps the telegram bot's send_maca_scan_summary method.
+        Extracts components from maca_result and calls send_maca_scan_summary
+        with proper parameters including trade_id for approve/reject buttons.
         """
-        if self.telegram and hasattr(self.telegram, 'send_maca_scan_summary'):
-            try:
-                await self.telegram.send_maca_scan_summary(maca_result)
-            except Exception as e:
-                logger.error(f"Failed to send MACA summary: {e}")
-        else:
+        if not self.telegram or not hasattr(self.telegram, 'send_maca_scan_summary'):
             logger.warning("Telegram bot not configured or missing send_maca_scan_summary method")
+            return
+
+        try:
+            # Extract components from maca_result
+            proposals = maca_result.get("proposals", [])
+            synthesis = maca_result.get("synthesis", {})
+            final_decision = maca_result.get("final_decision", {})
+            portfolio = maca_result.get("portfolio", {})
+
+            # Get trade_id if trade was created
+            trade_id = final_decision.get("trade_id")
+
+            # Build technical signals list
+            technical_signals = []
+            tech_analysis = maca_result.get("technical_analysis", [])
+            if isinstance(tech_analysis, list):
+                technical_signals = tech_analysis
+            elif isinstance(tech_analysis, dict):
+                technical_signals = [tech_analysis] if tech_analysis else []
+
+            logger.info(f"Sending MACA summary: trade_id={trade_id}, "
+                       f"proceed={final_decision.get('proceed_to_execution')}")
+
+            await self.telegram.send_maca_scan_summary(
+                proposals=proposals,
+                synthesis=synthesis,
+                technical_signals=technical_signals,
+                portfolio=portfolio,
+                trade_id=trade_id
+            )
+        except Exception as e:
+            logger.error(f"Failed to send MACA summary: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
