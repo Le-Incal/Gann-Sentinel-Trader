@@ -1535,12 +1535,28 @@ class TelegramBot:
             lines.append(f"Trade ID: {trade_id}")
             lines.append("")
             lines.append("Use buttons below to approve or reject")
+        elif self._risk_rejections:
+            # Show risk rejections if any
+            lines.append(f"{EMOJI_RED_CIRCLE} BLOCKED BY RISK ENGINE")
+            for rejection in self._risk_rejections[:2]:
+                check = rejection.get("check_name", "Unknown")
+                msg = rejection.get("message", rejection.get("reason", ""))
+                lines.append(f"  {check}: {msg[:80]}")
+        elif self._trade_blockers:
+            # Show trade blockers if any
+            lines.append(f"{EMOJI_RED_CIRCLE} TRADE NOT CREATED")
+            for blocker in self._trade_blockers[:3]:
+                lines.append(f"  {blocker.get('type', 'ERROR')}: {blocker.get('details', '')[:80]}")
+        elif is_actionable:
+            # High conviction but no trade created - unknown reason
+            lines.append(f"{EMOJI_WARNING} ACTIONABLE BUT NO TRADE")
+            lines.append("Check logs - possible quote/risk issue")
         elif decision_type == "NO_TRADE":
             lines.append(f"{EMOJI_ZZZ} NO TRADE")
             if rationale:
                 lines.append(f"Reason: {rationale[:150]}")
         else:
-            lines.append(f"{EMOJI_WHITE_CIRCLE} Watching - no action required")
+            lines.append(f"{EMOJI_WHITE_CIRCLE} Watching - conviction below threshold")
 
         # =====================================================================
         # PORTFOLIO SNAPSHOT
