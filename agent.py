@@ -900,12 +900,19 @@ class GannSentinelAgent:
                 })
                 return None
 
-            # Calculate shares
-            equity = portfolio.get("equity", 100000)
-            position_value = equity * (position_size_pct / 100)
+            # Calculate shares - use equity, but fall back to cash if equity is 0
+            equity = portfolio.get("equity", 0)
+            cash = portfolio.get("cash", 0)
+            # Use the larger of equity or cash (equity should include cash, but fallback if not)
+            account_value = max(equity, cash, 100000)  # Minimum $100k fallback
+
+            logger.info(f"MACA TRADE DEBUG: Portfolio equity=${equity:,.2f}, cash=${cash:,.2f}, "
+                       f"using account_value=${account_value:,.2f}")
+
+            position_value = account_value * (position_size_pct / 100)
             shares = int(position_value / current_price)
 
-            logger.info(f"MACA TRADE DEBUG: Share calc: equity=${equity:,.2f}, "
+            logger.info(f"MACA TRADE DEBUG: Share calc: account_value=${account_value:,.2f}, "
                        f"size_pct={position_size_pct}%, position_value=${position_value:,.2f}, "
                        f"price=${current_price:.2f}, shares={shares}")
 
