@@ -961,7 +961,7 @@ class GannSentinelAgent:
             # Create trade
             logger.info(f"MACA TRADE DEBUG: Creating trade record...")
             trade = Trade(
-                id=str(uuid.uuid4()),
+                trade_id=str(uuid.uuid4()),
                 analysis_id=maca_result.get("cycle_id"),
                 ticker=ticker,
                 side=OrderSide.BUY if side == "BUY" else OrderSide.SELL,
@@ -970,17 +970,17 @@ class GannSentinelAgent:
                 status=TradeStatus.PENDING_APPROVAL,
                 thesis=thesis,
                 conviction_score=conviction,
-                stop_loss_price=current_price * (1 - stop_loss_pct / 100)
+                stop_price=current_price * (1 - stop_loss_pct / 100)
             )
 
             self.db.save_trade(trade.to_dict())
-            logger.info(f"MACA TRADE DEBUG: SUCCESS! Trade created: {trade.id[:8]} - "
+            logger.info(f"MACA TRADE DEBUG: SUCCESS! Trade created: {trade.trade_id[:8]} - "
                        f"{trade.side.value} {trade.quantity} {ticker} @ ${current_price:.2f}")
 
             # Clear debug entry blocker on success
             self.telegram._trade_blockers = [b for b in self.telegram._trade_blockers if b.get("type") != "DEBUG_ENTRY"]
 
-            return trade.id
+            return trade.trade_id
 
         except Exception as e:
             logger.error(f"MACA TRADE DEBUG: EXCEPTION in _create_maca_trade_from_scan: {e}")
