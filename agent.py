@@ -2,12 +2,12 @@
 Gann Sentinel Trader - Main Agent
 Orchestrates the trading system: scan signals, analyze, approve, execute.
 
-Version: 2.4.3 - MACA 2-Phase Architecture
-- Simplified MACA: Phase 1 (thesis) + Phase 2 (Claude synthesis) only
+Version: 2.4.4 - Notification Timing Fix
+- FIX: Notification sent AFTER trade creation (includes trade_id for buttons)
+- FIX: Orchestrator only notifies on NO_TRADE, agent.py handles TRADE
 - FIX: Uses proceed_to_execution key (matches orchestrator output)
-- FIX: Accepts WATCH + high conviction as actionable (not just TRADE)
-- FIX: Grok signal parsing with proper confidence→conviction conversion
-- FIX: Perplexity JSON parsing with nested brace matching
+- FIX: Accepts WATCH + high conviction as actionable
+- Simplified MACA: Phase 1 (thesis) + Phase 2 (Claude synthesis) only
 - Debug logging throughout MACA flow for troubleshooting
 
 DISCLAIMER: Trading involves substantial risk of loss. This is an experimental
@@ -597,7 +597,12 @@ class GannSentinelAgent:
                 # Add portfolio to result for telegram display
                 maca_result["portfolio"] = portfolio_dict
                 maca_result["technical_analysis"] = technical_signals
-                
+
+                # Log what we're about to send
+                final_trade_id = maca_result.get("final_decision", {}).get("trade_id")
+                logger.info(f"MACA SCAN: About to send notification. trade_id={final_trade_id}, "
+                           f"proceed={proceed}")
+
                 # Send MACA-formatted Telegram summary (AI Council views + Claude synthesis)
                 await self.maca.send_maca_summary(maca_result)
                 
