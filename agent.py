@@ -1117,40 +1117,68 @@ class GannSentinelAgent:
             await self.telegram.send_message("Usage: /approve [trade_id]", parse_mode=None)
             return
 
-        trade = self.db.get_trade(trade_id)
-        if not trade:
+        trade_dict = self.db.get_trade(trade_id)
+        if not trade_dict:
             await self.telegram.send_message(f"Trade {trade_id} not found", parse_mode=None)
             return
 
-        if trade.get("status") != TradeStatus.PENDING_APPROVAL.value:
+        if trade_dict.get("status") != TradeStatus.PENDING_APPROVAL.value:
             await self.telegram.send_message(f"Trade {trade_id} is not pending approval", parse_mode=None)
             return
 
         # Execute trade
         try:
-            result = await self.executor.execute_order(
-                ticker=trade.get("ticker"),
-                side=trade.get("side"),
-                quantity=trade.get("quantity"),
-                order_type=trade.get("order_type", "market")
+            # Reconstruct Trade object from stored dict
+            side_str = trade_dict.get("side", "BUY")
+            side = OrderSide.BUY if side_str == "BUY" else OrderSide.SELL
+
+            order_type_str = trade_dict.get("order_type", "MARKET")
+            order_type = OrderType.MARKET
+            if order_type_str == "LIMIT":
+                order_type = OrderType.LIMIT
+            elif order_type_str == "STOP":
+                order_type = OrderType.STOP
+
+            trade = Trade(
+                trade_id=trade_id,
+                analysis_id=trade_dict.get("analysis_id"),
+                ticker=trade_dict.get("ticker"),
+                side=side,
+                quantity=trade_dict.get("quantity"),
+                order_type=order_type,
+                limit_price=trade_dict.get("limit_price"),
+                stop_price=trade_dict.get("stop_price"),
+                status=TradeStatus.PENDING_APPROVAL,
+                thesis=trade_dict.get("thesis"),
+                conviction_score=trade_dict.get("conviction_score")
             )
 
-            if result.get("success"):
-                self.db.update_trade_status(trade_id, TradeStatus.SUBMITTED.value, result.get("order_id"))
+            # Submit order via Alpaca
+            result_trade = await self.executor.submit_order(trade)
+
+            if result_trade.status in [TradeStatus.SUBMITTED, TradeStatus.FILLED, TradeStatus.PARTIALLY_FILLED]:
+                self.db.update_trade_status(trade_id, result_trade.status.value, result_trade.alpaca_order_id)
                 await self.telegram.send_message(
-                    f"{EMOJI_CHECK} Trade {trade_id} approved and submitted\n"
-                    f"Order ID: {result.get('order_id')}",
+                    f"{EMOJI_CHECK} Trade approved and submitted\n"
+                    f"Ticker: {trade.ticker}\n"
+                    f"Side: {trade.side.value}\n"
+                    f"Quantity: {trade.quantity}\n"
+                    f"Status: {result_trade.status.value}\n"
+                    f"Order ID: {result_trade.alpaca_order_id}",
                     parse_mode=None
                 )
             else:
+                self.db.update_trade_status(trade_id, result_trade.status.value)
                 await self.telegram.send_message(
-                    f"{EMOJI_CROSS} Trade execution failed: {result.get('error')}",
+                    f"{EMOJI_CROSS} Trade execution failed\n"
+                    f"Status: {result_trade.status.value}\n"
+                    f"Reason: {result_trade.rejection_reason or 'Unknown'}",
                     parse_mode=None
                 )
 
         except Exception as e:
             logger.error(f"Error executing trade: {e}")
-            await self.telegram.send_message(f"{EMOJI_CROSS} Execution error: {str(e)[:50]}", parse_mode=None)
+            await self.telegram.send_message(f"{EMOJI_CROSS} Execution error: {str(e)[:100]}", parse_mode=None)
 
     async def _handle_reject_command(self, trade_id: str) -> None:
         """Handle /reject command."""
