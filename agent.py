@@ -1129,14 +1129,14 @@ class GannSentinelAgent:
         # Execute trade
         try:
             # Reconstruct Trade object from stored dict
-            side_str = trade_dict.get("side", "BUY")
-            side = OrderSide.BUY if side_str == "BUY" else OrderSide.SELL
+            side_str = trade_dict.get("side", "buy").lower()
+            side = OrderSide.BUY if side_str == "buy" else OrderSide.SELL
 
-            order_type_str = trade_dict.get("order_type", "MARKET")
+            order_type_str = trade_dict.get("order_type", "market").lower()
             order_type = OrderType.MARKET
-            if order_type_str == "LIMIT":
+            if order_type_str == "limit":
                 order_type = OrderType.LIMIT
-            elif order_type_str == "STOP":
+            elif order_type_str == "stop":
                 order_type = OrderType.STOP
 
             trade = Trade(
