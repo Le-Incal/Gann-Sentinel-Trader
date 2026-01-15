@@ -975,6 +975,10 @@ class GannSentinelAgent:
         except Exception as e:
             logger.error(f"MACA TRADE DEBUG: EXCEPTION in _create_maca_trade_from_scan: {e}")
             logger.error(traceback.format_exc())
+            self.telegram.record_trade_blocker({
+                "type": "EXCEPTION",
+                "details": str(e)[:100]
+            })
             return None
 
     async def _check_positions(self) -> None:
