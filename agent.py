@@ -1157,14 +1157,15 @@ class GannSentinelAgent:
             result_trade = await self.executor.submit_order(trade)
 
             if result_trade.status in [TradeStatus.SUBMITTED, TradeStatus.FILLED, TradeStatus.PARTIALLY_FILLED]:
-                self.db.update_trade_status(trade_id, result_trade.status.value, alpaca_order_id=result_trade.alpaca_order_id)
+                order_id_str = str(result_trade.alpaca_order_id) if result_trade.alpaca_order_id else None
+                self.db.update_trade_status(trade_id, result_trade.status.value, alpaca_order_id=order_id_str)
                 await self.telegram.send_message(
                     f"{EMOJI_CHECK} Trade approved and submitted\n"
                     f"Ticker: {trade.ticker}\n"
                     f"Side: {trade.side.value}\n"
                     f"Quantity: {trade.quantity}\n"
                     f"Status: {result_trade.status.value}\n"
-                    f"Order ID: {result_trade.alpaca_order_id}",
+                    f"Order ID: {order_id_str}",
                     parse_mode=None
                 )
             else:
