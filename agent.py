@@ -815,6 +815,13 @@ class GannSentinelAgent:
         Returns trade_id if created, None otherwise.
         """
         try:
+            # === DEBUG: Record that we entered trade creation ===
+            logger.info("MACA TRADE DEBUG: ENTERED _create_maca_trade_from_scan")
+            self.telegram.record_trade_blocker({
+                "type": "DEBUG_ENTRY",
+                "details": "Trade creation started - will be cleared if successful"
+            })
+
             # === DEBUG: Log full final_decision structure ===
             final_decision = maca_result.get("final_decision", {})
             logger.info(f"MACA TRADE DEBUG: final_decision keys = {list(final_decision.keys())}")
@@ -969,6 +976,9 @@ class GannSentinelAgent:
             self.db.save_trade(trade.to_dict())
             logger.info(f"MACA TRADE DEBUG: SUCCESS! Trade created: {trade.id[:8]} - "
                        f"{trade.side.value} {trade.quantity} {ticker} @ ${current_price:.2f}")
+
+            # Clear debug entry blocker on success
+            self.telegram._trade_blockers = [b for b in self.telegram._trade_blockers if b.get("type") != "DEBUG_ENTRY"]
 
             return trade.id
 
