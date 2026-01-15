@@ -589,10 +589,20 @@ class GannSentinelAgent:
                         self._current_pending_trade_id = trade_id
                         maca_result["final_decision"]["trade_id"] = trade_id
                 else:
-                    logger.info(f"MACA SCAN: proceed_to_execution=False, NOT creating trade. "
-                               f"Conviction={final_decision.get('final_conviction')}, "
-                               f"decision_type={final_decision.get('decision_type')}, "
-                               f"approval_count={final_decision.get('approval_count')}/{final_decision.get('total_reviews')}")
+                    # Record why we're not creating a trade
+                    conv = final_decision.get('final_conviction', 0)
+                    dt = final_decision.get('decision_type', 'NONE')
+                    rec = final_decision.get('recommendation', {})
+                    ticker = rec.get('ticker') if rec else None
+                    side = rec.get('side') if rec else None
+
+                    reason = f"proceed=False: conv={conv}, type={dt}, ticker={ticker}, side={side}"
+                    logger.info(f"MACA SCAN: proceed_to_execution=False, NOT creating trade. {reason}")
+
+                    self.telegram.record_trade_blocker({
+                        "type": "PROCEED_FALSE",
+                        "details": reason
+                    })
                 
                 # Add portfolio to result for telegram display
                 maca_result["portfolio"] = portfolio_dict
@@ -818,9 +828,22 @@ class GannSentinelAgent:
                 logger.warning(f"MACA TRADE DEBUG: proceed_to_execution=False, skipping trade creation. "
                              f"Conviction={final_decision.get('final_conviction')}, "
                              f"decision_type={final_decision.get('decision_type')}")
+                self.telegram.record_trade_blocker({
+                    "type": "PROCEED_FALSE",
+                    "details": f"proceed_to_execution=False, conviction={final_decision.get('final_conviction')}"
+                })
                 return None
 
-            rec = final_decision.get("recommendation", {})
+            # Handle recommendation being None (when proceed was set to False in orchestrator)
+            rec = final_decision.get("recommendation")
+            if rec is None:
+                logger.warning("MACA TRADE DEBUG: recommendation is None in final_decision")
+                self.telegram.record_trade_blocker({
+                    "type": "NO_RECOMMENDATION",
+                    "details": "recommendation is None in final_decision"
+                })
+                return None
+            rec = rec if isinstance(rec, dict) else {}
             logger.info(f"MACA TRADE DEBUG: recommendation = {rec}")
 
             ticker = rec.get("ticker")
@@ -835,6 +858,10 @@ class GannSentinelAgent:
 
             if not ticker:
                 logger.warning("MACA trade creation failed: no ticker in recommendation")
+                self.telegram.record_trade_blocker({
+                    "type": "NO_TICKER",
+                    "details": f"No ticker in recommendation. rec={rec}"
+                })
                 return None
             
             # Run risk checks
