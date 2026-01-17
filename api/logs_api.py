@@ -67,6 +67,35 @@ def get_db():
     return Database()
 
 
+def get_live_portfolio():
+    """Try to get live portfolio data from Alpaca if available."""
+    try:
+        from executors.alpaca_executor import AlpacaExecutor
+        import asyncio
+        
+        executor = AlpacaExecutor()
+        
+        # Run async method synchronously
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            snapshot = loop.run_until_complete(executor.get_portfolio_snapshot())
+            positions = loop.run_until_complete(executor.get_positions())
+            
+            snapshot_dict = snapshot.to_dict() if hasattr(snapshot, 'to_dict') else snapshot
+            positions_list = [p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
+            
+            return {
+                "portfolio": snapshot_dict,
+                "positions": positions_list
+            }
+        finally:
+            loop.close()
+    except Exception as e:
+        logger.warning(f"Could not fetch live portfolio from Alpaca: {e}")
+        return None
+
+
 def verify_token(token: str) -> bool:
     """Verify API token."""
     if not API_TOKEN:
@@ -95,21 +124,32 @@ async def get_public_dashboard():
     """
     Get dashboard overview data.
     Combines portfolio, positions, recent trades for single request.
+    Falls back to live Alpaca data if database is empty.
     """
     try:
         db = get_db()
 
-        # Get portfolio snapshot
-        portfolio = db.get_latest_snapshot() or {
-            "total_value": 100000,
-            "cash": 100000,
-            "positions_value": 0,
-            "daily_pnl": 0,
-            "daily_pnl_pct": 0
-        }
-
-        # Get positions
+        # Get portfolio snapshot from database
+        portfolio = db.get_latest_snapshot()
         positions = db.get_positions()
+
+        # If database is empty, try to get live data from Alpaca
+        if not portfolio or (not positions and portfolio.get("positions_value", 0) == 0):
+            live_data = get_live_portfolio()
+            if live_data:
+                portfolio = live_data.get("portfolio", portfolio)
+                positions = live_data.get("positions", positions)
+                logger.info("Using live Alpaca data for dashboard")
+
+        # Fall back to defaults if still no data
+        if not portfolio:
+            portfolio = {
+                "total_value": 100000,
+                "cash": 100000,
+                "positions_value": 0,
+                "daily_pnl": 0,
+                "daily_pnl_pct": 0
+            }
 
         # Get recent trades
         recent_trades = db.get_recent_trades(limit=10)
@@ -121,7 +161,7 @@ async def get_public_dashboard():
             "status": "success",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "portfolio": portfolio,
-            "positions": positions,
+            "positions": positions or [],
             "recent_trades": recent_trades,
             "pending_trades": pending_trades
         }
