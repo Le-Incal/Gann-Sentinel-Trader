@@ -29,8 +29,7 @@ if TYPE_CHECKING:
     from scanners.grok_scanner import GrokScanner
     from analyzers.perplexity_analyst import PerplexityAnalyst
     from analyzers.chatgpt_analyst import ChatGPTAnalyst
-    from analyzers.chatgpt_chair import ChatGPTChair
-    from analyzers.claude_technical_validator import ClaudeTechnicalValidator
+    from analyzers.claude_chair import ClaudeChair
     from notifications.telegram_bot import TelegramBot
 
 logger = logging.getLogger(__name__)
@@ -43,9 +42,7 @@ class MACAOrchestrator:
     Architecture (current):
     - Phase 1: Parallel thesis generation (Grok, Perplexity, ChatGPT)
     - Phase 1b: Committee Debate (2 rounds; each speaker twice; visible log)
-    - Phase 2: Chair synthesis (ChatGPT Chair)
-
-    Claude is used as the Technical Validator (check-and-balance), not as chair.
+    - Phase 2: Chair synthesis (Senior Trader)
     """
 
     def __init__(
@@ -54,8 +51,7 @@ class MACAOrchestrator:
         grok: "GrokScanner",
         perplexity: "PerplexityAnalyst",
         chatgpt: "ChatGPTAnalyst",
-        chair: "ChatGPTChair",
-        claude_technical: "ClaudeTechnicalValidator",
+        chair: "ClaudeChair",
         telegram: Optional["TelegramBot"] = None
     ):
         """
@@ -66,8 +62,7 @@ class MACAOrchestrator:
             grok: Grok scanner for sentiment analysis
             perplexity: Perplexity analyst for fundamental research
             chatgpt: ChatGPT analyst for pattern recognition
-            chair: ChatGPT Chair synthesizer
-            claude_technical: Claude technical validator (check-and-balance)
+            chair: Committee chair synthesizer (Senior Trader)
             telegram: Optional Telegram bot for notifications
         """
         # Defensive check: ensure db is an instance, not a class
@@ -80,7 +75,6 @@ class MACAOrchestrator:
         self.perplexity = perplexity
         self.chatgpt = chatgpt
         self.chair = chair
-        self.claude_technical = claude_technical
         self.telegram = telegram
 
         # Track API costs per cycle
@@ -89,7 +83,7 @@ class MACAOrchestrator:
     @property
     def is_configured(self) -> bool:
         """Check if all AI components are properly configured."""
-        components = [self.grok, self.perplexity, self.chatgpt, self.chair, self.claude_technical]
+        components = [self.grok, self.perplexity, self.chatgpt, self.chair]
         for component in components:
             if component is None:
                 return False
@@ -147,6 +141,7 @@ class MACAOrchestrator:
         self,
         fred_signals: Optional[List[Dict[str, Any]]] = None,
         polymarket_signals: Optional[List[Dict[str, Any]]] = None,
+        event_signals: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """Build a compact, analyst-readable signal inventory for prompts.
 
@@ -159,6 +154,7 @@ class MACAOrchestrator:
 
         fred_signals = fred_signals or []
         polymarket_signals = polymarket_signals or []
+        event_signals = event_signals or []
 
         def _sig_line(s: Dict[str, Any]) -> str:
             summary = s.get("summary") or s.get("description") or ""
@@ -175,6 +171,9 @@ class MACAOrchestrator:
         lines.append(f"- Polymarket signals: {len(polymarket_signals)} (NO sports/entertainment)")
         for s in polymarket_signals[:6]:
             lines.append(_sig_line(s))
+        lines.append(f"- Event signals: {len(event_signals)}")
+        for s in event_signals[:6]:
+            lines.append(_sig_line(s))
 
         return "\n".join(lines)
 
@@ -184,6 +183,7 @@ class MACAOrchestrator:
         available_cash: float,
         fred_signals: List[Dict[str, Any]],
         polymarket_signals: List[Dict[str, Any]],
+        event_signals: Optional[List[Dict[str, Any]]] = None,
         technical_analysis: Optional[Dict[str, Any]] = None,
         market_context: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -198,6 +198,7 @@ class MACAOrchestrator:
             available_cash: Cash available for trading
             fred_signals: Macro indicators from FRED
             polymarket_signals: Prediction market data
+            event_signals: Corporate event data
             technical_analysis: Technical chart analysis
             market_context: Additional market context string
 
@@ -225,7 +226,8 @@ class MACAOrchestrator:
                 available_cash=available_cash,
                 market_context=market_context,
                 fred_signals=fred_signals,
-                polymarket_signals=polymarket_signals
+                polymarket_signals=polymarket_signals,
+                event_signals=event_signals or [],
             )
 
             phase1_complete = datetime.now(timezone.utc)
@@ -239,6 +241,7 @@ class MACAOrchestrator:
                 proposals=proposals,
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
+                event_signals=event_signals or [],
                 technical_analysis=technical_analysis,
             )
 
@@ -759,6 +762,7 @@ class MACAOrchestrator:
         market_context: Optional[str] = None,
         fred_signals: Optional[List[Dict[str, Any]]] = None,
         polymarket_signals: Optional[List[Dict[str, Any]]] = None,
+        event_signals: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Phase 1: Generate thesis proposals from all AI sources in parallel.
@@ -786,6 +790,7 @@ class MACAOrchestrator:
         signal_context = self._build_signal_context(
             fred_signals=fred_signals,
             polymarket_signals=polymarket_signals,
+            event_signals=event_signals,
         )
 
         combined_context = "\n\n".join([c for c in [market_context, signal_context] if c])
@@ -809,7 +814,7 @@ class MACAOrchestrator:
                 cycle_id=cycle_id,
                 portfolio_summary=portfolio_summary,
                 available_cash=available_cash,
-                market_context=market_context
+                market_context=combined_context
             ))
 
         # Perplexity thesis
@@ -856,6 +861,7 @@ class MACAOrchestrator:
         proposals: List[Dict[str, Any]],
         fred_signals: List[Dict[str, Any]],
         polymarket_signals: List[Dict[str, Any]],
+        event_signals: Optional[List[Dict[str, Any]]] = None,
         technical_analysis: Optional[Dict[str, Any]],
     ) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], Dict[str, Any]]:
         """Optional committee debate.
@@ -868,26 +874,29 @@ class MACAOrchestrator:
             "by_source": {
                 "FRED": len(fred_signals or []),
                 "Polymarket": len(polymarket_signals or []),
+                "Events": len(event_signals or []),
                 "Technical": 1 if technical_analysis else 0,
             },
-            "total": int(len(fred_signals or []) + len(polymarket_signals or []) + (1 if technical_analysis else 0)),
+            "total": int(
+                len(fred_signals or [])
+                + len(polymarket_signals or [])
+                + len(event_signals or [])
+                + (1 if technical_analysis else 0)
+            ),
         }
 
         if not Config.DEBATE_ENABLED:
             return {}, {"hold": False, "reason": "Debate disabled"}, proposals, signal_inventory
 
-        # Determine a candidate ticker/side from the initial proposals.
-        # If there is no candidate (all HOLD), we can short-circuit debate.
-        candidate_ticker, candidate_side = self._pick_candidate_from_proposals(proposals)
-        if not candidate_ticker:
+        # If there are no actionable proposals, short-circuit debate.
+        if not self._has_actionable_proposals(proposals):
             vote_summary = {
-                "n": 4,
+                "n": 3,
                 "votes": [],
                 "avg_confidence": 0.0,
-                "tie_2_2": False,
+                "tie_1_1_1": False,
                 "hold": True,
                 "reason": "Unanimous HOLD at proposal stage (no candidate) — debate skipped",
-                "technical_verdict": "unknown",
             }
             debate_summary = {"session_id": None, "rounds": [], "early_exit_reason": vote_summary["reason"]}
             return debate_summary, vote_summary, proposals, signal_inventory
@@ -899,21 +908,7 @@ class MACAOrchestrator:
         except Exception as e:
             logger.warning(f"Could not create debate session: {e}")
 
-        # Add technical validator as a committee member (round 0).
-        tech_turn0 = await self.claude_technical.initial_vote(
-            scan_cycle_id=cycle_id,
-            candidate_ticker=candidate_ticker,
-            candidate_side=candidate_side,
-            technical_analysis=technical_analysis,
-        )
-        if session_id:
-            try:
-                self.db.save_debate_turn(session_id, cycle_id, tech_turn0)
-            except Exception:
-                pass
-
-        tech_proposal = self._technical_turn_to_proposal(cycle_id, tech_turn0)
-        proposals_with_tech = list(proposals or []) + [tech_proposal]
+        proposals_with_tech = list(proposals or [])
 
         # Seed "own_thesis" payloads.
         base_theses = [self._proposal_to_thesis_stub(p) for p in proposals_with_tech]
@@ -923,7 +918,6 @@ class MACAOrchestrator:
             "grok": {"speaker": "grok", "round": 0, "vote": self._proposal_to_vote(self._get_by_ai(proposals_with_tech, "grok"))},
             "perplexity": {"speaker": "perplexity", "round": 0, "vote": self._proposal_to_vote(self._get_by_ai(proposals_with_tech, "perplexity"))},
             "chatgpt": {"speaker": "chatgpt", "round": 0, "vote": self._proposal_to_vote(self._get_by_ai(proposals_with_tech, "chatgpt"))},
-            "claude_technical": tech_turn0,
         }
 
         rounds: List[Dict[str, Any]] = []
@@ -934,8 +928,8 @@ class MACAOrchestrator:
             round_turns: List[Dict[str, Any]] = []
 
             # Prepare other theses (latest known) for each speaker.
-            for speaker in ["grok", "perplexity", "chatgpt", "claude_technical"]:
-                own = self._speaker_own_thesis_stub(speaker, proposals_with_tech, tech_turn0)
+            for speaker in ["grok", "perplexity", "chatgpt"]:
+                own = self._speaker_own_thesis_stub(speaker, proposals_with_tech)
                 others = [t for t in base_theses if t.get("speaker") != speaker]
 
                 try:
@@ -945,14 +939,6 @@ class MACAOrchestrator:
                         turn = await self.perplexity.debate(scan_cycle_id=cycle_id, round_num=r, own_thesis=own, other_theses=others)
                     elif speaker == "chatgpt":
                         turn = await self.chatgpt.debate(scan_cycle_id=cycle_id, round_num=r, own_thesis=own, other_theses=others)
-                    else:
-                        turn = await self.claude_technical.debate(
-                            scan_cycle_id=cycle_id,
-                            round_num=r,
-                            own_thesis=own,
-                            other_theses=others,
-                            technical_analysis=technical_analysis,
-                        )
                 except Exception as e:
                     turn = {
                         "speaker": speaker,
@@ -979,16 +965,6 @@ class MACAOrchestrator:
                     except Exception:
                         pass
 
-                # Enforce candidate discipline: if voting BUY/SELL, must use candidate ticker.
-                v = (turn.get("vote") or {})
-                act = (v.get("action") or "HOLD").upper()
-                if act in ["BUY", "SELL"]:
-                    tk = v.get("ticker")
-                    if not tk or str(tk).upper() != str(candidate_ticker).upper():
-                        # Force HOLD to prevent unrelated tickers from entering the vote.
-                        turn["message"] = (turn.get("message") or "") + " (forced HOLD: non-candidate ticker in vote)"
-                        turn["vote"] = {"action": "HOLD", "ticker": None, "side": None, "confidence": float(v.get("confidence") or 0.0)}
-
                 if session_id:
                     try:
                         self.db.save_debate_turn(session_id, cycle_id, turn)
@@ -1013,11 +989,11 @@ class MACAOrchestrator:
                 early_exit_reason = "Round 1 unanimous HOLD — Round 2 skipped"
                 break
 
-            # If Round 1 already has a clean supermajority (3+), and confidence is adequate, stop.
+            # If Round 1 already has a clean majority (2+), and confidence is adequate, stop.
             if r == 1:
-                vs_r1 = self._summarize_votes(last_turns, tech_turn0)
+                vs_r1 = self._summarize_votes(last_turns)
                 top = (vs_r1.get("top") or {})
-                if top and top.get("count", 0) >= 3 and not vs_r1.get("hold"):
+                if top and top.get("count", 0) >= 2 and not vs_r1.get("hold"):
                     early_exit_reason = "Consensus reached in Round 1 — Round 2 skipped"
                     break
 
@@ -1026,21 +1002,10 @@ class MACAOrchestrator:
             debate_summary = {"session_id": session_id, "rounds": rounds, "early_exit_reason": early_exit_reason}
         else:
             debate_summary = {"session_id": session_id, "rounds": rounds}
-        vote_summary = self._summarize_votes(last_turns, tech_turn0)
+        vote_summary = self._summarize_votes(last_turns)
         if early_exit_reason and ("error" in early_exit_reason.lower()):
             vote_summary["hold"] = True
             vote_summary["reason"] = early_exit_reason
-
-        # Telegram: optionally show the debate as its own message.
-        if self.telegram and debate_summary.get("rounds"):
-            try:
-                await self.telegram.send_maca_debate_summary(
-                    cycle_id=cycle_id,
-                    debate=debate_summary,
-                    vote_summary=vote_summary,
-                )
-            except Exception:
-                pass
 
         return debate_summary, vote_summary, proposals_with_tech, signal_inventory
 
@@ -1074,6 +1039,14 @@ class MACAOrchestrator:
             "confidence": float(conf) if isinstance(conf, (int, float)) else 0.0,
         }
 
+    def _has_actionable_proposals(self, proposals: List[Dict[str, Any]]) -> bool:
+        """Return True if any proposal suggests a BUY/SELL with a ticker."""
+        for proposal in proposals or []:
+            v = self._proposal_to_vote(proposal)
+            if v.get("action") in ["BUY", "SELL"] and v.get("ticker"):
+                return True
+        return False
+
     def _proposal_to_thesis_stub(self, proposal: Dict[str, Any]) -> Dict[str, Any]:
         rec = proposal.get("recommendation") or {}
         speaker = proposal.get("ai_source") or proposal.get("speaker") or "unknown"
@@ -1086,71 +1059,28 @@ class MACAOrchestrator:
             "signals_count": (proposal.get("supporting_evidence") or {}).get("signals_count"),
         }
 
-    def _technical_turn_to_proposal(self, scan_cycle_id: str, tech_turn: Dict[str, Any]) -> Dict[str, Any]:
-        vote = tech_turn.get("vote") or {}
-        return {
-            "schema_version": "1.0.0",
-            "proposal_id": str(uuid.uuid4()),
-            "ai_source": "claude_technical",
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "scan_cycle_id": scan_cycle_id,
-            "proposal_type": "TECHNICAL_VALIDATION",
-            "recommendation": {
-                "ticker": vote.get("ticker"),
-                "side": vote.get("action") if vote.get("action") in ["BUY", "SELL"] else None,
-                "conviction_score": int(round(float(vote.get("confidence", 0.0)) * 100)),
-                "thesis": tech_turn.get("message") or "",
-                "time_horizon": "unspecified",
-                "catalyst": None,
-                "catalyst_deadline": None,
-            },
-            "supporting_evidence": {
-                "technical_verdict": tech_turn.get("verdict"),
-                "invalidation": tech_turn.get("invalidation"),
-            },
-            "raw_data": tech_turn,
-            "time_sensitive": False,
-            "metadata": {"role": "technical_validator"},
-        }
-
-    def _pick_candidate_from_proposals(self, proposals: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
-        counts: Dict[Tuple[str, str], int] = {}
-        for p in proposals or []:
-            v = self._proposal_to_vote(p)
-            if v.get("action") in ["BUY", "SELL"] and v.get("ticker"):
-                key = (v.get("ticker"), v.get("action"))
-                counts[key] = counts.get(key, 0) + 1
-        if not counts:
-            return None, None
-        (ticker, action), _ = max(counts.items(), key=lambda kv: kv[1])
-        return ticker, action
-
-    def _speaker_own_thesis_stub(self, speaker: str, proposals_with_tech: List[Dict[str, Any]], tech_turn0: Dict[str, Any]) -> Dict[str, Any]:
-        # NOTE: candidate ticker/side is embedded by the debate loop via closure; the LLMs
-        # should read it from own_thesis.debate_context.
-        if speaker == "claude_technical":
-            return {
-                "speaker": "claude_technical",
-                "vote": (tech_turn0.get("vote") or {}),
-                "thesis": tech_turn0.get("message") or "",
-                "technical_verdict": tech_turn0.get("verdict"),
-                "debate_context": {
-                    "candidate": tech_turn0.get("vote", {}).get("ticker"),
-                    "rule": "If voting BUY/SELL, ticker must match committee candidate"
-                },
-            }
+    def _speaker_own_thesis_stub(self, speaker: str, proposals_with_tech: List[Dict[str, Any]]) -> Dict[str, Any]:
         p = self._get_by_ai(proposals_with_tech, speaker)
         stub = self._proposal_to_thesis_stub(p or {"ai_source": speaker, "recommendation": {}, "supporting_evidence": {}})
         stub["debate_context"] = {
-            "candidate": (tech_turn0.get("vote") or {}).get("ticker"),
-            "rule": "If voting BUY/SELL, ticker must match committee candidate",
+            "proposal_options": [
+                {
+                    "proposal_id": (pr.get("proposal_id") or ""),
+                    "ai_source": pr.get("ai_source"),
+                    "ticker": (pr.get("recommendation") or {}).get("ticker"),
+                    "side": (pr.get("recommendation") or {}).get("side"),
+                    "conviction": (pr.get("recommendation") or {}).get("conviction_score", 0),
+                }
+                for pr in proposals_with_tech
+            ],
+            "rule": "You may vote for ANY proposal, not just your own.",
         }
         return stub
 
-    def _summarize_votes(self, last_turns: Dict[str, Dict[str, Any]], tech_turn0: Dict[str, Any]) -> Dict[str, Any]:
+    def _summarize_votes(self, last_turns: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         """Compute majority/tie, confidence aggregates, and hard-gate failure modes."""
 
-        speakers = ["grok", "perplexity", "chatgpt", "claude_technical"]
+        speakers = ["grok", "perplexity", "chatgpt"]
         votes: List[Dict[str, Any]] = []
         any_errors = False
         for s in speakers:
@@ -1191,16 +1121,16 @@ class MACAOrchestrator:
         hold = False
         reason = ""
 
-        # Identify tie: 2-2 split across two distinct keys
+        # Identify tie: 1-1-1 split across three distinct keys
         sorted_counts = sorted([d["count"] for d in bucket.values()], reverse=True)
-        is_tie_2_2 = (sorted_counts[:2] == [2, 2])
+        is_tie_1_1_1 = (sorted_counts[:3] == [1, 1, 1])
         has_majority = top_count >= majority_required
 
         if any_errors:
             hold = True
             reason = "Debate incomplete due to API/parse error(s)"
 
-        if not has_majority and not is_tie_2_2:
+        if not has_majority and not is_tie_1_1_1:
             hold = True
             reason = "No majority consensus (fragmented votes)"
 
@@ -1208,17 +1138,9 @@ class MACAOrchestrator:
             hold = True
             reason = reason or f"Low average confidence ({avg_conf:.2f})"
 
-        # Technical check-and-balance:
-        tech_verdict = (tech_turn0.get("verdict") or "unknown")
-        if Config.TECH_INVALIDATION_SUPERMAJORITY and tech_verdict in ["no_trade", "analyze_only"]:
-            # Require supermajority (3/4) to proceed with a trade recommendation.
-            if top_key and top_key[0] in ["BUY", "SELL"] and top_count < 3:
-                hold = True
-                reason = reason or f"Technical validator restricts trading (verdict={tech_verdict}); needs supermajority"
-
-        # If it's a clean 2-2 tie, allow chair tie-breaker (do not HOLD here).
-        if is_tie_2_2 and not hold:
-            reason = "Vote tie (2-2); Chair will break"
+        # If it's a clean 1-1-1 tie, allow chair tie-breaker (do not HOLD here).
+        if is_tie_1_1_1 and not hold:
+            reason = "Vote tie (1-1-1); Chair will break"
 
         return {
             "n": n,
@@ -1226,10 +1148,9 @@ class MACAOrchestrator:
             "buckets": {f"{k[0]}:{k[1] or 'NA'}": v for k, v in bucket.items()},
             "top": {"action": top_key[0], "ticker": top_key[1], "count": top_count} if top_key else None,
             "avg_confidence": avg_conf,
-            "tie_2_2": is_tie_2_2,
+            "tie_1_1_1": is_tie_1_1_1,
             "hold": hold,
             "reason": reason,
-            "technical_verdict": tech_verdict,
         }
 
     async def _safe_generate_thesis(
@@ -1489,7 +1410,10 @@ class MACAOrchestrator:
                 synthesis=synthesis,
                 technical_signals=technical_signals,
                 portfolio=portfolio or {},
-                trade_id=None  # Trade ID comes from agent.py after trade creation
+                trade_id=None,  # Trade ID comes from agent.py after trade creation
+                debate=synthesis.get("debate"),
+                vote_summary=synthesis.get("vote_summary"),
+                cycle_id=final_decision.get("cycle_id") or synthesis.get("scan_cycle_id"),
             )
 
             logger.info(f"MACA notification sent: decision_type={final_decision.get('decision_type')}, "
@@ -1617,7 +1541,10 @@ class MACAOrchestrator:
                 synthesis=synthesis,
                 technical_signals=technical_signals,
                 portfolio=portfolio,
-                trade_id=trade_id
+                trade_id=trade_id,
+                debate=synthesis.get("debate"),
+                vote_summary=synthesis.get("vote_summary"),
+                cycle_id=maca_result.get("cycle_id"),
             )
         except Exception as e:
             logger.error(f"Failed to send MACA summary: {e}")

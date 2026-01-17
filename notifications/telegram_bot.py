@@ -1355,6 +1355,13 @@ class TelegramBot:
             if sig_total is not None:
                 lines.append(f"Signals considered: {sig_total}")
             lines.append(bar)
+            considered = proposal.get("signals_considered", []) or []
+            if considered:
+                lines.append("Signals considered:")
+                for sc in considered[:2]:
+                    src = sc.get("source") or "unknown"
+                    summary = sc.get("summary") or ""
+                    lines.append(f"  - [{src}] {summary[:120]}")
             if thesis:
                 lines.append(f"\n{thesis[:200]}")
         else:
@@ -1386,6 +1393,15 @@ class TelegramBot:
                     s = ks.get("summary") or ""
                     src = ks.get("source") or ks.get("signal_type") or ""
                     lines.append(f"  - [{src}] {s[:120]}")
+
+            # Signals considered (top 2)
+            considered = proposal.get("signals_considered", []) or []
+            if considered:
+                lines.append("Signals considered:")
+                for sc in considered[:2]:
+                    src = sc.get("source") or "unknown"
+                    summary = sc.get("summary") or ""
+                    lines.append(f"  - [{src}] {summary[:120]}")
 
             if time_horizon:
                 lines.append(f"Horizon: {time_horizon}")
@@ -1579,6 +1595,8 @@ class TelegramBot:
         if trade_id and is_actionable:
             lines.append(f"{EMOJI_BELL} TRADE PENDING APPROVAL")
             lines.append(f"Trade ID: {trade_id}")
+            if not self._risk_rejections:
+                lines.append(f"{EMOJI_CHECK} Risk Engine: PASS")
             lines.append("")
             lines.append("Use buttons below to approve or reject")
         elif self._risk_rejections:
@@ -1734,13 +1752,17 @@ class TelegramBot:
         synthesis: Dict[str, Any],
         technical_signals: List[Dict[str, Any]],
         portfolio: Dict[str, Any],
-        trade_id: Optional[str] = None
+        trade_id: Optional[str] = None,
+        debate: Optional[Dict[str, Any]] = None,
+        vote_summary: Optional[Dict[str, Any]] = None,
+        cycle_id: Optional[str] = None,
     ) -> bool:
         """
-        Send full MACA scan summary as two messages.
+        Send full MACA scan summary as three messages.
 
         Message 1: AI Council views (Grok, Perplexity, ChatGPT)
-        Message 2: Chart analysis + Claude's decision + buttons
+        Message 2: Debate transcript (who changed mind and why)
+        Message 3: Chart analysis + Claude's decision + trade status
         """
         # Message 1: AI Council
         msg1 = self.format_ai_council_message(proposals)
@@ -1750,7 +1772,16 @@ class TelegramBot:
         import asyncio
         await asyncio.sleep(0.5)
 
-        # Message 2: Decision with buttons
+        # Message 2: Debate transcript (if available)
+        if debate and (debate.get("rounds") or []):
+            await self.send_maca_debate_summary(
+                cycle_id=cycle_id or "",
+                debate=debate,
+                vote_summary=vote_summary or {},
+            )
+            await asyncio.sleep(0.5)
+
+        # Message 3: Decision with buttons
         msg2 = self.format_decision_message(
             synthesis=synthesis,
             technical_signals=technical_signals,
@@ -1843,13 +1874,16 @@ class TelegramBot:
 
                     claim = (t.get("claim") or t.get("message") or "").strip().replace("\n", " ")
                     change = (t.get("change_my_mind") or "").strip().replace("\n", " ")
+                    changed = bool(t.get("changed_mind"))
                     claim = claim[:140] + ("…" if len(claim) > 140 else "")
                     change = change[:90] + ("…" if len(change) > 90 else "")
 
                     if change:
-                        lines.append(f"• {sp}: {act} {tk}{cf_s} — {claim} | change: {change}")
+                        change_tag = "changed" if changed else "change"
+                        lines.append(f"• {sp}: {act} {tk}{cf_s} — {claim} | {change_tag}: {change}")
                     else:
-                        lines.append(f"• {sp}: {act} {tk}{cf_s} — {claim}")
+                        changed_tag = " (changed mind)" if changed else ""
+                        lines.append(f"• {sp}: {act} {tk}{cf_s} — {claim}{changed_tag}")
                 lines.append("")
 
             text = "\n".join(lines).strip()

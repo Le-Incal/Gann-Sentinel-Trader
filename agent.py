@@ -45,8 +45,7 @@ try:
     from core.maca_orchestrator import MACAOrchestrator
     from analyzers.perplexity_analyst import PerplexityAnalyst
     from analyzers.chatgpt_analyst import ChatGPTAnalyst
-    from analyzers.chatgpt_chair import ChatGPTChair
-    from analyzers.claude_technical_validator import ClaudeTechnicalValidator
+    from analyzers.claude_chair import ClaudeChair
     MACA_AVAILABLE = True
 except ImportError as e:
     MACA_AVAILABLE = False
@@ -75,6 +74,18 @@ EMOJI_CROSS = "\U0000274C"       # ❌
 EMOJI_BULLET = "\U00002022"      # •
 EMOJI_SEARCH = "\U0001F50D"      # 🔍
 EMOJI_HOURGLASS = "\U000023F3"   # ⏳
+
+
+def should_send_maca_summary(final_decision: Optional[Dict[str, Any]]) -> bool:
+    """
+    Decide whether agent should send MACA summary.
+
+    The orchestrator already sends notifications for NO_TRADE. The agent only
+    sends a MACA summary after a trade is created (proceed=True).
+    """
+    if not final_decision:
+        return False
+    return bool(final_decision.get("proceed_to_execution"))
 
 
 class GannSentinelAgent:
@@ -139,8 +150,7 @@ class GannSentinelAgent:
             try:
                 self.perplexity = PerplexityAnalyst()
                 self.chatgpt = ChatGPTAnalyst()
-                self.chair = ChatGPTChair()
-                self.claude_technical = ClaudeTechnicalValidator()
+                self.chair = ClaudeChair()
 
                 self.maca = MACAOrchestrator(
                     db=self.db,
@@ -148,10 +158,9 @@ class GannSentinelAgent:
                     perplexity=self.perplexity,
                     chatgpt=self.chatgpt,
                     chair=self.chair,
-                    claude_technical=self.claude_technical,
                     telegram=self.telegram
                 )
-                logger.info("MACA Orchestrator initialized with Chair and Technical Validator")
+                logger.info("MACA Orchestrator initialized with Claude Chair")
             except Exception as e:
                 logger.error(f"Failed to initialize MACA: {e}")
                 import traceback
@@ -557,6 +566,7 @@ class GannSentinelAgent:
         # Separate signal types for MACA
         fred_signals_dict = [s for s in signals_dict if s.get("source") == "fred"]
         polymarket_signals_dict = [s for s in signals_dict if s.get("source") == "polymarket"]
+        event_signals_dict = event_signals
 
         # =================================================================
         # MACA MODE: Full AI Council (Grok + Perplexity + ChatGPT + Claude)
@@ -571,6 +581,7 @@ class GannSentinelAgent:
                     available_cash=portfolio_dict.get("cash", 0),
                     fred_signals=fred_signals_dict,
                     polymarket_signals=polymarket_signals_dict,
+                    event_signals=event_signals_dict,
                     technical_analysis=technical_signals[0] if technical_signals else None,
                     market_context=learning_context.get("learning_summary", "")
                 )
@@ -620,8 +631,11 @@ class GannSentinelAgent:
                 logger.info(f"MACA SCAN: About to send notification. trade_id={final_trade_id}, "
                            f"proceed={proceed}")
 
-                # Send MACA-formatted Telegram summary (AI Council views + Claude synthesis)
-                await self.maca.send_maca_summary(maca_result)
+                # Send MACA-formatted Telegram summary only after trade creation
+                if should_send_maca_summary(final_decision):
+                    await self.maca.send_maca_summary(maca_result)
+                else:
+                    logger.info("MACA SCAN: Skipping summary (orchestrator already notified)")
                 
                 logger.info(f"MACA scan complete: status={maca_result.get('status')}, "
                            f"duration={maca_result.get('duration_seconds', 0):.1f}s")

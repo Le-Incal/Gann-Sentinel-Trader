@@ -445,7 +445,7 @@ RULES:
 2) Do NOT browse the web. Do NOT analyze charts.
 3) Do NOT invent new signals. Only react to provided theses/context.
 4) Speak in DELTAS (what changes because of others' theses). Do NOT restate your full memo.
-5) If you vote BUY/SELL, you MUST use the committee candidate ticker (provided in the context). Otherwise vote HOLD.
+5) You may vote for ANY proposal listed in debate_context.proposal_options.
 
 Output ONLY JSON in this schema:
 {

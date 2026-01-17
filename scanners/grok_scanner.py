@@ -595,7 +595,7 @@ RULES:
 1) Stay within role: narrative shifts, attention, momentum, crowd behavior on X.
 2) Do NOT browse or search. Do NOT fetch new posts. Only react to provided theses.
 3) Speak in DELTAS (what changes because of others' theses). Do NOT restate your full memo.
-4) If you vote BUY/SELL, you MUST use the committee candidate ticker (provided in the context). Otherwise vote HOLD.
+4) You may vote for ANY proposal listed in debate_context.proposal_options.
 
 Output ONLY JSON in this schema:
 {
