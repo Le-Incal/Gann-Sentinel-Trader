@@ -428,6 +428,7 @@ class GannSentinelAgent:
         # Run on top watchlist tickers
         # =================================================================
         try:
+            logger.info(f"Technical Scanner configured: {self.technical.is_configured}")
             if self.technical.is_configured:
                 tech_tickers = self.watchlist[:5]
                 logger.info(f"Running technical analysis on: {tech_tickers}")
@@ -485,6 +486,7 @@ class GannSentinelAgent:
         # =================================================================
         event_signals = []
         try:
+            logger.info(f"Event Scanner configured: {self.event_scanner.is_configured}")
             if self.event_scanner.is_configured:
                 logger.info("Running event scan (27 event types)...")
 

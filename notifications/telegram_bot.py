@@ -1477,17 +1477,22 @@ class TelegramBot:
                 lines.append("  • None collected")
 
             # Event Signals
+            lines.append(f"\n📅 Events ({event_count}):")
             if event_count > 0:
-                lines.append(f"\n📅 Events ({event_count}):")
                 event_sigs = signal_inventory.get("event_signals", [])
                 if event_sigs:
                     for es in event_sigs[:2]:
                         summary = es.get("summary", "")[:100]
                         lines.append(f"  • {summary}")
+            else:
+                lines.append("  • No events detected (check logs)")
 
             # Technical
+            lines.append(f"\n📊 Technical ({tech_count}):")
             if tech_count > 0:
-                lines.append(f"\n📊 Technical: {tech_count} chart(s) analyzed")
+                lines.append(f"  • {tech_count} chart(s) analyzed")
+            else:
+                lines.append("  • No charts analyzed (check Alpaca config)")
 
             lines.append("")
             lines.append("-" * 40)
