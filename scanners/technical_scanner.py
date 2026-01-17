@@ -44,9 +44,11 @@ try:
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+    from alpaca.data.enums import DataFeed
     ALPACA_DATA_AVAILABLE = True
 except ImportError:
     ALPACA_DATA_AVAILABLE = False
+    DataFeed = None
     logger.warning("alpaca-py data client not available")
 
 
@@ -408,8 +410,10 @@ class TechnicalScanner:
                 timeframe=timeframe_obj,
                 start=start,
                 end=end,
+                feed=DataFeed.IEX if DataFeed else None,  # Use free IEX data feed
             )
             
+            logger.debug(f"Fetching bars: {ticker}, {timeframe}, start={start}, end={end}, feed=IEX")
             bars = self.client.get_stock_bars(request)
             
             if ticker not in bars.data or not bars.data[ticker]:
@@ -436,8 +440,11 @@ class TechnicalScanner:
             return df
             
         except Exception as e:
-            self.last_error = f"Error fetching bars: {str(e)}"
+            self.last_error = f"Error fetching bars for {ticker}: {str(e)}"
             logger.error(self.last_error)
+            # Log full traceback for debugging
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     # =========================================================================
