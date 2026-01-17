@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -10,7 +11,8 @@ import {
   CheckCircle,
   XCircle,
   PauseCircle,
-  Wallet
+  Wallet,
+  Radio
 } from 'lucide-react'
 import { 
   AreaChart, 
@@ -138,25 +140,108 @@ function TradeRow({ trade }) {
 function ChartTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null
   
+  // Format label - could be a time string or date
+  const displayLabel = label?.includes(':') ? label : 
+    (label ? new Date(label).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '')
+  
   return (
     <div className="bg-gst-darker border border-gst-border rounded-lg p-3 shadow-xl">
-      <p className="text-gray-400 text-sm">{label}</p>
+      <p className="text-gray-400 text-sm">{displayLabel}</p>
       <p className="text-white font-semibold">{formatCurrency(payload[0].value)}</p>
     </div>
   )
 }
 
+// Time period options
+const TIME_PERIODS = [
+  { key: 'live', label: 'Live', days: 0 },
+  { key: '1D', label: '1D', days: 1 },
+  { key: '1W', label: '1W', days: 7 },
+  { key: '1M', label: '1M', days: 30 },
+  { key: '3M', label: '3M', days: 90 },
+  { key: '6M', label: '6M', days: 180 },
+  { key: '1Y', label: '1Y', days: 365 },
+  { key: 'ALL', label: 'All', days: 9999 },
+]
+
+// Check if market is currently open (9:30 AM - 4:00 PM ET, Mon-Fri)
+function isMarketOpen() {
+  const now = new Date()
+  
+  // Convert to ET (approximate - doesn't handle DST perfectly)
+  const etOffset = -5 // EST
+  const utc = now.getTime() + (now.getTimezoneOffset() * 60000)
+  const et = new Date(utc + (3600000 * etOffset))
+  
+  const day = et.getDay() // 0 = Sunday, 6 = Saturday
+  const hours = et.getHours()
+  const minutes = et.getMinutes()
+  const timeInMinutes = hours * 60 + minutes
+  
+  // Market hours: 9:30 AM (570 min) to 4:00 PM (960 min)
+  const marketOpen = 9 * 60 + 30  // 9:30 AM = 570
+  const marketClose = 16 * 60     // 4:00 PM = 960
+  
+  // Check if weekday and within market hours
+  const isWeekday = day >= 1 && day <= 5
+  const isDuringHours = timeInMinutes >= marketOpen && timeInMinutes < marketClose
+  
+  return isWeekday && isDuringHours
+}
+
+// Time period selector component
+function TimePeriodSelector({ selected, onSelect }) {
+  const marketOpen = isMarketOpen()
+  
+  return (
+    <div className="flex items-center gap-1 bg-gst-darker rounded-lg p-1">
+      {TIME_PERIODS.map((period) => {
+        const isLive = period.key === 'live'
+        const isDisabled = isLive && !marketOpen
+        
+        return (
+          <button
+            key={period.key}
+            onClick={() => !isDisabled && onSelect(period)}
+            disabled={isDisabled}
+            title={isDisabled ? 'Market is closed' : ''}
+            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+              isDisabled
+                ? 'text-gray-600 cursor-not-allowed'
+                : selected.key === period.key
+                  ? 'bg-gst-accent text-white'
+                  : 'text-gray-400 hover:text-white hover:bg-gst-card'
+            }`}
+          >
+            {isLive && (
+              <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1 ${
+                marketOpen ? 'bg-green-500 animate-pulse' : 'bg-gray-600'
+              }`} />
+            )}
+            {period.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function Dashboard() {
+  // Time period state - default to 1D if market closed, otherwise 1M
+  const [timePeriod, setTimePeriod] = useState(() => {
+    return isMarketOpen() ? TIME_PERIODS[0] : TIME_PERIODS[3] // Live if open, else 1M
+  })
+  
   // Fetch dashboard data
   const { data: dashboard, isLoading, error } = useQuery({
     queryKey: ['dashboard'],
     queryFn: api.getDashboard,
   })
 
-  // Fetch portfolio history for chart
+  // Fetch portfolio history for chart based on selected time period
   const { data: historyData } = useQuery({
-    queryKey: ['portfolioHistory'],
-    queryFn: () => api.getPortfolioHistory(30),
+    queryKey: ['portfolioHistory', timePeriod.days],
+    queryFn: () => api.getPortfolioHistory(timePeriod.days || 30),
   })
 
   if (isLoading) {
@@ -195,17 +280,71 @@ export default function Dashboard() {
   const dailyPnlPct = portfolio.daily_pnl_pct || (positions[0]?.unrealized_pnl_pct * 100) || 0
   const dailyPnlType = dailyPnl >= 0 ? 'positive' : 'negative'
 
-  // Mock chart data if no history (replace with real data)
-  const chartData = historyData?.history || [
-    { date: '2026-01-10', value: 98000 },
-    { date: '2026-01-11', value: 98500 },
-    { date: '2026-01-12', value: 99200 },
-    { date: '2026-01-13', value: 98800 },
-    { date: '2026-01-14', value: 100500 },
-    { date: '2026-01-15', value: 101200 },
-    { date: '2026-01-16', value: 100800 },
-    { date: '2026-01-17', value: portfolio.total_value || 100000 },
-  ]
+  // Generate chart data based on time period
+  const generateChartData = () => {
+    const currentValue = portfolio.total_value || 100000
+    
+    if (timePeriod.key === 'live') {
+      // Live: Show intraday data (minute by minute for market hours)
+      const now = new Date()
+      const marketOpen = new Date(now)
+      marketOpen.setHours(9, 30, 0, 0) // 9:30 AM
+      
+      const data = []
+      const minutesSinceOpen = Math.max(0, Math.floor((now - marketOpen) / (1000 * 60)))
+      const intervals = Math.min(minutesSinceOpen, 390) // Max 6.5 hours of trading
+      
+      // Generate data points every 5 minutes - nearly flat line
+      for (let i = 0; i <= intervals; i += 5) {
+        const time = new Date(marketOpen.getTime() + i * 60 * 1000)
+        data.push({
+          date: time.toISOString(),
+          time: time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+          value: currentValue // Flat line - no mock variance
+        })
+      }
+      
+      // Add current value as last point
+      if (data.length > 0) {
+        data[data.length - 1].value = currentValue
+      } else {
+        data.push({ date: now.toISOString(), time: 'Now', value: currentValue })
+      }
+      
+      return data
+    }
+    
+    // For other periods, use API data or generate mock data
+    if (historyData?.history) return historyData.history
+    
+    // Show flat line at current value until real historical data is available
+    const days = Math.min(timePeriod.days || 30, 365)
+    const data = []
+    
+    for (let i = days; i >= 0; i--) {
+      const date = new Date()
+      date.setDate(date.getDate() - i)
+      data.push({
+        date: date.toISOString().split('T')[0],
+        value: currentValue // Flat line - no mock data
+      })
+    }
+    
+    return data
+  }
+  
+  // Simple hash function for consistent random-looking data
+  const hash = (str) => {
+    let h = 0
+    for (let i = 0; i < str.length; i++) {
+      h = ((h << 5) - h) + str.charCodeAt(i)
+      h |= 0
+    }
+    return Math.abs(h)
+  }
+  
+  const chartData = generateChartData()
+  const isLiveMode = timePeriod.key === 'live'
 
   return (
     <div className="space-y-6">
@@ -258,10 +397,13 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Portfolio Chart */}
         <div className="lg:col-span-2 card">
-          <h3 className="card-header">
-            <Activity className="w-5 h-5 text-gst-accent" />
-            Portfolio Performance (30 Days)
-          </h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="card-header mb-0">
+              <Activity className="w-5 h-5 text-gst-accent" />
+              Portfolio Performance
+            </h3>
+            <TimePeriodSelector selected={timePeriod} onSelect={setTimePeriod} />
+          </div>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData}>
@@ -273,16 +415,23 @@ export default function Dashboard() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
                 <XAxis 
-                  dataKey="date" 
+                  dataKey={isLiveMode ? "time" : "date"}
                   stroke="#6b7280"
-                  tick={{ fill: '#9ca3af', fontSize: 12 }}
-                  tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  tick={{ fill: '#9ca3af', fontSize: 11 }}
+                  tickFormatter={(val) => {
+                    if (isLiveMode) return val // Already formatted as 24h time
+                    return new Date(val).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                  }}
+                  interval={isLiveMode ? Math.floor(chartData.length / 6) : 'preserveEnd'}
+                  minTickGap={isLiveMode ? 30 : 20}
+                  tickMargin={6}
                 />
                 <YAxis 
                   stroke="#6b7280"
                   tick={{ fill: '#9ca3af', fontSize: 12 }}
                   tickFormatter={(value) => `$${(value / 1000).toFixed(0)}k`}
                   domain={['auto', 'auto']}
+                  tickMargin={6}
                 />
                 <Tooltip content={<ChartTooltip />} />
                 <Area 
