@@ -87,6 +87,23 @@ CATEGORY_KEYWORDS = {
 # EXCLUSION KEYWORDS - Markets containing these are ALWAYS filtered out
 # =============================================================================
 EXCLUSION_KEYWORDS = [
+    # Sports Betting Patterns (catch-all)
+    "end in a draw", "will win", "vs.", " vs ", "match winner", "game winner",
+    "regular season", "championship", "tournament", "playoff", "finals",
+    "score", "goal", "assist", "clean sheet", "hat trick",
+    
+    # College Sports
+    "ncaa", "college basketball", "college football", "march madness",
+    "big east", "big ten", "big 12", "acc", "sec", "pac-12", "pac-10",
+    "xavier", "duke", "kentucky", "gonzaga", "villanova", "uconn",
+    
+    # Soccer/Football Teams & Leagues
+    "lazio", "lecce", "juventus", "inter milan", "ac milan", "roma", "napoli",
+    "fiorentina", "atalanta", "torino", "bologna", "sassuolo", "genoa",
+    "barcelona", "real madrid", "atletico", "sevilla", "valencia",
+    "manchester united", "manchester city", "liverpool", "chelsea", "arsenal",
+    "tottenham", "spurs", "bayern", "dortmund", "psg", "lyon", "marseille",
+    
     # Esports & Gaming
     "esports", "e-sports", "lol", "league of legends", "dota", "csgo", "cs2",
     "valorant", "overwatch", "fortnite", "pubg", "call of duty", "cod",
@@ -95,10 +112,10 @@ EXCLUSION_KEYWORDS = [
     "gng", "fnatic", "cloud9", "team liquid", "g2 esports", "t1", "gen.g",
     "bo3", "bo5", "handicap", "map winner", "round winner",
     
-    # Traditional Sports
+    # Traditional Sports Leagues & Events
     "nfl", "nba", "mlb", "nhl", "mls", "premier league", "la liga",
     "bundesliga", "serie a", "ligue 1", "champions league", "europa league",
-    "world cup", "euro 2024", "euro 2025", "olympics", "super bowl",
+    "world cup", "euro 2024", "euro 2025", "euro 2026", "olympics", "super bowl",
     "playoffs", "quarterback", "touchdown", "goalkeeper", "striker",
     "tennis", "wimbledon", "us open", "french open", "australian open",
     "golf", "pga", "masters", "ufc", "mma", "boxing", "wwe", "wrestling",
