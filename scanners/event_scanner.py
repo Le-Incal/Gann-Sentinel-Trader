@@ -395,10 +395,15 @@ class EventScanner:
         """Initialize the Event Scanner."""
         self.api_key = api_key if api_key is not None else os.getenv("XAI_API_KEY")
 
+        # Diagnostic logging
+        logger.info(f"EventScanner init - XAI_API_KEY present: {bool(self.api_key)}")
+        if self.api_key:
+            logger.info(f"EventScanner init - API key length: {len(self.api_key)} chars")
+        
         if not self.api_key:
             logger.warning("XAI_API_KEY not set - Event Scanner disabled")
         else:
-            logger.info(f"XAI_API_KEY configured for Event Scanner")
+            logger.info("XAI_API_KEY configured for Event Scanner")
 
         self.base_url = "https://api.x.ai/v1"
         self.model = "grok-3-fast-beta"
@@ -950,10 +955,13 @@ JSON only, no other text."""
             List of EventSignal objects for detected events
         """
         if not self.is_configured:
-            logger.warning("Event Scanner not configured - skipping")
+            logger.warning("Event Scanner not configured - skipping scan")
+            logger.warning(f"  - API key present: {bool(self.api_key)}")
             return []
 
         logger.info("Starting market-wide event scan (27 event types)...")
+        logger.info(f"  - Using model: {self.model}")
+        logger.info(f"  - Base URL: {self.base_url}")
 
         prompt = self._build_market_wide_prompt()
 
@@ -963,9 +971,16 @@ JSON only, no other text."""
             logger.error(f"Event scan failed: {self.last_error}")
             return []
 
+        # Log raw response info for debugging
+        if response.get("_parse_failed"):
+            logger.warning(f"JSON parse failed. Raw response (first 500 chars): {response.get('_raw', '')[:500]}")
+        
+        events_count = len(response.get("events", []))
+        logger.info(f"Grok API returned {events_count} raw events")
+
         signals = self._parse_events_response(response)
 
-        logger.info(f"Event scan complete: {len(signals)} events detected")
+        logger.info(f"Event scan complete: {len(signals)} events detected (after filtering)")
 
         return signals
 

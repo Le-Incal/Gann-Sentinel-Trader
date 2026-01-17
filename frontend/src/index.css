@@ -3,11 +3,11 @@
 @tailwind utilities;
 
 :root {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color: #e5e7eb;
-  background-color: #0a0f1a;
+  color: #1e293b;
+  background-color: #f8fafc;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -17,108 +17,153 @@
 body {
   margin: 0;
   min-height: 100vh;
+  background: #f8fafc;
 }
 
-/* Custom scrollbar */
+/* Custom scrollbar - light mode */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #111827;
+  background: #f1f5f9;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #374151;
-  border-radius: 4px;
+  background: #cbd5e1;
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #4b5563;
+  background: #94a3b8;
 }
 
 /* Utility classes */
 @layer components {
   .card {
-    @apply bg-gst-card border border-gst-border rounded-xl p-6;
+    @apply bg-white border border-gst-border rounded-2xl p-6 shadow-card transition-all duration-200;
+  }
+  
+  .card:hover {
+    @apply shadow-card-hover border-lime-500/30;
   }
   
   .card-header {
-    @apply text-lg font-semibold text-white mb-4 flex items-center gap-2;
+    @apply text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2;
   }
   
   .stat-value {
-    @apply text-2xl font-bold text-white;
+    @apply text-2xl font-bold text-gray-900 tracking-tight;
   }
   
   .stat-label {
-    @apply text-sm text-gray-400;
+    @apply text-sm text-gray-500 font-medium;
   }
   
+  /* Badges with brand colors */
   .badge {
-    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+    @apply inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold;
   }
   
   .badge-green {
-    @apply bg-green-900/50 text-green-400 border border-green-800;
+    @apply bg-lime-100 text-lime-700 border border-lime-200;
   }
   
   .badge-red {
-    @apply bg-red-900/50 text-red-400 border border-red-800;
+    @apply bg-red-100 text-red-700 border border-red-200;
   }
   
   .badge-yellow {
-    @apply bg-yellow-900/50 text-yellow-400 border border-yellow-800;
+    @apply bg-amber-100 text-amber-700 border border-amber-200;
   }
   
   .badge-blue {
-    @apply bg-blue-900/50 text-blue-400 border border-blue-800;
+    @apply bg-schwab-100 text-schwab-700 border border-schwab-200;
   }
   
   .badge-purple {
-    @apply bg-purple-900/50 text-purple-400 border border-purple-800;
+    @apply bg-purple-100 text-purple-700 border border-purple-200;
   }
   
   .badge-gray {
-    @apply bg-gray-800/50 text-gray-400 border border-gray-700;
+    @apply bg-gray-100 text-gray-600 border border-gray-200;
   }
   
+  /* Buttons */
+  .btn-primary {
+    @apply px-4 py-2 bg-lime-500 text-white font-semibold rounded-lg 
+           hover:bg-lime-600 transition-all duration-200 shadow-sm;
+  }
+  
+  .btn-secondary {
+    @apply px-4 py-2 bg-schwab-500 text-white font-semibold rounded-lg 
+           hover:bg-schwab-600 transition-all duration-200 shadow-sm;
+  }
+  
+  /* Navigation */
   .nav-link {
-    @apply flex items-center gap-2 px-4 py-2 text-gray-400 hover:text-white hover:bg-gst-card rounded-lg transition-colors;
+    @apply flex items-center gap-2 px-4 py-2.5 text-gray-600 hover:text-gray-900 rounded-xl transition-all duration-200;
+  }
+  
+  .nav-link:hover {
+    @apply bg-gray-100;
   }
   
   .nav-link-active {
-    @apply text-white bg-gst-accent/20 border-l-2 border-gst-accent;
+    @apply text-lime-600 bg-lime-50;
   }
   
+  /* Table rows */
   .table-row {
-    @apply border-b border-gst-border hover:bg-gst-card/50 transition-colors;
+    @apply border-b border-gray-100 hover:bg-gray-50 transition-colors;
   }
   
-  .pulse-green {
-    @apply relative;
+  /* Gradient text */
+  .text-gradient {
+    @apply bg-gradient-to-r from-lime-500 to-schwab-500 bg-clip-text text-transparent;
   }
   
-  .pulse-green::before {
-    content: '';
-    @apply absolute w-2 h-2 bg-green-500 rounded-full;
-    animation: pulse 2s infinite;
-  }
-  
-  @keyframes pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.5; transform: scale(1.5); }
+  /* Profit/Loss colors */
+  .text-profit {
+    color: #00c853;
   }
 }
 
-/* Chart customization */
+/* Override loss color outside of @layer to avoid circular dependency */
+.text-loss {
+  color: #ef4444 !important;
+}
+
+/* Chart customization for light mode */
 .recharts-cartesian-grid-horizontal line,
 .recharts-cartesian-grid-vertical line {
-  stroke: #1f2937;
+  stroke: #e2e8f0;
 }
 
 .recharts-text {
-  fill: #9ca3af;
-  font-size: 12px;
+  fill: #64748b;
+  font-size: 11px;
+}
+
+/* Animations */
+@keyframes pulse-glow {
+  0%, 100% { 
+    opacity: 1; 
+    box-shadow: 0 0 10px rgba(0, 200, 83, 0.3);
+  }
+  50% { 
+    opacity: 0.7; 
+    box-shadow: 0 0 20px rgba(0, 200, 83, 0.5);
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Selection */
+::selection {
+  background: rgba(0, 200, 83, 0.2);
+  color: #1e293b;
 }

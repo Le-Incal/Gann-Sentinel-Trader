@@ -321,6 +321,11 @@ class TechnicalScanner:
         self.api_key = api_key or os.getenv("ALPACA_API_KEY")
         self.secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY")
         
+        # Diagnostic logging
+        logger.info(f"TechnicalScanner init - ALPACA_DATA_AVAILABLE: {ALPACA_DATA_AVAILABLE}")
+        logger.info(f"TechnicalScanner init - API_KEY present: {bool(self.api_key)}")
+        logger.info(f"TechnicalScanner init - SECRET_KEY present: {bool(self.secret_key)}")
+        
         self.client = None
         if ALPACA_DATA_AVAILABLE and self.api_key and self.secret_key:
             try:
@@ -328,11 +333,18 @@ class TechnicalScanner:
                     api_key=self.api_key,
                     secret_key=self.secret_key,
                 )
-                logger.info("Alpaca Market Data client initialized")
+                logger.info("Alpaca Market Data client initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize Alpaca client: {e}")
+                import traceback
+                traceback.print_exc()
         else:
-            logger.warning("Alpaca Market Data not available")
+            if not ALPACA_DATA_AVAILABLE:
+                logger.warning("alpaca-py not installed - Technical Scanner disabled")
+            elif not self.api_key:
+                logger.warning("ALPACA_API_KEY not set - Technical Scanner disabled")
+            elif not self.secret_key:
+                logger.warning("ALPACA_SECRET_KEY not set - Technical Scanner disabled")
         
         self.last_error: Optional[str] = None
     
@@ -1492,16 +1504,21 @@ class TechnicalScanner:
         """
         if not self.is_configured:
             self.last_error = "Technical scanner not configured"
-            logger.warning(self.last_error)
+            logger.warning(f"{self.last_error} - client={self.client}, api_key={bool(self.api_key)}, secret={bool(self.secret_key)}")
             return None
         
-        logger.info(f"Technical scan: {ticker} ({timeframe}, {lookback_years}y)")
+        logger.info(f"Technical scan starting: {ticker} ({timeframe}, {lookback_years}y)")
         
         # 1. Fetch data
+        logger.info(f"Fetching historical bars for {ticker}...")
         df = self.get_historical_bars(ticker, timeframe, lookback_years)
-        if df is None or len(df) < 20:
-            logger.warning(f"Insufficient data for {ticker}")
+        if df is None:
+            logger.warning(f"No data returned for {ticker}. Last error: {self.last_error}")
             return None
+        if len(df) < 20:
+            logger.warning(f"Insufficient data for {ticker}: only {len(df)} bars (need 20+)")
+            return None
+        logger.info(f"Got {len(df)} bars for {ticker}")
         
         try:
             current_price = df["close"].iloc[-1]
