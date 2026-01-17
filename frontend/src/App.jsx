@@ -5,6 +5,7 @@ import Trades from './pages/Trades'
 import Signals from './pages/Signals'
 import Debates from './pages/Debates'
 import ScanCycles from './pages/ScanCycles'
+import Messages from './pages/Messages'
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
           <Route path="signals" element={<Signals />} />
           <Route path="debates" element={<Debates />} />
           <Route path="scans" element={<ScanCycles />} />
+          <Route path="messages" element={<Messages />} />
         </Route>
       </Routes>
     </BrowserRouter>

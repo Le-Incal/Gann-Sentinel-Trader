@@ -6,7 +6,8 @@ import {
   MessageSquare, 
   Activity,
   ExternalLink,
-  Github
+  Github,
+  Bell
 } from 'lucide-react'
 
 const navItems = [
@@ -15,6 +16,7 @@ const navItems = [
   { to: '/signals', icon: Radio, label: 'Signals' },
   { to: '/debates', icon: MessageSquare, label: 'AI Debates' },
   { to: '/scans', icon: Activity, label: 'Scan Cycles' },
+  { to: '/messages', icon: Bell, label: 'Messages' },
 ]
 
 export default function Layout() {
