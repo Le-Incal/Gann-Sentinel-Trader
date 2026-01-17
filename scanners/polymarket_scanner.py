@@ -35,116 +35,157 @@ logger = logging.getLogger(__name__)
 
 
 class MarketCategory(Enum):
-    """Categories of markets we care about for trading signals."""
-    FED_MONETARY = "fed_monetary"
-    ECONOMIC_DATA = "economic_data"
-    GEOPOLITICAL = "geopolitical"
-    TECH_SECTOR = "tech_sector"
-    CRYPTO = "crypto"
-    ELECTIONS = "elections"
-    OTHER = "other"
+    """
+    Investment-relevant market categories (WHITELIST approach).
+    
+    Only markets matching these categories will be included.
+    Everything else is ignored.
+    """
+    FEDERAL_RESERVE = "federal_reserve"
+    INFLATION = "inflation"
+    RECESSION = "recession"
+    TRADE_POLICY = "trade_policy"
+    CHINA_RISK = "china_risk"
+    AI_SECTOR = "ai_sector"
+    SEMICONDUCTOR = "semiconductor"
+    CRYPTO_POLICY = "crypto_policy"
+    ENERGY_POLICY = "energy_policy"
+    DEBT_CEILING = "debt_ceiling"
+    ELECTION = "election"
+    DEFENSE = "defense"
+    NOT_RELEVANT = "not_relevant"  # Catch-all for non-investment markets
 
 
-# Tags and keywords for categorization
+# =============================================================================
+# INVESTMENT CATEGORY KEYWORDS (WHITELIST)
+# Only markets containing these keywords will be included
+# =============================================================================
 CATEGORY_KEYWORDS = {
-    MarketCategory.FED_MONETARY: [
-        "fed", "federal reserve", "fomc", "rate cut", "rate hike", 
-        "interest rate", "powell", "monetary policy", "basis points",
-        "quantitative", "tightening", "easing"
+    MarketCategory.FEDERAL_RESERVE: [
+        "fed", "fomc", "rate cut", "rate hike", "powell", "federal reserve",
+        "interest rate", "monetary policy", "basis points", "quantitative",
+        "tightening", "easing", "fed funds"
     ],
-    MarketCategory.ECONOMIC_DATA: [
-        "gdp", "inflation", "cpi", "unemployment", "jobs", "payroll",
-        "recession", "economy", "economic", "pce", "retail sales",
-        "manufacturing", "pmi", "consumer"
+    MarketCategory.INFLATION: [
+        "cpi", "inflation", "prices", "pce", "consumer price",
+        "core inflation", "deflation", "hyperinflation"
     ],
-    MarketCategory.GEOPOLITICAL: [
-        "tariff", "trade war", "sanctions", "china", "russia", "ukraine",
-        "war", "conflict", "nato", "eu", "brexit", "opec", "iran", "israel",
-        "taiwan", "north korea", "syria", "saudi", "venezuela", "cuba",
-        "import", "export", "embargo", "treaty", "alliance", "military",
-        "invasion", "ceasefire", "peace deal", "nuclear"
+    MarketCategory.RECESSION: [
+        "recession", "gdp", "contraction", "economic growth", "soft landing",
+        "hard landing", "nber", "unemployment rate"
     ],
-    MarketCategory.TECH_SECTOR: [
-        "ai", "artificial intelligence", "nvidia", "microsoft", "apple",
-        "google", "amazon", "meta", "semiconductor", "chip", "openai",
-        "chatgpt", "tesla", "tsla", "spacex", "starlink", "antitrust",
-        "data center", "cloud computing", "aws", "azure", "gcp",
-        "autonomous vehicle", "self-driving", "ev", "electric vehicle"
+    MarketCategory.TRADE_POLICY: [
+        "tariff", "trade war", "sanctions", "import", "export", "trade deal",
+        "trade agreement", "wto", "trade deficit", "protectionism"
     ],
-    MarketCategory.CRYPTO: [
-        "bitcoin", "btc", "ethereum", "eth", "crypto", "cryptocurrency",
-        "blockchain", "defi", "sec crypto", "xrp", "ripple", "solana", "sol",
-        "cardano", "ada", "dogecoin", "doge", "coinbase", "binance", "stablecoin",
-        "usdt", "usdc", "altcoin", "nft", "web3"
+    MarketCategory.CHINA_RISK: [
+        "china", "taiwan", "xi jinping", "ccp", "chinese", "beijing",
+        "south china sea", "chip ban", "decoupling", "tiktok ban"
     ],
-    MarketCategory.ELECTIONS: [
-        "election", "president", "congress", "senate", "house",
-        "vote", "ballot", "poll", "democrat", "republican"
+    MarketCategory.AI_SECTOR: [
+        "ai", "artificial intelligence", "openai", "chatgpt", "gpt-5",
+        "claude", "anthropic", "gemini", "llm", "agi", "machine learning",
+        "ai model", "ai regulation", "ai safety"
+    ],
+    MarketCategory.SEMICONDUCTOR: [
+        "chip", "semiconductor", "nvidia", "nvda", "amd", "intel", "tsmc",
+        "chips act", "fab", "foundry", "gpu", "asml"
+    ],
+    MarketCategory.CRYPTO_POLICY: [
+        "bitcoin", "btc", "crypto", "cryptocurrency", "sec crypto",
+        "spot etf", "bitcoin etf", "ethereum etf", "gensler", "crypto regulation",
+        "stablecoin", "cbdc", "digital currency"
+    ],
+    MarketCategory.ENERGY_POLICY: [
+        "energy", "oil", "gas", "lng", "renewable", "solar", "wind",
+        "drilling", "opec", "pipeline", "oil price", "natural gas",
+        "clean energy", "ev mandate", "carbon tax", "permitting"
+    ],
+    MarketCategory.DEBT_CEILING: [
+        "debt ceiling", "default", "treasury", "government shutdown",
+        "fiscal", "debt limit", "treasury yield", "bond market",
+        "spending bill", "appropriations", "budget"
+    ],
+    MarketCategory.ELECTION: [
+        "election", "vote", "president", "congress", "senate", "poll",
+        "campaign", "ballot", "electoral", "midterm", "primary",
+        "democrat", "republican", "governor"
+    ],
+    MarketCategory.DEFENSE: [
+        "defense", "military", "nato", "war", "weapon", "pentagon", "dod",
+        "army", "navy", "air force", "missile", "drone", "ukraine aid",
+        "israel aid", "defense budget", "lockheed", "raytheon"
     ],
 }
 
 # =============================================================================
-# EXCLUSION KEYWORDS - Markets containing these are ALWAYS filtered out
+# TRADING RELEVANCE - Maps categories to tradeable assets
 # =============================================================================
-EXCLUSION_KEYWORDS = [
-    # Sports Betting Patterns (catch-all)
-    "end in a draw", "will win", "vs.", " vs ", "match winner", "game winner",
-    "regular season", "championship", "tournament", "playoff", "finals",
-    "score", "goal", "assist", "clean sheet", "hat trick",
-    
-    # College Sports
-    "ncaa", "college basketball", "college football", "march madness",
-    "big east", "big ten", "big 12", "acc", "sec", "pac-12", "pac-10",
-    "xavier", "duke", "kentucky", "gonzaga", "villanova", "uconn",
-    
-    # Soccer/Football Teams & Leagues
-    "lazio", "lecce", "juventus", "inter milan", "ac milan", "roma", "napoli",
-    "fiorentina", "atalanta", "torino", "bologna", "sassuolo", "genoa",
-    "barcelona", "real madrid", "atletico", "sevilla", "valencia",
-    "manchester united", "manchester city", "liverpool", "chelsea", "arsenal",
-    "tottenham", "spurs", "bayern", "dortmund", "psg", "lyon", "marseille",
-    
-    # Esports & Gaming
-    "esports", "e-sports", "lol", "league of legends", "dota", "csgo", "cs2",
-    "valorant", "overwatch", "fortnite", "pubg", "call of duty", "cod",
-    "fifa", "fut", "madden", "nba 2k", "rocket league", "starcraft",
-    "hearthstone", "magic the gathering", "mtg", "twitch", "streamer",
-    "gng", "fnatic", "cloud9", "team liquid", "g2 esports", "t1", "gen.g",
-    "bo3", "bo5", "handicap", "map winner", "round winner",
-    
-    # Traditional Sports Leagues & Events
-    "nfl", "nba", "mlb", "nhl", "mls", "premier league", "la liga",
-    "bundesliga", "serie a", "ligue 1", "champions league", "europa league",
-    "world cup", "euro 2024", "euro 2025", "euro 2026", "olympics", "super bowl",
-    "playoffs", "quarterback", "touchdown", "goalkeeper", "striker",
-    "tennis", "wimbledon", "us open", "french open", "australian open",
-    "golf", "pga", "masters", "ufc", "mma", "boxing", "wwe", "wrestling",
-    "f1", "formula 1", "nascar", "indycar", "motogp",
-    "cricket", "ipl", "rugby", "afl", "horse racing", "kentucky derby",
-    
-    # Entertainment & Reality TV
-    "bachelor", "bachelorette", "survivor", "big brother", "love island",
-    "american idol", "the voice", "dancing with the stars", "dwts",
-    "real housewives", "kardashian", "oscars", "emmy", "grammy", "golden globe",
-    "netflix", "hbo", "disney+", "streaming", "box office", "movie",
-    "tv show", "reality tv", "celebrity", "influencer", "youtube",
-    "tiktok", "instagram", "twitter follower", "subscriber count",
-    
-    # Weather & Natural Events (not investment relevant)
-    "hurricane", "tornado", "earthquake", "snowfall", "temperature record",
-    "hottest day", "coldest day", "rainfall", "drought",
-    
-    # Personal/Social Events
-    "wedding", "divorce", "baby", "pregnant", "birthday", "death date",
-    "will die", "relationship", "dating", "breakup",
-    
-    # Misc Non-Investment
-    "alien", "ufo", "bigfoot", "lottery", "powerball", "mega millions",
-    "hot dog eating", "spelling bee", "beauty pageant", "miss universe",
-]
+CATEGORY_TRADING_ASSETS = {
+    MarketCategory.FEDERAL_RESERVE: {
+        "tickers": ["SPY", "TLT", "IEF", "SHY"],
+        "sectors": ["FINANCIALS", "REAL_ESTATE"],
+        "description": "Interest rate sensitive stocks"
+    },
+    MarketCategory.INFLATION: {
+        "tickers": ["TIP", "GLD", "DBC", "XLE"],
+        "sectors": ["COMMODITIES", "ENERGY"],
+        "description": "TIPS, commodities, inflation hedges"
+    },
+    MarketCategory.RECESSION: {
+        "tickers": ["XLU", "XLP", "VIG", "TLT"],
+        "sectors": ["UTILITIES", "CONSUMER_STAPLES"],
+        "description": "Defensive positioning"
+    },
+    MarketCategory.TRADE_POLICY: {
+        "tickers": ["FXI", "EEM", "XLI"],
+        "sectors": ["INDUSTRIALS", "MATERIALS"],
+        "description": "Import/export exposed"
+    },
+    MarketCategory.CHINA_RISK: {
+        "tickers": ["FXI", "KWEB", "BABA", "TSM"],
+        "sectors": ["TECH", "CONSUMER"],
+        "description": "Supply chain, tech exposure"
+    },
+    MarketCategory.AI_SECTOR: {
+        "tickers": ["NVDA", "MSFT", "GOOGL", "META", "AMZN"],
+        "sectors": ["TECH"],
+        "description": "AI beneficiaries"
+    },
+    MarketCategory.SEMICONDUCTOR: {
+        "tickers": ["SMH", "SOXX", "NVDA", "AMD", "AVGO"],
+        "sectors": ["TECH", "SEMICONDUCTORS"],
+        "description": "Chip stocks"
+    },
+    MarketCategory.CRYPTO_POLICY: {
+        "tickers": ["COIN", "MSTR", "RIOT", "MARA"],
+        "sectors": ["CRYPTO"],
+        "description": "Crypto equities"
+    },
+    MarketCategory.ENERGY_POLICY: {
+        "tickers": ["XLE", "XOP", "OXY", "CVX", "ICLN", "TAN"],
+        "sectors": ["ENERGY", "CLEAN_ENERGY"],
+        "description": "Traditional and clean energy"
+    },
+    MarketCategory.DEBT_CEILING: {
+        "tickers": ["TLT", "IEF", "XLF", "VIX"],
+        "sectors": ["FIXED_INCOME", "FINANCIALS"],
+        "description": "Treasury yields, risk-off positioning"
+    },
+    MarketCategory.ELECTION: {
+        "tickers": ["SPY", "IWM"],
+        "sectors": [],
+        "description": "Policy uncertainty, sector rotation"
+    },
+    MarketCategory.DEFENSE: {
+        "tickers": ["LMT", "RTX", "NOC", "GD", "BA"],
+        "sectors": ["AEROSPACE", "DEFENSE"],
+        "description": "Defense contractors"
+    },
+}
 
-# Keywords that need word boundary matching (short words that cause false positives)
-WORD_BOUNDARY_KEYWORDS = ["ai", "eu", "uk", "us", "fed", "war", "gdp", "cpi", "pmi", "ev"]
+# Keywords that need word boundary matching (short words that could cause false positives)
+WORD_BOUNDARY_KEYWORDS = ["ai", "eu", "uk", "us", "fed", "war", "gdp", "cpi", "pmi", "ev", "oil", "gas", "lng"]
 
 # Add AI back to TECH_SECTOR with word boundary matching
 # This will be handled by _keyword_matches using regex
@@ -274,24 +315,9 @@ class PolymarketScanner:
         return self.temporal_context.format_date(dt)
     
     # =========================================================================
-    # MARKET CATEGORIZATION
+    # MARKET CATEGORIZATION (WHITELIST APPROACH)
+    # Only investment-relevant categories are included
     # =========================================================================
-    
-    def _is_excluded_market(self, combined_text: str) -> bool:
-        """
-        Check if market should be excluded based on exclusion keywords.
-        
-        Args:
-            combined_text: Lowercased combined question + description + title
-            
-        Returns:
-            True if market should be excluded
-        """
-        for keyword in EXCLUSION_KEYWORDS:
-            if keyword in combined_text:
-                logger.debug(f"Excluding market - matched '{keyword}'")
-                return True
-        return False
     
     def _keyword_matches(self, keyword: str, text: str) -> bool:
         """
@@ -316,16 +342,16 @@ class PolymarketScanner:
     
     def _categorize_market(self, market: Dict[str, Any]) -> MarketCategory:
         """
-        Categorize a market based on its title and description.
+        Categorize a market using WHITELIST approach.
         
-        First checks exclusion list (sports, entertainment, etc.),
-        then matches against investment category keywords.
+        Only markets matching investment-relevant keywords are included.
+        Everything else returns NOT_RELEVANT and gets filtered out.
         
         Args:
             market: Market data from Polymarket API
             
         Returns:
-            MarketCategory enum value
+            MarketCategory enum value (NOT_RELEVANT if no investment category matched)
         """
         # Get text to analyze
         question = (market.get("question") or "").lower()
@@ -334,17 +360,17 @@ class PolymarketScanner:
         
         combined_text = f"{question} {description} {title}"
         
-        # FIRST: Check exclusion list - sports, entertainment, etc.
-        if self._is_excluded_market(combined_text):
-            return MarketCategory.OTHER
-        
-        # SECOND: Check each investment category with proper matching
+        # Check each investment category - WHITELIST approach
+        # Only include markets that match specific investment categories
         for category, keywords in CATEGORY_KEYWORDS.items():
             for keyword in keywords:
                 if self._keyword_matches(keyword, combined_text):
+                    logger.debug(f"Market matched category {category.value} via '{keyword}'")
                     return category
         
-        return MarketCategory.OTHER
+        # No investment category matched - filter out
+        logger.debug(f"Market not investment-relevant: {question[:50]}...")
+        return MarketCategory.NOT_RELEVANT
     
     def _map_category_to_time_horizon(
         self, 
@@ -359,61 +385,31 @@ class PolymarketScanner:
             return "unknown"  # Date is in the past
         
         # Default based on category
-        if category in [MarketCategory.FED_MONETARY, MarketCategory.ECONOMIC_DATA]:
+        if category in [MarketCategory.FEDERAL_RESERVE, MarketCategory.INFLATION, MarketCategory.DEBT_CEILING]:
             return "weeks"
-        elif category == MarketCategory.ELECTIONS:
+        elif category in [MarketCategory.ELECTION, MarketCategory.TRADE_POLICY]:
             return "months"
         else:
-            return "unknown"
+            return "weeks"
     
     def _category_to_asset_scope(self, category: MarketCategory) -> Dict[str, List[str]]:
-        """Map market category to relevant asset scope."""
-        scope_map = {
-            MarketCategory.FED_MONETARY: {
-                "tickers": ["SPY", "TLT", "DX-Y.NYB"],  # S&P, Treasuries, Dollar
-                "sectors": ["FINANCIALS"],
-                "macro_regions": ["US"],
-                "asset_classes": ["EQUITY", "FIXED_INCOME", "FX"],
-            },
-            MarketCategory.ECONOMIC_DATA: {
-                "tickers": ["SPY", "IWM", "TLT"],
-                "sectors": [],
-                "macro_regions": ["US"],
-                "asset_classes": ["EQUITY", "FIXED_INCOME"],
-            },
-            MarketCategory.GEOPOLITICAL: {
-                "tickers": ["VIX", "GLD", "USO"],  # Volatility, Gold, Oil
-                "sectors": ["ENERGY", "DEFENSE"],
-                "macro_regions": ["GLOBAL"],
-                "asset_classes": ["COMMODITY", "EQUITY"],
-            },
-            MarketCategory.TECH_SECTOR: {
-                "tickers": ["QQQ", "NVDA", "SMH"],
-                "sectors": ["TECH"],
+        """Map market category to relevant asset scope using CATEGORY_TRADING_ASSETS."""
+        if category in CATEGORY_TRADING_ASSETS:
+            assets = CATEGORY_TRADING_ASSETS[category]
+            return {
+                "tickers": assets.get("tickers", []),
+                "sectors": assets.get("sectors", []),
                 "macro_regions": ["US"],
                 "asset_classes": ["EQUITY"],
-            },
-            MarketCategory.CRYPTO: {
-                "tickers": ["COIN", "MSTR"],
-                "sectors": ["CRYPTO"],
-                "macro_regions": ["GLOBAL"],
-                "asset_classes": ["CRYPTO", "EQUITY"],
-            },
-            MarketCategory.ELECTIONS: {
-                "tickers": ["SPY"],
-                "sectors": [],
-                "macro_regions": ["US"],
-                "asset_classes": ["EQUITY"],
-            },
-            MarketCategory.OTHER: {
-                "tickers": [],
-                "sectors": [],
-                "macro_regions": ["US"],
-                "asset_classes": ["EQUITY"],
-            },
-        }
+            }
         
-        return scope_map.get(category, scope_map[MarketCategory.OTHER])
+        # Fallback for NOT_RELEVANT (shouldn't reach here normally)
+        return {
+            "tickers": [],
+            "sectors": [],
+            "macro_regions": ["US"],
+            "asset_classes": ["EQUITY"],
+        }
     
     # =========================================================================
     # CONFIDENCE SCORING
@@ -576,9 +572,9 @@ class PolymarketScanner:
             # Categorize
             category = self._categorize_market(market)
             
-            # Skip OTHER category if not interesting
-            if category == MarketCategory.OTHER:
-                logger.debug(f"Skipping OTHER category market: {question[:50]}")
+            # Skip NOT_RELEVANT category (whitelist approach - only include investment markets)
+            if category == MarketCategory.NOT_RELEVANT:
+                logger.debug(f"Skipping non-investment market: {question[:50]}")
                 return None
             
             # Asset scope
@@ -901,7 +897,7 @@ class PolymarketScanner:
                     event_markets = event.get("markets", [])
                     for market in event_markets:
                         signal = self._market_to_signal(market, TimeHorizon.LONG_TERM.name)
-                        if signal and signal.market_category == MarketCategory.FED_MONETARY.value:
+                        if signal and signal.market_category == MarketCategory.FEDERAL_RESERVE.value:
                             if not any(s.dedup_hash == signal.dedup_hash for s in signals):
                                 signals.append(signal)
                                 
@@ -943,11 +939,17 @@ class PolymarketScanner:
                     limit=20,
                 )
                 
+                # Economic categories: INFLATION, RECESSION, DEBT_CEILING
+                econ_categories = [
+                    MarketCategory.INFLATION.value,
+                    MarketCategory.RECESSION.value,
+                    MarketCategory.DEBT_CEILING.value,
+                ]
                 for event in events:
                     event_markets = event.get("markets", [])
                     for market in event_markets:
                         signal = self._market_to_signal(market, TimeHorizon.MEDIUM_TERM.name)
-                        if signal and signal.market_category == MarketCategory.ECONOMIC_DATA.value:
+                        if signal and signal.market_category in econ_categories:
                             if not any(s.dedup_hash == signal.dedup_hash for s in signals):
                                 signals.append(signal)
                                 
