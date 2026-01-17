@@ -205,6 +205,9 @@ class GannSentinelAgent:
         # Initialize watchlist
         self._initialize_watchlist()
 
+        # Sync portfolio from Alpaca on startup
+        await self._sync_portfolio_to_db()
+
         # Start Telegram command listener
         asyncio.create_task(self._telegram_listener())
 
@@ -244,6 +247,31 @@ class GannSentinelAgent:
             self.watchlist = default_watchlist
 
         logger.info(f"Watchlist initialized: {self.watchlist}")
+
+    async def _sync_portfolio_to_db(self) -> None:
+        """Sync portfolio and positions from Alpaca to database on startup."""
+        try:
+            logger.info("Syncing portfolio from Alpaca...")
+            
+            # Get portfolio snapshot from Alpaca
+            portfolio = await self.executor.get_portfolio_snapshot()
+            positions = await self.executor.get_positions()
+            
+            # Convert to dicts
+            portfolio_dict = portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio
+            positions_list = [p.to_dict() if hasattr(p, 'to_dict') else p for p in positions]
+            
+            # Save portfolio snapshot
+            self.db.save_snapshot(portfolio_dict)
+            
+            # Save each position
+            for pos in positions_list:
+                self.db.save_position(pos)
+            
+            logger.info(f"Portfolio synced: ${portfolio_dict.get('total_value', 0):,.2f}, {len(positions_list)} positions")
+            
+        except Exception as e:
+            logger.error(f"Error syncing portfolio from Alpaca: {e}")
 
     async def _main_loop_iteration(self) -> None:
         """Single iteration of the main loop."""
