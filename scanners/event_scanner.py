@@ -431,12 +431,31 @@ class EventScanner:
         Build comprehensive prompt for market-wide event scan.
 
         Single query covers all 27 event types to minimize API costs.
+        On weekends, expands search window to include previous business days.
         """
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        
+        # Adjust lookback for weekends (0=Monday, 5=Saturday, 6=Sunday)
+        weekday = now.weekday()
+        if weekday == 5:  # Saturday - look back to Thursday/Friday
+            lookback_hours = 72
+            lookback_note = "past 72 hours (including Friday)"
+        elif weekday == 6:  # Sunday - look back to Friday
+            lookback_hours = 96
+            lookback_note = "past 96 hours (including Friday)"
+        elif weekday == 0:  # Monday morning - include weekend announcements
+            lookback_hours = 72
+            lookback_note = "past 72 hours (including weekend)"
+        else:
+            lookback_hours = 24
+            lookback_note = "last 24 hours"
+        
+        logger.info(f"Event scan lookback: {lookback_note} (weekday={weekday})")
 
         return f"""You are a financial news analyst scanning for corporate events that move stock prices.
 
-Search the web and news for ANY of these 27 event types that occurred in the last 24 hours (since {today}):
+Search the web and news for ANY of these 27 event types that occurred in the {lookback_note} (since {today}):
 
 LEADERSHIP CHANGES:
 - CEO Exit or resignation
@@ -495,7 +514,7 @@ Respond with valid JSON:
 }}
 
 IMPORTANT:
-- Only include events from the last 24 hours
+- Only include events from the {lookback_note}
 - Use EXACT event type names matching the categories above
 - Include the ticker symbol for each event
 - If no events found, return {{"scan_date": "{today}", "events": []}}
@@ -631,6 +650,18 @@ JSON only, no other text."""
             "Content-Type": "application/json",
         }
 
+        # Adjust from_date based on weekend
+        now = datetime.now(timezone.utc)
+        weekday = now.weekday()
+        if weekday == 5:  # Saturday
+            from_date = (now - timedelta(hours=72)).strftime("%Y-%m-%d")
+        elif weekday == 6:  # Sunday
+            from_date = (now - timedelta(hours=96)).strftime("%Y-%m-%d")
+        elif weekday == 0:  # Monday
+            from_date = (now - timedelta(hours=72)).strftime("%Y-%m-%d")
+        else:
+            from_date = (now - timedelta(hours=24)).strftime("%Y-%m-%d")
+        
         payload = {
             "model": self.model,
             "messages": [
@@ -639,7 +670,7 @@ JSON only, no other text."""
             "search_parameters": {
                 "mode": "auto",
                 "return_citations": True,
-                "from_date": (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%d"),
+                "from_date": from_date,
             },
             "temperature": 0.1,  # Low temperature for factual extraction
         }
