@@ -1,21 +1,23 @@
 # Gann Sentinel Trader (GST)
 
-**AI-Powered Autonomous Trading System**
+**AI-Powered Multi-Agent Trading Decision System**
 
-An experimental trading system that combines multiple AI agents for market analysis and decision-making. Built on the philosophy of "ANCHOR in history, ORIENT toward future."
+A sophisticated trading system that combines multiple AI agents in a committee-based architecture for market analysis and decision-making. Built on the philosophy of "ANCHOR in history, ORIENT toward future."
 
 [![Railway](https://img.shields.io/badge/Deployed%20on-Railway-blueviolet)](https://railway.app)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/License-Private-red.svg)]()
+[![Version](https://img.shields.io/badge/Version-3.1.1-green.svg)]()
 
 ---
 
 ## Overview
 
-GST is a sophisticated trading system that:
+GST is a committee-based trading decision system that:
 
-- **Scans multiple data sources** for market signals (sentiment, macro, predictions, events)
-- **Leverages 4 AI systems** to generate and validate investment theses
+- **Collects signals** from 5 data sources (FRED, Polymarket, Grok, Technical, Events)
+- **Leverages 3 AI analysts** who independently generate investment theses
+- **Enables visible debate** where analysts review each other's proposals and vote
+- **Uses Claude as Senior Trader** to synthesize and make final decisions
 - **Applies strict risk management** before any trade recommendation
 - **Requires human approval** via Telegram for all trades
 - **Learns from outcomes** to improve future decisions
@@ -28,25 +30,44 @@ GST is a sophisticated trading system that:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         GANN SENTINEL TRADER v2.4.2                         │
+│                         GANN SENTINEL TRADER v3.1.1                         │
 │                    "ANCHOR in history, ORIENT toward future"                │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
-          ┌───────────────────────────┼───────────────────────────┐
-          ▼                           ▼                           ▼
-┌─────────────────┐           ┌─────────────────┐           ┌─────────────────┐
-│    SCANNERS     │           │   AI COUNCIL    │           │    EXECUTORS    │
-│  (Data Input)   │           │     (MACA)      │           │    (Output)     │
-└─────────────────┘           └─────────────────┘           └─────────────────┘
-          │                           │                           │
-          ▼                           ▼                           ▼
-┌─────────────────┐           ┌─────────────────┐           ┌─────────────────┐
-│ • Grok          │           │ • Grok Thesis   │           │ • Risk Engine   │
-│ • FRED          │    ───►   │ • Perplexity    │    ───►   │ • Alpaca        │
-│ • Polymarket    │           │ • ChatGPT       │           │ • Telegram      │
-│ • Technical     │           │ • Claude        │           │                 │
-│ • Event (27)    │           │   (Synthesis)   │           │                 │
-└─────────────────┘           └─────────────────┘           └─────────────────┘
+┌─────────────────────────────────────┼─────────────────────────────────────┐
+│                            SIGNAL COLLECTION                               │
+├─────────────────────────────────────┼─────────────────────────────────────┤
+│  FRED (7 macro)  │  Polymarket (investment categories)  │  Events (27)   │
+│  Technical (IEX) │  Grok (sentiment)                    │                │
+└─────────────────────────────────────┼─────────────────────────────────────┘
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           AI COUNCIL (3 Analysts)                           │
+├──────────────────────┬──────────────────────┬──────────────────────────────┤
+│   🐦 GROK            │   🎯 PERPLEXITY      │   🧠 CHATGPT                 │
+│   Narrative Momentum │   External Reality   │   Sentiment & Bias          │
+│   X/Twitter trends   │   Web facts, filings │   Market psychology         │
+└──────────────────────┴──────────────────────┴──────────────────────────────┘
+                                      │
+                              Each produces thesis
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              DEBATE LAYER                                   │
+│            Analysts review proposals, vote, may change position             │
+│                    (Skipped if unanimous HOLD)                              │
+└─────────────────────────────────────┼───────────────────────────────────────┘
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     🧠 CLAUDE (Senior Trader / Chair)                       │
+│         Synthesizes theses → Checks technicals → Makes final decision       │
+└─────────────────────────────────────┼───────────────────────────────────────┘
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              EXECUTION                                      │
+├──────────────────────┬──────────────────────┬──────────────────────────────┤
+│   Risk Engine        │   Human Approval     │   Alpaca (Paper Trading)     │
+│   Position limits    │   via Telegram       │   Order execution            │
+└──────────────────────┴──────────────────────┴──────────────────────────────┘
 ```
 
 ---
@@ -55,24 +76,40 @@ GST is a sophisticated trading system that:
 
 ### Multi-Agent Consensus Architecture (MACA)
 
-Four AI systems work together to reduce bias and improve decision quality:
+Three AI analysts work independently, then debate and vote:
 
 | AI | Role | Specialty |
 |----|------|-----------|
-| **Grok** | Signal Generator | Social sentiment, X/Twitter trends |
-| **Perplexity** | Researcher | Fundamental analysis, citations |
-| **ChatGPT** | Pattern Finder | Technical patterns, risk scenarios |
-| **Claude** | Senior Trader | Synthesis, final decision |
+| **Grok** | Narrative Momentum Analyst | Social sentiment, X/Twitter trends, emerging narratives |
+| **Perplexity** | External Reality Analyst | Web facts, SEC filings, earnings (6-hour recency) |
+| **ChatGPT** | Sentiment & Bias Analyst | Market psychology, cognitive bias detection |
+| **Claude** | Senior Trader (Chair) | Synthesis, technical validation, final decision |
 
 ### Signal Scanners
 
 | Scanner | Source | Signals |
 |---------|--------|---------|
+| **FRED** | Federal Reserve | 7 macro indicators (yields, CPI, GDP, unemployment) |
+| **Polymarket** | Prediction Markets | 12 investment categories (Fed, AI, Crypto, Defense, etc.) |
+| **Technical** | Alpaca (IEX) | Chart analysis, support/resistance, market state |
+| **Event** | Grok API | 27 corporate event types (FDA, M&A, insider activity) |
 | **Grok** | xAI API | Sentiment, catalysts, trending narratives |
-| **FRED** | Federal Reserve | Macro indicators (yields, CPI, GDP, unemployment) |
-| **Polymarket** | Prediction Markets | 17 investment categories with probability tracking |
-| **Technical** | Alpaca | 5-year price history, support/resistance, trends |
-| **Event** | Grok (parsed) | 27 corporate event types (FDA, M&A, insider buying) |
+
+### Polymarket Investment Categories
+
+Only investment-relevant prediction markets are scanned:
+
+| Category | Keywords | Trading Relevance |
+|----------|----------|-------------------|
+| Federal Reserve | fed, fomc, rate cut, powell | Interest rate sensitive stocks |
+| Inflation | cpi, inflation, prices | TIPS, commodities |
+| AI Sector | ai, artificial intelligence | NVDA, MSFT, GOOGL |
+| Crypto Policy | bitcoin, crypto, sec | COIN, MSTR, miners |
+| Defense | defense spending, pentagon | LMT, RTX, NOC |
+| Energy | oil, gas, renewable, opec | XLE, XOP, clean energy |
+| Elections | us election, congress, senate | Policy uncertainty plays |
+
+*Sports betting, foreign elections, and non-investment markets are automatically filtered out.*
 
 ### Risk Management
 
@@ -85,9 +122,53 @@ Four AI systems work together to reduce bias and improve decision quality:
 ### Smart Scheduling
 
 - 2 scans per day (9:35 AM, 12:30 PM ET)
-- No weekend scans
+- Weekend-aware (Event Scanner looks back 72-96 hours)
 - Manual `/scan` and `/check` always available
 - 75% cost reduction vs hourly scanning
+
+---
+
+## Telegram Output
+
+GST sends a **3-part message** for each scan:
+
+### Message 1: Signal Inventory + AI Council
+```
+📊 Signals Collected: 53
+
+📈 FRED (7): Treasury yields, CPI, unemployment
+🎲 Polymarket (45): AI models, crypto, Fed policy
+📅 Events (0): No events (weekend)
+📊 Technical (1): TSLA chart analyzed
+
+🐦 GROK: HOLD (80/100) - Bullish outlook, no specific catalyst
+🎯 PERPLEXITY: HOLD (0/100) - No recent catalysts found
+🧠 CHATGPT: HOLD (0/100) - Mixed macro signals
+```
+
+### Message 2: Debate Summary
+```
+🗣️ MACA Debate (IC Minutes)
+✅ Unanimous Agreement: HOLD
+Reason: Unanimous HOLD at proposal stage — debate skipped
+```
+
+### Message 3: Claude's Decision + Buttons
+```
+🧠 CLAUDE'S SYNTHESIS (Senior Trader)
+Decision: NO_TRADE
+Conviction: 20/100
+
+💤 NO TRADE
+Reason: All analysts recommend HOLD...
+
+💰 PORTFOLIO
+  Equity: $0.00
+  Cash: $88,867.16
+  Positions: 1
+
+[Status] [Pending] [Scan] [Logs] [Help]  ← Interactive buttons
+```
 
 ---
 
@@ -116,44 +197,44 @@ Four AI systems work together to reduce bias and improve decision quality:
 
 ```
 gann-sentinel-trader/
-├── agent.py                    # Main orchestrator
+├── agent.py                    # Main orchestrator - START HERE
 ├── config.py                   # Configuration
 ├── learning_engine.py          # Performance tracking
 │
 ├── scanners/
 │   ├── temporal.py             # Shared time framework
 │   ├── grok_scanner.py         # Sentiment/catalysts
-│   ├── fred_scanner.py         # Macro data
-│   ├── polymarket_scanner.py   # Prediction markets
-│   ├── technical_scanner.py    # Chart analysis
-│   └── event_scanner.py        # Corporate events
+│   ├── fred_scanner.py         # Macro data (7 series)
+│   ├── polymarket_scanner.py   # Prediction markets (whitelist filter)
+│   ├── technical_scanner.py    # Chart analysis (IEX data)
+│   └── event_scanner.py        # Corporate events (weekend-aware)
 │
 ├── analyzers/
-│   ├── claude_analyst.py       # Claude analysis
-│   ├── claude_maca_extension.py
-│   ├── perplexity_analyst.py   
-│   └── chatgpt_analyst.py      
+│   ├── perplexity_analyst.py   # 6-hour recency requirement
+│   ├── chatgpt_analyst.py      # Sentiment analysis
+│   ├── claude_analyst.py       # Legacy analyst
+│   └── claude_chair.py         # Senior Trader / Synthesizer
 │
 ├── core/
-│   └── maca_orchestrator.py    # 4-phase MACA cycle
+│   └── maca_orchestrator.py    # Committee debate + synthesis
 │
 ├── executors/
 │   ├── risk_engine.py          # Risk validation
 │   └── alpaca_executor.py      # Trade execution
 │
 ├── notifications/
-│   └── telegram_bot.py         # Bot interface
+│   └── telegram_bot.py         # 3-part messages + buttons
 │
 ├── storage/
 │   └── database.py             # SQLite database
 │
 ├── api/
-│   └── logs_api.py             # HTTP API
+│   └── logs_api.py             # HTTP API for monitoring
 │
 └── docs/
-    ├── GST_MASTER_FRAMEWORK.md # Full documentation
-    ├── MACA_SPEC_v1.md         # MACA architecture
-    └── PHASE2_DEPLOYMENT_GUIDE.md
+    ├── GST_MASTER_FRAMEWORK.md
+    ├── MACA_SPEC_v1.md
+    └── DEPLOYMENT_GUIDE_PHASE2.md
 ```
 
 ---
@@ -164,31 +245,29 @@ gann-sentinel-trader/
 
 ```bash
 # AI APIs
-XAI_API_KEY=           # Grok
-ANTHROPIC_API_KEY=     # Claude
+XAI_API_KEY=           # Grok (sentiment + events)
+ANTHROPIC_API_KEY=     # Claude (synthesis)
+PERPLEXITY_API_KEY=    # Perplexity (research)
+OPENAI_API_KEY=        # ChatGPT (sentiment)
 
 # Trading
 ALPACA_API_KEY=        
 ALPACA_SECRET_KEY=     
-ALPACA_PAPER=true      # Use paper trading
+ALPACA_BASE_URL=https://paper-api.alpaca.markets
 
 # Notifications
 TELEGRAM_BOT_TOKEN=    
 TELEGRAM_CHAT_ID=      
+
+# Data
+FRED_API_KEY=          # Federal Reserve data
 ```
 
-### Optional (MACA)
-
-```bash
-MACA_ENABLED=true
-PERPLEXITY_API_KEY=    # Perplexity Sonar Pro
-OPENAI_API_KEY=        # GPT-4o
-```
-
-### Optional (Logs API)
+### Optional
 
 ```bash
 LOGS_API_TOKEN=        # For remote monitoring
+LOG_LEVEL=INFO
 ```
 
 ---
@@ -211,7 +290,6 @@ cd Gann-Sentinel-Trader
 # Create virtual environment
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
-# or: venv\Scripts\activate  # Windows
 
 # Install dependencies
 pip install -r requirements.txt
@@ -232,37 +310,23 @@ python agent.py
 
 ---
 
-## API Endpoints
-
-The Logs API provides remote monitoring:
-
-| Endpoint | Auth | Description |
-|----------|------|-------------|
-| `GET /health` | No | Service health |
-| `GET /api/status` | Token | Full system status |
-| `GET /api/logs` | Token | Telegram history |
-| `GET /api/errors` | Token | System errors |
-| `GET /api/signals` | Token | Recent signals |
-
----
-
 ## The 27 Event Types
 
 GST monitors corporate events that historically move stock prices:
 
 **Leadership:** CEO exits, appointments, insider buying/selling
 
-**Capital Allocation:** Buybacks, dividend changes
+**Capital Allocation:** Buybacks, dividend changes, special dividends
 
-**Regulatory:** FDA approvals/rejections, DOJ investigations
+**Regulatory:** FDA approvals/rejections, DOJ investigations, lawsuits
 
-**Index Changes:** S&P 500 additions/removals
+**Index Changes:** S&P 500 additions/removals, rebalancing
 
-**External Pressure:** Activist investors, short seller reports
+**External Pressure:** Activist investors, short seller reports, proxy fights
 
-**Contracts:** Government contracts, major partnerships
+**Contracts:** Government contracts, major partnerships, contract losses
 
-**Corporate Actions:** M&A, spinoffs, bankruptcies
+**Corporate Actions:** M&A, spinoffs, bankruptcies, debt restructuring
 
 ---
 
@@ -296,11 +360,12 @@ Second-Order:
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 2.4.2 | Jan 2026 | Full MACA for scheduled scans, sports filter fix |
-| 2.4.1 | Jan 2026 | Trade blocker visibility |
+| 3.1.1 | Jan 17, 2026 | Polymarket whitelist, Technical IEX fix, weekend events, Telegram buttons |
+| 3.1.0 | Jan 17, 2026 | Signal inventory display, analyst formatting fixes |
+| 3.0.0 | Jan 2026 | Committee-based debate architecture, Claude as Senior Trader |
+| 2.4.3 | Jan 2026 | Trade execution pipeline fixes |
 | 2.4.0 | Jan 2026 | Learning Engine, Smart Scheduling |
 | 2.3.0 | Jan 2026 | Event Scanner (27 types) |
-| 2.2.0 | Jan 2026 | MACA for /check command |
 | 2.0.0 | Jan 2026 | Forward-predictive system |
 | 1.0.0 | Dec 2025 | Initial release |
 
@@ -310,13 +375,8 @@ Second-Order:
 
 - [Master Framework](docs/GST_MASTER_FRAMEWORK.md) - Complete system documentation
 - [MACA Specification](docs/MACA_SPEC_v1.md) - Multi-Agent architecture details
-- [Deployment Guide](docs/PHASE2_DEPLOYMENT_GUIDE.md) - Setup instructions
-
----
-
-## Contributing
-
-This is a private project. Contact the maintainer for access.
+- [Deployment Guide](docs/DEPLOYMENT_GUIDE_PHASE2.md) - Setup instructions
+- [CLAUDE.md](CLAUDE.md) - Context for Claude Code
 
 ---
 
@@ -333,7 +393,7 @@ Built with:
 - [xAI Grok](https://x.ai) - Real-time sentiment analysis
 - [Perplexity](https://perplexity.ai) - Research and citations
 - [OpenAI GPT-4](https://openai.com) - Pattern recognition
-- [Alpaca](https://alpaca.markets) - Trading execution
+- [Alpaca](https://alpaca.markets) - Trading execution (IEX data)
 - [Polymarket](https://polymarket.com) - Prediction market data
 - [FRED](https://fred.stlouisfed.org) - Economic data
 

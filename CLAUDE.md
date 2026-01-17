@@ -6,7 +6,7 @@
 
 | Item | Value |
 |------|-------|
-| Version | 3.0.0 |
+| Version | 3.1.1 |
 | Status | Production (Paper Trading) |
 | Deployment | Railway (auto-deploy from GitHub main) |
 | URL | https://gann-sentinel-trader-production.up.railway.app |
@@ -17,12 +17,11 @@
 ## 1. What Is GST?
 
 A **committee-based, multi-agent trading decision system** with:
-- Explicit role separation
-- Thesis-first reasoning
-- Visible AI debate (2 rounds)
-- Majority voting with tie-breaking
-- Technical validation as check-and-balance
-- Explainable Telegram output
+- 3 AI analysts generating independent theses (Grok, Perplexity, ChatGPT)
+- Claude as Senior Trader / Synthesizer (makes final decisions)
+- Visible debate and voting
+- Whitelist-filtered market signals
+- Explainable Telegram output with interactive buttons
 - HOLD as a first-class outcome
 
 **Core Philosophy: "ANCHOR in history, ORIENT toward future"**
@@ -40,24 +39,35 @@ Second-Order: SpaceX IPO → attention to space sector → investors comparison 
 
 ---
 
-## 2. Architecture Overview (v3.0.0)
+## 2. Architecture Overview (v3.1.1)
 
 ```
-Scanners (data only)
+Signal Collection (5 sources)
        ↓
-Analysts (independent theses)
+┌──────────────────────────────────────────────────┐
+│  FRED (7) │ Polymarket (whitelist) │ Events (27) │
+│  Technical (IEX) │ Grok (sentiment)              │
+└──────────────────────────────────────────────────┘
        ↓
-Debate Layer (cross-examination, 2 rounds)
+AI Analysts (3 independent theses)
+  • Grok: Narrative Momentum
+  • Perplexity: External Reality (6hr recency)
+  • ChatGPT: Sentiment & Bias
        ↓
-Synthesizer / Chair (tie-break + final thesis)
+Debate Layer (if disagreement)
+       ↓
+Claude (Senior Trader)
+  • Synthesizes theses
+  • Validates against technicals
+  • Makes final decision
        ↓
 Risk Engine (hard constraints)
        ↓
-Telegram (explainability + debate transcript)
+Telegram (3-part message + buttons)
        ↓
-Execution (paper or live)
+Human Approval Required
        ↓
-Learning / Logging
+Alpaca Execution (paper trading)
 ```
 
 ---
@@ -69,10 +79,10 @@ Each AI model has a **single epistemic role**. No model may operate outside its 
 ### Scanners (No Opinions)
 | Scanner | Source | Purpose |
 |---------|--------|---------|
-| FRED Scanner | Federal Reserve | Macroeconomic indicators |
-| Polymarket Scanner | Prediction Markets | Market expectations (NO SPORTS) |
-| Event Scanner | Grok (parsed) | 27 corporate event types |
-| Technical Scanner | Alpaca | OHLCV + indicators ONLY |
+| FRED Scanner | Federal Reserve | 7 macroeconomic indicators |
+| Polymarket Scanner | Prediction Markets | 12 investment categories (WHITELIST - no sports) |
+| Event Scanner | Grok API | 27 corporate event types (weekend-aware) |
+| Technical Scanner | Alpaca (IEX) | Chart analysis, market state, support/resistance |
 
 Scanners **must not** propose trades or opinions.
 
@@ -81,141 +91,183 @@ Scanners **must not** propose trades or opinions.
 | Model | Role | Purpose |
 |-------|------|---------|
 | **Grok** | Narrative Momentum Analyst | Detect emerging/accelerating narratives from X/Twitter |
-| **Perplexity** | External Reality Analyst | Web facts, filings, earnings, macro news |
+| **Perplexity** | External Reality Analyst | Web facts, filings, earnings (6-HOUR RECENCY REQUIRED) |
 | **ChatGPT** | Sentiment & Cognitive Bias Analyst | Market psychology & bias detection |
-| **Claude** | Technical Structure Validator | Chart validity ONLY (SUPPORTS/WEAKENS/INVALIDATES) |
 
-Claude **must not**: browse, propose trades independently, or override synthesis.
+### Synthesizer / Senior Trader
 
-### Synthesizer / Chair
-
-- Implemented as **ChatGPT Chair** (separate role from ChatGPT Analyst)
+- Implemented as **Claude Chair** (analyzers/claude_chair.py)
 - Does NOT generate new signals or browse
 - Weighs analyst theses + debate outcomes
-- Breaks **2-2 vote ties**
+- Validates against technical analysis
+- Breaks ties when analysts disagree
 - Produces the **Final Investment Thesis**
 - Defaults to HOLD when ambiguity remains
 
 ---
 
-## 4. Debate Layer
+## 4. Signal Sources
 
-### Purpose
-Enable **visible, logged disagreement** between analysts before synthesis.
+### FRED (7 Macro Indicators)
+- 10-Year Treasury Yield (DGS10)
+- 2-Year Treasury Yield (DGS2)
+- 10Y-2Y Spread (T10Y2Y)
+- Unemployment Rate (UNRATE)
+- CPI (CPIAUCSL)
+- Fed Funds Rate (FEDFUNDS)
+- GDP (GDP)
 
-### Debate Rules
-- Debate occurs **after analysts submit initial theses**
-- Every analyst speaks **exactly twice** (2 rounds)
-- No new data sources allowed during debate
-- Analysts may defend OR revise their position
-- Each turn must end with an explicit **vote**
+### Polymarket (12 Investment Categories - WHITELIST)
+| Category | Keywords | Tickers |
+|----------|----------|---------|
+| FEDERAL_RESERVE | fed, fomc, rate cut, powell | Rate-sensitive |
+| INFLATION | cpi, inflation, prices | TIPS, commodities |
+| RECESSION | recession, gdp, contraction | Defensive |
+| TRADE_POLICY | tariff, trade war, sanctions | Import/export |
+| CHINA_RISK | china, taiwan, xi | Supply chain, tech |
+| AI_SECTOR | ai, artificial intelligence | NVDA, MSFT, GOOGL |
+| SEMICONDUCTOR | chip, semiconductor, nvidia | SMH, SOXX |
+| CRYPTO_POLICY | bitcoin, crypto, sec | COIN, MSTR |
+| ENERGY_POLICY | oil, gas, renewable, opec | XLE, XOP |
+| DEBT_CEILING | debt ceiling, default | TLT, financials |
+| ELECTION | us election, congress, senate | Policy plays |
+| DEFENSE | defense spending, pentagon | LMT, RTX, NOC |
 
-### Debate Trigger
-Debate is triggered if:
-- Analysts disagree on action (LONG / SHORT / HOLD)
-- OR confidence dispersion exceeds threshold
-- OR Claude issues a technical INVALIDATION
+**EXCLUDED (NOT_RELEVANT):** Sports betting, foreign elections, entertainment, price guessing
 
-### Voting & Consensus
+### Event Scanner (27 Corporate Events)
+- Weekend-aware: Saturday=72hr, Sunday=96hr, Monday=72hr lookback
+- Leadership: CEO exits/appointments, insider buying/selling
+- Capital: Buybacks, dividends
+- Regulatory: FDA, DOJ
+- Index: S&P 500 changes
+- External: Activists, short sellers
+- Corporate: M&A, spinoffs, bankruptcy
 
-| Vote Pattern | Outcome |
-|--------------|---------|
-| 4–0 | Execute |
-| 3–1 | Execute |
-| 2–2 | Chair breaks tie |
-| 2–1–1 | HOLD |
-| Majority HOLD | HOLD |
-
-**Technical Check-and-Balance:** If Claude outputs INVALIDATES, require supermajority (3 of 4) to proceed.
+### Technical Scanner (Alpaca IEX)
+- Uses FREE IEX data feed (not paid SIP)
+- Market state classification (Trending/Range/Transitional)
+- Support/resistance levels
+- Liquidity sweep detection
+- Trade hypothesis generation with R-multiple
 
 ---
 
-## 5. File Structure
+## 5. Telegram Output Format
+
+### 3-Part Message Sequence
+
+**Message 1: Signal Inventory + AI Council**
+```
+📊 Signals Collected: 53
+📈 FRED (7): [summaries]
+🎲 Polymarket (45): [summaries]
+📅 Events (0): No events (weekend)
+📊 Technical (1): 1 chart analyzed
+
+🐦 GROK: Recommendation, Signals, Conviction, Thesis
+🎯 PERPLEXITY: Recommendation, Signals, Conviction, Thesis
+🧠 CHATGPT: Recommendation, Signals, Conviction, Thesis
+```
+
+**Message 2: Debate Summary**
+```
+🗣️ MACA Debate (IC Minutes)
+Cycle: [UUID]
+✅ Unanimous Agreement: HOLD
+Reason: [why debate was skipped or outcome]
+```
+
+**Message 3: Claude's Decision + Buttons**
+```
+🕯 CHART ANALYSIS (if technical signals)
+🧠 CLAUDE'S SYNTHESIS (Senior Trader)
+Decision: NO_TRADE | TRADE
+Conviction: X/100 [bar]
+Final thesis: [summary]
+Why now: [detail]
+Invalidation: [conditions]
+
+💤 NO TRADE / 🟢 TRADE PENDING
+💰 PORTFOLIO snapshot
+
+[Status] [Pending] [Scan] [Logs] [Help] ← Interactive buttons
+```
+
+---
+
+## 6. File Structure
 
 ```
 gann-sentinel-trader/
 ├── agent.py                 # Main orchestrator - START HERE
-├── temporal.py              # Shared time framework (market hours, holidays)
-├── config.py                # All configuration including debate flags
+├── config.py                # All configuration
+├── learning_engine.py       # Performance tracking
 │
 ├── SCANNERS (Data Input)
-│   ├── grok_scanner.py      # xAI Grok with live_search + debate()
-│   ├── fred_scanner.py      # Federal Reserve macro data
-│   ├── polymarket_scanner.py # Prediction markets (17 categories)
-│   ├── technical_scanner.py # 5-year chart analysis via Alpaca
-│   └── event_scanner.py     # 27 corporate event types
+│   ├── grok_scanner.py      # xAI Grok sentiment
+│   ├── fred_scanner.py      # Federal Reserve (7 series)
+│   ├── polymarket_scanner.py # Whitelist filtering (12 categories)
+│   ├── technical_scanner.py # Alpaca IEX charts
+│   └── event_scanner.py     # 27 event types (weekend-aware)
 │
 ├── ANALYZERS (AI Council)
-│   ├── perplexity_analyst.py   # External facts + debate()
-│   ├── chatgpt_analyst.py      # Sentiment analysis + debate()
-│   ├── chatgpt_chair.py        # NEW: Synthesizer/Chair (tie-breaker)
-│   ├── claude_technical_validator.py # NEW: Technical validation only
-│   └── claude_analyst.py       # Legacy (kept for backwards compatibility)
+│   ├── perplexity_analyst.py   # 6-hour recency requirement
+│   ├── chatgpt_analyst.py      # Sentiment analysis
+│   ├── claude_chair.py         # Senior Trader / Synthesizer
+│   └── claude_analyst.py       # Legacy (backwards compat)
 │
 ├── CORE
 │   └── maca_orchestrator.py # Committee debate + synthesis
 │
 ├── STORAGE
-│   └── database.py          # SQLite with debate_sessions + debate_turns
+│   └── database.py          # SQLite
 │
 ├── EXECUTORS
-│   ├── risk_engine.py       # Position sizing, limits, validation
+│   ├── risk_engine.py       # Position sizing, limits
 │   └── alpaca_executor.py   # Alpaca trading API
 │
 ├── NOTIFICATIONS
-│   └── telegram_bot.py      # Bot interface + debate display
+│   └── telegram_bot.py      # 3-part messages + buttons
 │
-├── UTILITIES
-│   ├── learning_engine.py   # Performance tracking + adaptation
-│   ├── logs_api.py          # HTTP API for remote monitoring
-│   └── exporter.py          # CSV/Parquet export
+├── API
+│   └── logs_api.py          # HTTP API for monitoring
 │
 └── DOCS
-    ├── CHANGELOG.md         # Version history and bug fixes
+    ├── CHANGELOG.md
     ├── GST_MASTER_FRAMEWORK.md
     └── MACA_SPEC_v1.md
 ```
 
 ---
 
-## 6. Configuration Flags
+## 7. Environment Variables
 
-### Debate Layer (config.py)
-```python
-DEBATE_ENABLED = True         # Enable 2-round cross-examination
-DEBATE_ROUNDS = 2             # Number of debate rounds
-DEBATE_MIN_AVG_CONFIDENCE = 0.60  # Min avg confidence to proceed
-TECH_INVALIDATION_SUPERMAJORITY = True  # Require 3/4 to override tech veto
-```
-
-### Environment Variables
 ```bash
 # Required
-XAI_API_KEY=           # Grok
-ANTHROPIC_API_KEY=     # Claude
-ALPACA_API_KEY=
+XAI_API_KEY=           # Grok (sentiment + events)
+ANTHROPIC_API_KEY=     # Claude (synthesis)
+PERPLEXITY_API_KEY=    # Perplexity Sonar Pro
+OPENAI_API_KEY=        # GPT-4o (sentiment)
+ALPACA_API_KEY=        # Trading + IEX data
 ALPACA_SECRET_KEY=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
-
-# MACA (required for committee mode)
-PERPLEXITY_API_KEY=    # Perplexity Sonar Pro
-OPENAI_API_KEY=        # GPT-4o (used by ChatGPT Analyst AND Chair)
+FRED_API_KEY=          # Macro data
 
 # Optional
-DEBATE_ENABLED=ON      # Default: ON
-DEBATE_ROUNDS=2        # Default: 2
+LOGS_API_TOKEN=        # Remote monitoring
 LOG_LEVEL=INFO
 ```
 
 ---
 
-## 7. Telegram Commands
+## 8. Telegram Commands
 
 | Command | Description |
 |---------|-------------|
-| `/scan` | Run full committee debate cycle |
-| `/check [TICKER]` | Analyze specific stock with full debate |
+| `/scan` | Run full committee cycle |
+| `/check [TICKER]` | Analyze specific stock |
 | `/status` | Portfolio and system health |
 | `/positions` | Current open positions |
 | `/pending` | Trades awaiting approval |
@@ -230,23 +282,25 @@ LOG_LEVEL=INFO
 
 ---
 
-## 8. Current State (v3.0.0)
+## 9. Current State (v3.1.1)
 
-### What's Working
-- **Committee-based debate** with 4 AI analysts
-- **2-round cross-examination** before synthesis
-- **Majority voting** with Chair tie-breaker
-- **Technical check-and-balance** (Claude as validator)
-- Trade execution pipeline (scan → debate → approve → Alpaca order)
+### What's Working ✓
+- **3 AI analysts** generating independent theses
+- **Claude as Senior Trader** synthesizing and deciding
+- **Polymarket whitelist filtering** (12 investment categories, no sports)
+- **Technical Scanner** using free IEX data
+- **Event Scanner** with weekend-aware lookback
+- **Perplexity** with 6-hour recency requirement
+- **3-part Telegram messages** with interactive buttons
+- **Signal inventory** showing all collected signals
 - Smart scheduling (2x daily: 9:35 AM, 12:30 PM ET)
-- 27 event type detection
 - Learning Engine tracking outcomes
-- Debate transcript in Telegram
 
 ### Smart Schedule
 ```
 Scheduled Scans: 9:35 AM ET, 12:30 PM ET (weekdays only)
 Manual Commands: /scan and /check always available
+Weekend: Event Scanner extends lookback to 72-96 hours
 ```
 
 ### Known Considerations
@@ -256,18 +310,16 @@ Manual Commands: /scan and /check always available
 
 ---
 
-## 9. Safety Architecture
+## 10. Safety Architecture
 
 ```
-Signal Sources → FRED/Polymarket/Technical/Event (data only)
+Signal Sources → FRED/Polymarket/Technical/Event (data only, filtered)
        ↓
-AI Analysts → Grok + Perplexity + ChatGPT + Claude (theses)
+AI Analysts → Grok + Perplexity + ChatGPT (independent theses)
        ↓
-Debate Layer → 2 rounds, each speaks twice
+Debate Layer → Review each other's proposals, vote
        ↓
-Vote Summary → Majority wins, Chair breaks ties
-       ↓
-Chair Synthesis → Final Investment Thesis
+Claude (Senior Trader) → Synthesize, validate, decide
        ↓
 Risk Engine → Position sizing, limits, validation
        ↓
@@ -277,16 +329,16 @@ Execution → Alpaca paper trading
 ```
 
 **Key Safety Principles:**
-1. **Multiple AI sources prevent echo chambers** - 4 independent theses
-2. **Visible disagreement is information** - Debate transcripts logged
-3. **Roles are sacred** - No AI operates outside its role
-4. **Technical veto power** - Claude can block weak consensus
-5. **HOLD is a success outcome** - Capital preservation > opportunity
-6. **Human approval required for ALL trades**
+1. **Whitelist filtering** - Only investment-relevant signals
+2. **Multiple AI sources** - 3 independent theses reduce bias
+3. **Visible disagreement** - Debate transcripts logged
+4. **Roles are sacred** - No AI operates outside its role
+5. **HOLD is success** - Capital preservation > opportunity
+6. **Human approval** - Required for ALL trades
 
 ---
 
-## 10. Design Principles (DO NOT VIOLATE)
+## 11. Design Principles (DO NOT VIOLATE)
 
 1. HOLD is a success outcome
 2. Disagreement is information
@@ -300,13 +352,14 @@ Execution → Alpaca paper trading
 
 ---
 
-## 11. Version History
+## 12. Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 3.0.0 | Jan 2026 | Committee-based debate architecture |
+| 3.1.1 | Jan 17, 2026 | Polymarket whitelist, Technical IEX, weekend events, Telegram buttons |
+| 3.1.0 | Jan 17, 2026 | Signal inventory display, analyst formatting, Perplexity recency |
+| 3.0.0 | Jan 2026 | Committee-based architecture, Claude as Senior Trader |
 | 2.4.3 | Jan 2026 | Trade execution pipeline fixes |
-| 2.4.2 | Jan 2026 | Full MACA for scheduled scans |
 | 2.4.0 | Jan 2026 | Learning Engine, Smart Scheduling |
 | 2.3.0 | Jan 2026 | Event Scanner (27 types) |
 | 2.0.0 | Jan 2026 | Forward-predictive system |
@@ -314,21 +367,37 @@ Execution → Alpaca paper trading
 
 ---
 
-## 12. Documentation Links
+## 13. Recent Fixes (v3.1.1)
 
-- **Changelog:** `CHANGELOG.md` - Version history and bug fixes
-- **Master Framework:** `GST_MASTER_FRAMEWORK.md` - Complete system docs
-- **MACA Spec:** `MACA_SPEC_v1.md` - Multi-agent architecture
+### Technical Scanner
+- **Issue:** Alpaca SIP data requires paid subscription
+- **Fix:** Now uses free IEX data feed via `DataFeed.IEX`
+
+### Event Scanner
+- **Issue:** 0 events on weekends (corporate events happen on business days)
+- **Fix:** Weekend-aware lookback (Sat=72hr, Sun=96hr, Mon=72hr)
+
+### Polymarket Scanner
+- **Issue:** Sports betting signals appearing (Navy Midshipmen, etc.)
+- **Fix:** Whitelist-based filtering with 12 investment categories + exclusion patterns
+
+### Telegram Messages
+- **Issue:** Buttons not appearing, messages truncated
+- **Fix:** 4000-char truncation, section-level error handling, safe type conversions
+
+### Perplexity Analyst
+- **Issue:** Returning old/stale data
+- **Fix:** 6-hour recency requirement in prompt
 
 ---
 
-## 13. Working Agreements
+## 14. Working Agreements
 
-1. **Test-Driven Development** - Write tests first, implement second
-2. **Lean Philosophy** - Complete current phase before adding features
-3. **Safety First** - Human approval gate is non-negotiable
-4. **Observability** - Log everything, make debugging easy
-5. **Forward-Looking** - ANCHOR in history, ORIENT toward future
+1. **Safety First** - Human approval gate is non-negotiable
+2. **Observability** - Log everything, make debugging easy
+3. **Defensive Coding** - Handle None values, type errors gracefully
+4. **Forward-Looking** - ANCHOR in history, ORIENT toward future
+5. **Lean Philosophy** - Complete current phase before adding features
 
 ---
 
