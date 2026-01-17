@@ -1350,26 +1350,26 @@ class TelegramBot:
         lines.append("-" * 30)
 
         if proposal_type == "NO_OPPORTUNITY" or not ticker:
-            lines.append(f"Recommendation: PASS")
+            lines.append("Recommendation: HOLD")
             lines.append(f"Conviction: {conviction}/100")
             if sig_total is not None:
-                lines.append(f"Signals considered: {sig_total}")
+                lines.append(f"Signals received: {sig_total}")
             lines.append(bar)
             considered = proposal.get("signals_considered", []) or []
             if considered:
-                lines.append("Signals considered:")
+                lines.append("Key signals:")
                 for sc in considered[:2]:
                     src = sc.get("source") or "unknown"
                     summary = sc.get("summary") or ""
                     lines.append(f"  - [{src}] {summary[:120]}")
             if thesis:
-                lines.append(f"\n{thesis[:200]}")
+                lines.append(f"\nThesis: {thesis[:200]}")
         else:
+            lines.append(f"Recommendation: {side}")
             lines.append(f"Ticker: {ticker}")
-            lines.append(f"Action: {side}")
             lines.append(f"Conviction: {conviction}/100")
             if sig_total is not None:
-                lines.append(f"Signals considered: {sig_total}")
+                lines.append(f"Signals received: {sig_total}")
             if is_actionable:
                 lines.append(f"{bar} {EMOJI_GREEN_CIRCLE}")
             else:
@@ -1380,7 +1380,7 @@ class TelegramBot:
 
             if thesis_desc:
                 # Keep Telegram readable; show only first ~250 chars
-                lines.append(f"\nWhy (expanded): {thesis_desc[:250]}...")
+                lines.append(f"\nNarrative: {thesis_desc[:250]}...")
 
             if catalyst:
                 lines.append(f"\nCatalyst: {catalyst}")
@@ -1397,7 +1397,7 @@ class TelegramBot:
             # Signals considered (top 2)
             considered = proposal.get("signals_considered", []) or []
             if considered:
-                lines.append("Signals considered:")
+                lines.append("Additional signals:")
                 for sc in considered[:2]:
                     src = sc.get("source") or "unknown"
                     summary = sc.get("summary") or ""
@@ -1772,7 +1772,7 @@ class TelegramBot:
         import asyncio
         await asyncio.sleep(0.5)
 
-        # Message 2: Debate transcript (if available)
+        # Message 2: Debate transcript (if available) or unanimous agreement note
         if debate and (debate.get("rounds") or []):
             await self.send_maca_debate_summary(
                 cycle_id=cycle_id or "",
@@ -1780,6 +1780,24 @@ class TelegramBot:
                 vote_summary=vote_summary or {},
             )
             await asyncio.sleep(0.5)
+        else:
+            vs = vote_summary or {}
+            reason = vs.get("reason") or ""
+            hold = vs.get("hold") is True
+            if hold and reason:
+                lines = [
+                    "\U0001F5E3\uFE0F MACA Debate (IC Minutes)",
+                    f"Cycle: {cycle_id or 'N/A'}",
+                    "",
+                    "\u2705 Unanimous Agreement: HOLD",
+                    f"Reason: {reason[:220]}",
+                ]
+                await self.send_message(
+                    "\n".join(lines),
+                    parse_mode=None,
+                    message_type="maca_debate",
+                )
+                await asyncio.sleep(0.5)
 
         # Message 3: Decision with buttons
         msg2 = self.format_decision_message(
