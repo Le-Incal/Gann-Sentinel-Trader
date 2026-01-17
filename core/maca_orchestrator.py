@@ -177,6 +177,46 @@ class MACAOrchestrator:
 
         return "\n".join(lines)
 
+    def _parse_signals_from_context(self, context: Optional[str]) -> List[Dict[str, str]]:
+        """Parse signal inventory from context string to extract key signals.
+
+        The context string is built by _build_signal_context and looks like:
+        SIGNAL INVENTORY (for attribution + counts):
+        - FRED signals: 5
+        - [fred] 10-Year Treasury Yield at 4.5%
+        - [fred] Unemployment stable
+        - Polymarket signals: 3 (NO sports/entertainment)
+        - [polymarket] Fed rate cut probability 80%
+        - Event signals: 2
+        - [event] AAPL earnings Jan 28
+
+        This method extracts the individual signal lines with source and summary.
+        """
+        if not context:
+            return []
+
+        parsed = []
+        lines = context.split("\n")
+
+        for line in lines:
+            line = line.strip()
+            # Look for lines like "- [source] summary text"
+            if line.startswith("- [") and "]" in line:
+                # Extract source and summary
+                try:
+                    bracket_end = line.index("]")
+                    source = line[3:bracket_end]  # Skip "- ["
+                    summary = line[bracket_end + 1:].strip()
+                    if summary:
+                        parsed.append({
+                            "source": source,
+                            "summary": summary[:200]
+                        })
+                except (ValueError, IndexError):
+                    continue
+
+        return parsed
+
     async def run_scan_cycle(
         self,
         portfolio: Dict[str, Any],
@@ -344,7 +384,8 @@ class MACAOrchestrator:
                     synthesis=synthesis,
                     proposals=proposals_with_tech,
                     technical_analysis=technical_analysis,
-                    portfolio=portfolio
+                    portfolio=portfolio,
+                    signal_inventory=signal_inventory,
                 )
 
             logger.info(f"MACA cycle {cycle_id} complete: {decision_type} (conviction: {conviction})")
@@ -358,6 +399,7 @@ class MACAOrchestrator:
                 "reviews": [],  # No reviews in 2-phase architecture
                 "final_decision": final_decision,
                 "proceed_to_execution": proceed,
+                "signal_inventory": signal_inventory,  # For Telegram display
                 "timing": {
                     "total_ms": int((phase2_complete - start_time).total_seconds() * 1000),
                     "phase1_ms": int((phase1_complete - start_time).total_seconds() * 1000),
@@ -522,7 +564,8 @@ class MACAOrchestrator:
                     synthesis=synthesis,
                     proposals=proposals_with_tech,
                     technical_analysis=technical_analysis,
-                    portfolio=portfolio
+                    portfolio=portfolio,
+                    signal_inventory=signal_inventory,
                 )
 
             logger.info(f"MACA ticker check {ticker} complete: {decision_type} (conviction: {conviction})")
@@ -1198,8 +1241,14 @@ class MACAOrchestrator:
         Key conversions:
         - GrokSignal.confidence (0-1) -> conviction_score (0-100)
         - GrokSignal.to_dict() for serialization
+        - Extracts key signals from market_context for display
         """
         try:
+            # Parse key signals from the market_context (FRED, Polymarket, Event signals)
+            # These were already collected by agent.py and passed via market_context
+            parsed_signals = self._parse_signals_from_context(market_context)
+            logger.info(f"Grok adapter: parsed {len(parsed_signals)} signals from context")
+
             # Grok scanner uses scan_market_overview for general market thesis
             if not hasattr(self.grok, 'scan_market_overview'):
                 return self._empty_proposal(cycle_id, "grok", "No compatible method found")
@@ -1268,6 +1317,44 @@ class MACAOrchestrator:
             else:
                 side = None
 
+            # Build key_signals from Grok's own signals + context signals
+            key_signals = []
+            # Add Grok's own signal as a key signal
+            grok_summary = best_signal.get("summary", "")
+            if grok_summary:
+                key_signals.append({
+                    "source": "grok_x",
+                    "signal_type": "sentiment",
+                    "summary": grok_summary[:200]
+                })
+            # Add evidence excerpts if available
+            for ev in (best_signal.get("evidence") or [])[:2]:
+                if ev.get("excerpt"):
+                    key_signals.append({
+                        "source": ev.get("source", "grok"),
+                        "signal_type": "evidence",
+                        "summary": ev.get("excerpt", "")[:150]
+                    })
+
+            # Build signals_considered from parsed context + Grok signals
+            signals_considered = parsed_signals[:4]  # Top 4 from FRED/Polymarket/Event
+            # Add Grok's own signals to the considered list
+            for sd in signals_dicts[:2]:
+                signals_considered.append({
+                    "source": sd.get("source_type", "grok"),
+                    "summary": sd.get("summary", "")[:150]
+                })
+
+            # Total signal count
+            total_signals = len(signals_dicts) + len(parsed_signals)
+
+            # Build thesis description from best signal
+            thesis_description = best_signal.get("summary", "")
+            if best_signal.get("contrarian_signals"):
+                cs = best_signal.get("contrarian_signals", {})
+                if cs.get("underappreciated_catalyst"):
+                    thesis_description += f" | Underappreciated: {cs['underappreciated_catalyst'][:100]}"
+
             # Build thesis proposal from Grok signal
             return {
                 "schema_version": "1.0.0",
@@ -1280,7 +1367,8 @@ class MACAOrchestrator:
                     "ticker": ticker,
                     "side": side,
                     "conviction_score": conviction_score,
-                    "thesis": best_signal.get("narrative", "Grok market signal"),
+                    "thesis": best_signal.get("narrative", best_signal.get("summary", "Grok market signal")),
+                    "thesis_description": thesis_description,
                     "time_horizon": best_signal.get("time_horizon"),
                     "catalyst": best_signal.get("event_type"),
                     "catalyst_deadline": best_signal.get("validity", {}).get("expires_at")
@@ -1289,13 +1377,15 @@ class MACAOrchestrator:
                     "signal_source": best_signal.get("source", "grok"),
                     "event_type": best_signal.get("event_type"),
                     "raw_confidence": confidence_raw,
-                    "signals_count": len(signals_dicts)
+                    "signals_count": total_signals,
+                    "key_signals": key_signals,
                 },
+                "signals_considered": signals_considered,
                 "raw_data": best_signal,
                 "time_sensitive": best_signal.get("validity", {}).get("requires_immediate_action", False),
                 "metadata": {
                     "model": "grok-3-fast-beta",
-                    "adapter": "grok_thesis_adapter_v2"
+                    "adapter": "grok_thesis_adapter_v3"
                 }
             }
 
@@ -1381,12 +1471,14 @@ class MACAOrchestrator:
         synthesis: Dict[str, Any],
         proposals: List[Dict[str, Any]],
         technical_analysis: Optional[Dict[str, Any]] = None,
-        portfolio: Optional[Dict[str, Any]] = None
+        portfolio: Optional[Dict[str, Any]] = None,
+        signal_inventory: Optional[Dict[str, Any]] = None
     ) -> None:
         """
         Send Telegram notification for MACA decision (2-phase architecture).
 
         Uses send_maca_scan_summary() for rich display with:
+        - Signal inventory (FRED, Polymarket, Events, Technical counts)
         - AI Council views (all proposals)
         - Chart analysis with technical signals
         - Claude's synthesis decision
@@ -1414,6 +1506,7 @@ class MACAOrchestrator:
                 debate=synthesis.get("debate"),
                 vote_summary=synthesis.get("vote_summary"),
                 cycle_id=final_decision.get("cycle_id") or synthesis.get("scan_cycle_id"),
+                signal_inventory=signal_inventory,
             )
 
             logger.info(f"MACA notification sent: decision_type={final_decision.get('decision_type')}, "
@@ -1521,6 +1614,7 @@ class MACAOrchestrator:
             synthesis = maca_result.get("synthesis", {})
             final_decision = maca_result.get("final_decision", {})
             portfolio = maca_result.get("portfolio", {})
+            signal_inventory = maca_result.get("signal_inventory", {})
 
             # Get trade_id if trade was created
             trade_id = final_decision.get("trade_id")
@@ -1534,7 +1628,8 @@ class MACAOrchestrator:
                 technical_signals = [tech_analysis] if tech_analysis else []
 
             logger.info(f"Sending MACA summary: trade_id={trade_id}, "
-                       f"proceed={final_decision.get('proceed_to_execution')}")
+                       f"proceed={final_decision.get('proceed_to_execution')}, "
+                       f"signal_inventory={signal_inventory}")
 
             await self.telegram.send_maca_scan_summary(
                 proposals=proposals,
@@ -1545,6 +1640,7 @@ class MACAOrchestrator:
                 debate=synthesis.get("debate"),
                 vote_summary=synthesis.get("vote_summary"),
                 cycle_id=maca_result.get("cycle_id"),
+                signal_inventory=signal_inventory,
             )
         except Exception as e:
             logger.error(f"Failed to send MACA summary: {e}")

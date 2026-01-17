@@ -1420,11 +1420,19 @@ class TelegramBot:
 
         return "\n".join(lines)
 
-    def format_ai_council_message(self, proposals: List[Dict[str, Any]]) -> str:
+    def format_ai_council_message(
+        self,
+        proposals: List[Dict[str, Any]],
+        signal_inventory: Optional[Dict[str, Any]] = None
+    ) -> str:
         """
         Format Message 1: AI Council Views.
 
-        Shows thesis proposals from all AI analysts.
+        Shows signal inventory and thesis proposals from all AI analysts.
+
+        Args:
+            proposals: List of analyst proposals
+            signal_inventory: Dict with by_source counts (FRED, Polymarket, Events, Technical)
         """
         from datetime import datetime, timezone
 
@@ -1435,6 +1443,21 @@ class TelegramBot:
         lines.append(f"{EMOJI_SEARCH} MACA SCAN - AI COUNCIL")
         lines.append(f"{now.strftime('%Y-%m-%d %H:%M UTC')}")
         lines.append("=" * 40)
+
+        # Signal Inventory header
+        if signal_inventory:
+            by_source = signal_inventory.get("by_source", {})
+            total = signal_inventory.get("total", 0)
+            fred_count = by_source.get("FRED", 0)
+            poly_count = by_source.get("Polymarket", 0)
+            event_count = by_source.get("Events", 0)
+            tech_count = by_source.get("Technical", 0)
+
+            lines.append("")
+            lines.append(f"{EMOJI_CHART} Signals Collected: {total}")
+            lines.append(f"  • FRED: {fred_count} | Polymarket: {poly_count}")
+            lines.append(f"  • Events: {event_count} | Technical: {tech_count}")
+            lines.append("-" * 40)
 
         # Sort proposals by source for consistent ordering
         source_order = {"grok": 0, "perplexity": 1, "chatgpt": 2}
@@ -1768,16 +1791,17 @@ class TelegramBot:
         debate: Optional[Dict[str, Any]] = None,
         vote_summary: Optional[Dict[str, Any]] = None,
         cycle_id: Optional[str] = None,
+        signal_inventory: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Send full MACA scan summary as three messages.
 
-        Message 1: AI Council views (Grok, Perplexity, ChatGPT)
+        Message 1: AI Council views (Grok, Perplexity, ChatGPT) + signal inventory
         Message 2: Debate transcript (who changed mind and why)
         Message 3: Chart analysis + Claude's decision + trade status
         """
-        # Message 1: AI Council
-        msg1 = self.format_ai_council_message(proposals)
+        # Message 1: AI Council with signal inventory
+        msg1 = self.format_ai_council_message(proposals, signal_inventory=signal_inventory)
         await self.send_message(msg1, parse_mode=None, message_type="maca_ai_council")
 
         # Small delay between messages
