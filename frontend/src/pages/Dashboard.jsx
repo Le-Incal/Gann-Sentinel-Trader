@@ -9,7 +9,8 @@ import {
   AlertTriangle,
   CheckCircle,
   XCircle,
-  PauseCircle
+  PauseCircle,
+  Wallet
 } from 'lucide-react'
 import { 
   AreaChart, 
@@ -181,13 +182,17 @@ export default function Dashboard() {
   }
 
   const portfolio = dashboard?.portfolio || {}
-  const positions = dashboard?.positions || []
+  // Positions can be in portfolio.positions (from Railway) or dashboard.positions (from local)
+  const positions = portfolio?.positions || dashboard?.positions || []
   const recentTrades = dashboard?.recent_trades || []
   const pendingCount = dashboard?.pending_trades?.length || 0
 
-  // Determine daily P&L status
-  const dailyPnl = portfolio.daily_pnl || 0
-  const dailyPnlPct = portfolio.daily_pnl_pct || 0
+  // Calculate total unrealized P&L from positions if not in portfolio
+  const totalUnrealizedPnl = positions.reduce((sum, p) => sum + (p.unrealized_pnl || 0), 0)
+  
+  // Determine daily P&L status (use unrealized if daily not available)
+  const dailyPnl = portfolio.daily_pnl || totalUnrealizedPnl || 0
+  const dailyPnlPct = portfolio.daily_pnl_pct || (positions[0]?.unrealized_pnl_pct * 100) || 0
   const dailyPnlType = dailyPnl >= 0 ? 'positive' : 'negative'
 
   // Mock chart data if no history (replace with real data)
@@ -222,32 +227,30 @@ export default function Dashboard() {
           icon={DollarSign}
           label="Total Portfolio Value"
           value={formatCurrency(portfolio.total_value || 0)}
-          change={`${dailyPnl >= 0 ? '+' : ''}${formatCurrency(dailyPnl)} today`}
-          changeType={dailyPnlType}
+          change={`${positions.length} position${positions.length !== 1 ? 's' : ''}`}
           iconColor="bg-gst-accent/20"
         />
         <StatCard
+          icon={Wallet}
+          label="Cash"
+          value={formatCurrency(portfolio.cash || 0)}
+          change={`${((portfolio.cash / portfolio.total_value) * 100 || 0).toFixed(1)}% of portfolio`}
+          iconColor="bg-green-500/20"
+        />
+        <StatCard
           icon={Briefcase}
-          label="Positions"
-          value={positions.length}
-          change={`${formatCurrency(portfolio.positions_value || 0)} invested`}
+          label="Positions Value"
+          value={formatCurrency(portfolio.positions_value || 0)}
+          change={`${((portfolio.positions_value / portfolio.total_value) * 100 || 0).toFixed(1)}% invested`}
           iconColor="bg-purple-500/20"
         />
         <StatCard
-          icon={TrendingUp}
-          label="Daily P&L"
-          value={`${dailyPnl >= 0 ? '+' : ''}${formatPercent(dailyPnlPct)}`}
-          change={formatCurrency(dailyPnl)}
+          icon={dailyPnl >= 0 ? TrendingUp : TrendingDown}
+          label="Unrealized P&L"
+          value={`${dailyPnl >= 0 ? '+' : ''}${formatCurrency(dailyPnl)}`}
+          change={`${dailyPnl >= 0 ? '+' : ''}${dailyPnlPct.toFixed(2)}%`}
           changeType={dailyPnlType}
           iconColor={dailyPnl >= 0 ? "bg-green-500/20" : "bg-red-500/20"}
-        />
-        <StatCard
-          icon={Clock}
-          label="Pending Approvals"
-          value={pendingCount}
-          change={pendingCount > 0 ? "Awaiting Telegram approval" : "No pending trades"}
-          changeType={pendingCount > 0 ? "neutral" : "positive"}
-          iconColor={pendingCount > 0 ? "bg-yellow-500/20" : "bg-gray-500/20"}
         />
       </div>
 

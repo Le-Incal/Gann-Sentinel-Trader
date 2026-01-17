@@ -107,14 +107,19 @@ CATEGORY_KEYWORDS = {
         "spending bill", "appropriations", "budget"
     ],
     MarketCategory.ELECTION: [
-        "election", "vote", "president", "congress", "senate", "poll",
-        "campaign", "ballot", "electoral", "midterm", "primary",
-        "democrat", "republican", "governor"
+        # US-specific election terms only
+        "us election", "american election", "presidential election",
+        "congress", "senate", "house of representatives", "midterm",
+        "democrat", "republican", "electoral college", "swing state",
+        "biden", "trump", "2024 election", "2026 election", "2028 election"
     ],
     MarketCategory.DEFENSE: [
-        "defense", "military", "nato", "war", "weapon", "pentagon", "dod",
-        "army", "navy", "air force", "missile", "drone", "ukraine aid",
-        "israel aid", "defense budget", "lockheed", "raytheon"
+        # Defense/military - avoid generic words like "navy" that match sports
+        "defense spending", "defense budget", "defense contract",
+        "military spending", "pentagon", "dod", "department of defense",
+        "nato expansion", "ukraine aid", "israel aid", "taiwan defense",
+        "missile defense", "defense contractor", "lockheed", "raytheon",
+        "northrop", "general dynamics", "f-35", "weapons system"
     ],
 }
 
@@ -360,7 +365,25 @@ class PolymarketScanner:
         
         combined_text = f"{question} {description} {title}"
         
-        # Check each investment category - WHITELIST approach
+        # FIRST: Quick sanity check - exclude obvious non-investment patterns
+        # These patterns indicate sports betting or non-financial markets
+        exclusion_patterns = [
+            "spread:", "moneyline", "over/under", "handicap",  # Sports betting
+            "vs.", " vs ", "match", "game",  # Sports events
+            "win the", "will win",  # Generic win predictions (often sports)
+            "finish above $", "finish below $", "stock price",  # Price guessing
+            "peruvian", "brazilian", "mexican", "canadian",  # Non-US politics
+            "french", "german", "italian", "british", "uk ",  # Non-US politics
+            "premier league", "champions league", "world cup",  # Sports leagues
+            "nfl", "nba", "mlb", "nhl", "ncaa",  # Sports leagues
+        ]
+        
+        for pattern in exclusion_patterns:
+            if pattern in combined_text:
+                logger.debug(f"Market excluded by pattern '{pattern}': {question[:40]}...")
+                return MarketCategory.NOT_RELEVANT
+        
+        # SECOND: Check each investment category - WHITELIST approach
         # Only include markets that match specific investment categories
         for category, keywords in CATEGORY_KEYWORDS.items():
             for keyword in keywords:
