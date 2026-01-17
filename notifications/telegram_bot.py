@@ -1322,6 +1322,7 @@ class TelegramBot:
         side = rec.get("side", "")
         conviction = rec.get("conviction_score", 0)
         thesis = rec.get("thesis", "")
+        thesis_desc = rec.get("thesis_description", "")
         catalyst = rec.get("catalyst", "")
         time_horizon = rec.get("time_horizon", "")
 
@@ -1332,6 +1333,13 @@ class TelegramBot:
             "CHATGPT": EMOJI_BRAIN,       # Pattern recognition
         }
         emoji = emoji_map.get(source, EMOJI_CHART)
+
+        # Signal inventory (preferred)
+        sig_inv = proposal.get("signal_inventory", {})
+        sig_total = sig_inv.get("total_signals")
+        if sig_total is None:
+            # Backwards compat: some proposals store signals_count under supporting_evidence
+            sig_total = proposal.get("supporting_evidence", {}).get("signals_count")
 
         # Build conviction bar
         bar = self._build_conviction_bar(conviction)
@@ -1344,6 +1352,8 @@ class TelegramBot:
         if proposal_type == "NO_OPPORTUNITY" or not ticker:
             lines.append(f"Recommendation: PASS")
             lines.append(f"Conviction: {conviction}/100")
+            if sig_total is not None:
+                lines.append(f"Signals considered: {sig_total}")
             lines.append(bar)
             if thesis:
                 lines.append(f"\n{thesis[:200]}")
@@ -1351,6 +1361,8 @@ class TelegramBot:
             lines.append(f"Ticker: {ticker}")
             lines.append(f"Action: {side}")
             lines.append(f"Conviction: {conviction}/100")
+            if sig_total is not None:
+                lines.append(f"Signals considered: {sig_total}")
             if is_actionable:
                 lines.append(f"{bar} {EMOJI_GREEN_CIRCLE}")
             else:
@@ -1359,8 +1371,21 @@ class TelegramBot:
             if thesis:
                 lines.append(f"\nThesis: {thesis[:180]}...")
 
+            if thesis_desc:
+                # Keep Telegram readable; show only first ~250 chars
+                lines.append(f"\nWhy (expanded): {thesis_desc[:250]}...")
+
             if catalyst:
                 lines.append(f"\nCatalyst: {catalyst}")
+
+            # Key signals (top 3)
+            key_signals = proposal.get("supporting_evidence", {}).get("key_signals", [])
+            if key_signals:
+                lines.append("Key signals:")
+                for ks in key_signals[:3]:
+                    s = ks.get("summary") or ""
+                    src = ks.get("source") or ks.get("signal_type") or ""
+                    lines.append(f"  - [{src}] {s[:120]}")
 
             if time_horizon:
                 lines.append(f"Horizon: {time_horizon}")
@@ -1480,6 +1505,8 @@ class TelegramBot:
         side = rec.get("side", "")
         conviction = rec.get("conviction_score", 0)
         thesis = rec.get("thesis", "")
+        final_thesis = synthesis.get("final_thesis", {}) or {}
+        ctx_explain = synthesis.get("context_explainers", {}) or {}
         position_size = rec.get("position_size_pct", 0)
         stop_loss = rec.get("stop_loss_pct", 0)
         time_horizon = rec.get("time_horizon", "")
@@ -1501,8 +1528,27 @@ class TelegramBot:
         else:
             lines.append(f"{bar} {EMOJI_WHITE_CIRCLE}")
 
-        if thesis:
+        # Final thesis (preferred)
+        if final_thesis.get("summary"):
+            lines.append(f"\nFinal thesis: {final_thesis.get('summary')[:260]}")
+            desc = final_thesis.get("description") or ""
+            if desc:
+                lines.append(f"\nWhy now (detail): {desc[:600]}...")
+            inv = final_thesis.get("invalidation")
+            if inv:
+                lines.append(f"\nInvalidation: {inv[:220]}")
+        elif thesis:
             lines.append(f"\nThesis: {thesis[:250]}...")
+
+        # Explain the cross-reference sources in plain English
+        fred_ex = ctx_explain.get("fred")
+        poly_ex = ctx_explain.get("polymarket")
+        if fred_ex or poly_ex:
+            lines.append("\nContext: why these sources matter")
+            if fred_ex:
+                lines.append(f"  FRED: {fred_ex[:260]}")
+            if poly_ex:
+                lines.append(f"  Polymarket: {poly_ex[:260]}")
 
         # Cross-validation
         if cross_val:
@@ -1745,33 +1791,65 @@ class TelegramBot:
                 return False
 
             lines: List[str] = []
-            lines.append("🗣️ MACA Debate")
+            lines.append("🗣️ MACA Debate (IC Minutes)")
             lines.append(f"Cycle: {cycle_id}")
+
             top = (vote_summary or {}).get("top") or {}
             reason = (vote_summary or {}).get("reason") or ""
             avg_conf = (vote_summary or {}).get("avg_confidence")
+            early_exit = (debate or {}).get("early_exit_reason")
 
             if top:
-                lines.append(f"Current majority: {top.get('action')} {top.get('ticker') or ''} ({top.get('count')})")
+                lines.append(f"Majority: {top.get('action')} {top.get('ticker') or ''} ({top.get('count')})")
             if isinstance(avg_conf, (int, float)):
                 lines.append(f"Avg confidence: {avg_conf:.2f}")
             if reason:
-                lines.append(f"Note: {reason}")
+                lines.append(f"Blocker: {reason}")
+            if early_exit:
+                lines.append(f"Rounds: {len(rounds)} (note: {early_exit})")
+
+            # Vote table snapshot (last known votes)
+            vs_votes = (vote_summary or {}).get("votes") or []
+            if vs_votes:
+                lines.append("")
+                lines.append("Votes:")
+                for v in vs_votes:
+                    sp = v.get("speaker")
+                    act = v.get("action")
+                    tk = v.get("ticker") or ""
+                    cf = v.get("confidence")
+                    cf_s = f" ({float(cf):.2f})" if isinstance(cf, (int, float)) else ""
+                    lines.append(f"• {sp}: {act} {tk}{cf_s}")
 
             lines.append("")
-            # Keep it compact: each speaker twice, 1-2 bullets each.
+
+            # Round-by-round deltas (one-liners)
             for r in rounds:
                 lines.append(f"--- Round {r.get('round')} ---")
                 for t in (r.get("turns") or []):
                     sp = (t.get("speaker") or "unknown")
-                    msg = (t.get("message") or "").strip().replace("\n", " ")
-                    msg = msg[:260] + ("…" if len(msg) > 260 else "")
+                    status = (t.get("status") or "ok")
                     v = (t.get("vote") or {})
                     act = (v.get("action") or "HOLD")
                     tk = v.get("ticker") or ""
                     cf = v.get("confidence")
                     cf_s = f" ({float(cf):.2f})" if isinstance(cf, (int, float)) else ""
-                    lines.append(f"• {sp}: {act} {tk}{cf_s} — {msg}")
+
+                    if status == "error":
+                        err = (t.get("message") or "error").strip().replace("\n", " ")
+                        err = err[:180] + ("…" if len(err) > 180 else "")
+                        lines.append(f"• {sp}: ERROR — {err}")
+                        continue
+
+                    claim = (t.get("claim") or t.get("message") or "").strip().replace("\n", " ")
+                    change = (t.get("change_my_mind") or "").strip().replace("\n", " ")
+                    claim = claim[:140] + ("…" if len(claim) > 140 else "")
+                    change = change[:90] + ("…" if len(change) > 90 else "")
+
+                    if change:
+                        lines.append(f"• {sp}: {act} {tk}{cf_s} — {claim} | change: {change}")
+                    else:
+                        lines.append(f"• {sp}: {act} {tk}{cf_s} — {claim}")
                 lines.append("")
 
             text = "\n".join(lines).strip()

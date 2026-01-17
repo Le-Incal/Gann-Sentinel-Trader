@@ -19,13 +19,14 @@ logger = logging.getLogger(__name__)
 
 class ChatGPTAnalyst:
     """
-    ChatGPT-powered analyst for pattern recognition and risk analysis.
+    ChatGPT-powered analyst for sentiment + cognitive bias analysis.
 
-    Strengths:
-    - Pattern recognition
-    - Historical analogues
-    - Risk scenario modeling
-    - Quantitative reasoning
+    Intended role in the multi-agent system:
+    - Abstract market psychology from noisy context into structured signals
+    - Detect crowding, herding, overconfidence, and narrative exhaustion
+    - Stress-test other theses for bias contamination
+
+    This analyst should NOT browse the web or read charts directly.
     """
 
     def __init__(
@@ -78,7 +79,13 @@ class ChatGPTAnalyst:
         # Format portfolio for prompt
         positions_text = self._format_portfolio(portfolio_summary)
 
-        prompt = f"""You are a Quantitative Strategist specializing in market patterns and risk analysis.
+        prompt = f"""You are a Market Sentiment + Cognitive Bias Analyst.
+
+You do NOT browse the web.
+You do NOT analyze charts.
+You do NOT invent signals.
+
+Your unique strength: translate messy narrative + mixed signals into a disciplined sentiment view and identify bias contamination.
 
 CURRENT CONTEXT:
 - Date: {current_date}
@@ -87,65 +94,53 @@ CURRENT CONTEXT:
 - Available Cash: ${available_cash:,.2f}
 {f"- Market Context: {market_context}" if market_context else ""}
 
-YOUR TASK:
-Identify the single highest-conviction investment opportunity based on pattern recognition and risk/reward analysis.
-
-CONSIDER:
-1. Technical patterns and market structure (breakouts, consolidations, reversals)
-2. Historical analogues - similar setups and their outcomes
-3. Risk scenarios: best case, base case, worst case with probabilities
-4. Portfolio correlation and diversification benefits
-5. Whether rotating out of current positions could improve risk-adjusted returns
-
 {additional_context or ""}
 
+YOUR TASK:
+Propose a single trade OR recommend HOLD based on sentiment regime + cognitive bias.
+
+YOU MUST:
+1) List every signal you considered (grouped by source) and provide counts.
+2) Rank the top 3 signals by importance.
+3) State conflicting signals and why they matter.
+4) Provide a clear invalidation condition.
+5) If evidence is weak/conflicting → proposal_type = NO_OPPORTUNITY.
+
 OUTPUT:
-Return ONLY a valid JSON object (no markdown, no explanation) with this structure:
+Return ONLY valid JSON (no markdown) in this exact structure:
 {{
   "proposal_type": "NEW_BUY" | "SELL" | "ROTATE" | "NO_OPPORTUNITY",
-  "recommendation": {{
-    "ticker": "SYMBOL",
-    "side": "BUY" | "SELL",
-    "conviction_score": 0-100,
-    "thesis": "1-3 sentence investment thesis",
-    "time_horizon": "days" | "weeks" | "months",
-    "catalyst": "what drives this opportunity",
-    "catalyst_deadline": "YYYY-MM-DD or null"
+  "analyst_role": "sentiment_bias",
+  "signal_inventory": {{
+    "total_signals": 0,
+    "by_source": {{"fred": 0, "polymarket": 0, "market_context": 0, "other": 0}}
   }},
-  "rotation_details": {{
-    "sell_ticker": "SYMBOL or null",
-    "sell_rationale": "why selling",
-    "expected_net_gain": "estimated improvement"
+  "signals_considered": [
+    {{"source": "fred|polymarket|market_context|other", "summary": "what it implies", "weight": 0-1, "confidence": 0-1}}
+  ],
+  "recommendation": {{
+    "ticker": "SYMBOL or null",
+    "side": "BUY" | "SELL" | null,
+    "conviction_score": 0-100,
+    "thesis": "1-3 sentence thesis",
+    "thesis_description": "100-200 words explaining why this trade exists NOW from a sentiment/bias view",
+    "time_horizon": "days" | "weeks" | "months",
+    "catalyst": "sentiment catalyst / narrative trigger",
+    "catalyst_deadline": "YYYY-MM-DD or null",
+    "invalidation": "what would prove this wrong"
   }},
   "supporting_evidence": {{
     "key_signals": [
-      {{
-        "signal_type": "technical" | "pattern" | "quantitative",
-        "summary": "brief description",
-        "source": "analysis type",
-        "confidence": "high" | "medium" | "low"
-      }}
+      {{"signal_type": "sentiment"|"positioning"|"narrative"|"macro", "summary": "brief", "source": "fred|polymarket|context", "confidence": "high"|"medium"|"low"}}
     ],
-    "bull_case": "key bullish factors with probability estimate",
-    "bear_case": "key bearish factors with probability estimate",
+    "bull_case": "bull case + probability",
+    "bear_case": "bear case + probability",
     "risks": ["risk 1", "risk 2"],
-    "historical_analogue": "similar pattern from history if applicable"
-  }},
-  "risk_analysis": {{
-    "best_case": {{"return_pct": 20, "probability": 0.25}},
-    "base_case": {{"return_pct": 8, "probability": 0.50}},
-    "worst_case": {{"return_pct": -12, "probability": 0.25}},
-    "expected_value": "calculated EV",
-    "max_drawdown": "estimated max loss"
+    "bias_flags": ["herding", "overconfidence", "recency", "confirmation"],
+    "what_you_might_be_missing": "one contrarian consideration"
   }},
   "time_sensitive": true | false
-}}
-
-IMPORTANT:
-- Be quantitative where possible (probabilities, percentages)
-- Conviction should reflect expected value, not just upside
-- If no compelling opportunity exists, return proposal_type: "NO_OPPORTUNITY"
-- For ROTATE proposals, demonstrate improved risk/reward"""
+}}"""
 
         try:
             start_time = datetime.now(timezone.utc)
@@ -162,7 +157,7 @@ IMPORTANT:
                         "messages": [
                             {
                                 "role": "system",
-                                "content": "You are a quantitative trading strategist. Always respond with valid JSON only."
+                                "content": "You are a market sentiment and cognitive bias analyst. Respond with JSON only."
                             },
                             {"role": "user", "content": prompt}
                         ],
@@ -441,21 +436,23 @@ Be specific about risk concerns. Quantify where possible."""
                 "changed_mind": False,
             }
 
-        system = """You are participating in an investment committee debate.
+        system = """You are participating in an investment committee cross-examination.
 
 You are ChatGPT in the role of Sentiment + Cognitive Bias Analyst.
 
 RULES:
-1) Stay within your role: sentiment regime + bias contamination.
+1) Stay within your role: sentiment regime, positioning psychology, bias contamination.
 2) Do NOT browse the web. Do NOT analyze charts.
-3) Do NOT invent new signals. Only react to provided theses.
-4) You may defend OR revise your prior vote.
+3) Do NOT invent new signals. Only react to provided theses/context.
+4) Speak in DELTAS (what changes because of others' theses). Do NOT restate your full memo.
+5) If you vote BUY/SELL, you MUST use the committee candidate ticker (provided in the context). Otherwise vote HOLD.
 
 Output ONLY JSON in this schema:
 {
-  "message": "2-6 sentences",
-  "agreements": ["..."],
-  "disagreements": ["..."],
+  "claim": "1 sentence: your current position",
+  "top_signals": ["exactly 2 short bullets"],
+  "counterpoint": "1 sentence: strongest objection you acknowledge",
+  "change_my_mind": "1 explicit condition",
   "changed_mind": true|false,
   "vote": {"action": "BUY"|"SELL"|"HOLD", "ticker": "..."|null, "side": "BUY"|"SELL"|null, "confidence": 0.0-1.0}
 }
@@ -489,6 +486,7 @@ Output ONLY JSON in this schema:
                         "message": f"Debate API error {resp.status_code}",
                         "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
                         "changed_mind": False,
+                        "status": "error",
                     }
 
                 content = resp.json()["choices"][0]["message"]["content"]
@@ -503,6 +501,7 @@ Output ONLY JSON in this schema:
                 "message": f"Debate exception: {e}",
                 "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
                 "changed_mind": False,
+                "status": "error",
             }
 
     def _empty_proposal(self, scan_cycle_id: str, reason: str) -> Dict[str, Any]:

@@ -877,7 +877,20 @@ class MACAOrchestrator:
             return {}, {"hold": False, "reason": "Debate disabled"}, proposals, signal_inventory
 
         # Determine a candidate ticker/side from the initial proposals.
+        # If there is no candidate (all HOLD), we can short-circuit debate.
         candidate_ticker, candidate_side = self._pick_candidate_from_proposals(proposals)
+        if not candidate_ticker:
+            vote_summary = {
+                "n": 4,
+                "votes": [],
+                "avg_confidence": 0.0,
+                "tie_2_2": False,
+                "hold": True,
+                "reason": "Unanimous HOLD at proposal stage (no candidate) — debate skipped",
+                "technical_verdict": "unknown",
+            }
+            debate_summary = {"session_id": None, "rounds": [], "early_exit_reason": vote_summary["reason"]}
+            return debate_summary, vote_summary, proposals, signal_inventory
 
         # Create DB session for the debate transcript.
         session_id = None
@@ -914,6 +927,7 @@ class MACAOrchestrator:
         }
 
         rounds: List[Dict[str, Any]] = []
+        early_exit_reason: Optional[str] = None
 
         # Debate rounds: each speaker speaks once per round.
         for r in range(1, max(1, Config.DEBATE_ROUNDS) + 1):
@@ -943,14 +957,38 @@ class MACAOrchestrator:
                     turn = {
                         "speaker": speaker,
                         "round": r,
-                        "message": f"Debate error: {e}",
+                        "message": f"Debate exception: {e}",
                         "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
                         "changed_mind": False,
+                        "status": "error",
                     }
 
                 # Normalize and persist.
                 turn.setdefault("speaker", speaker)
                 turn.setdefault("round", r)
+                turn.setdefault("status", "ok")
+
+                # Mark common error strings as errors (provider returned non-JSON, 4xx, etc.)
+                msg_l = (turn.get("message") or "").lower()
+                if ("api error" in msg_l) or ("exception" in msg_l) or ("parse error" in msg_l):
+                    turn["status"] = "error"
+                    # Don't let errors drag confidence metrics; also surfaces as ERROR in Telegram.
+                    try:
+                        turn.setdefault("vote", {})
+                        turn["vote"]["confidence"] = None
+                    except Exception:
+                        pass
+
+                # Enforce candidate discipline: if voting BUY/SELL, must use candidate ticker.
+                v = (turn.get("vote") or {})
+                act = (v.get("action") or "HOLD").upper()
+                if act in ["BUY", "SELL"]:
+                    tk = v.get("ticker")
+                    if not tk or str(tk).upper() != str(candidate_ticker).upper():
+                        # Force HOLD to prevent unrelated tickers from entering the vote.
+                        turn["message"] = (turn.get("message") or "") + " (forced HOLD: non-candidate ticker in vote)"
+                        turn["vote"] = {"action": "HOLD", "ticker": None, "side": None, "confidence": float(v.get("confidence") or 0.0)}
+
                 if session_id:
                     try:
                         self.db.save_debate_turn(session_id, cycle_id, turn)
@@ -961,12 +999,37 @@ class MACAOrchestrator:
 
             rounds.append({"round": r, "turns": round_turns})
 
-        debate_summary = {
-            "session_id": session_id,
-            "rounds": rounds,
-        }
+            # -----------------------------
+            # Early exit rules (make debate non-boring)
+            # -----------------------------
+            # If any debate turn errored, stop and HOLD (debate incomplete).
+            if any((t.get("status") == "error") for t in round_turns):
+                early_exit_reason = "Debate halted due to API/parse errors"
+                break
 
+            # If Round 1 is unanimous HOLD, stop (no need for Round 2).
+            round_actions = [((t.get("vote") or {}).get("action") or "HOLD").upper() for t in round_turns]
+            if r == 1 and all(a == "HOLD" for a in round_actions):
+                early_exit_reason = "Round 1 unanimous HOLD — Round 2 skipped"
+                break
+
+            # If Round 1 already has a clean supermajority (3+), and confidence is adequate, stop.
+            if r == 1:
+                vs_r1 = self._summarize_votes(last_turns, tech_turn0)
+                top = (vs_r1.get("top") or {})
+                if top and top.get("count", 0) >= 3 and not vs_r1.get("hold"):
+                    early_exit_reason = "Consensus reached in Round 1 — Round 2 skipped"
+                    break
+
+        # If we exited early, trim rounds.
+        if early_exit_reason:
+            debate_summary = {"session_id": session_id, "rounds": rounds, "early_exit_reason": early_exit_reason}
+        else:
+            debate_summary = {"session_id": session_id, "rounds": rounds}
         vote_summary = self._summarize_votes(last_turns, tech_turn0)
+        if early_exit_reason and ("error" in early_exit_reason.lower()):
+            vote_summary["hold"] = True
+            vote_summary["reason"] = early_exit_reason
 
         # Telegram: optionally show the debate as its own message.
         if self.telegram and debate_summary.get("rounds"):
@@ -1063,23 +1126,37 @@ class MACAOrchestrator:
         return ticker, action
 
     def _speaker_own_thesis_stub(self, speaker: str, proposals_with_tech: List[Dict[str, Any]], tech_turn0: Dict[str, Any]) -> Dict[str, Any]:
+        # NOTE: candidate ticker/side is embedded by the debate loop via closure; the LLMs
+        # should read it from own_thesis.debate_context.
         if speaker == "claude_technical":
             return {
                 "speaker": "claude_technical",
                 "vote": (tech_turn0.get("vote") or {}),
                 "thesis": tech_turn0.get("message") or "",
                 "technical_verdict": tech_turn0.get("verdict"),
+                "debate_context": {
+                    "candidate": tech_turn0.get("vote", {}).get("ticker"),
+                    "rule": "If voting BUY/SELL, ticker must match committee candidate"
+                },
             }
         p = self._get_by_ai(proposals_with_tech, speaker)
-        return self._proposal_to_thesis_stub(p or {"ai_source": speaker, "recommendation": {}, "supporting_evidence": {}})
+        stub = self._proposal_to_thesis_stub(p or {"ai_source": speaker, "recommendation": {}, "supporting_evidence": {}})
+        stub["debate_context"] = {
+            "candidate": (tech_turn0.get("vote") or {}).get("ticker"),
+            "rule": "If voting BUY/SELL, ticker must match committee candidate",
+        }
+        return stub
 
     def _summarize_votes(self, last_turns: Dict[str, Dict[str, Any]], tech_turn0: Dict[str, Any]) -> Dict[str, Any]:
         """Compute majority/tie, confidence aggregates, and hard-gate failure modes."""
 
         speakers = ["grok", "perplexity", "chatgpt", "claude_technical"]
         votes: List[Dict[str, Any]] = []
+        any_errors = False
         for s in speakers:
             t = last_turns.get(s) or {}
+            if (t.get("status") == "error"):
+                any_errors = True
             v = t.get("vote") or {}
             votes.append({
                 "speaker": s,
@@ -1106,7 +1183,9 @@ class MACAOrchestrator:
             if d["count"] > top_count:
                 top_key, top_count = k, d["count"]
 
-        avg_conf = sum(v["confidence"] for v in votes) / max(1, n)
+        # Average confidence over non-error votes only (errors should not tank the metric).
+        conf_vals = [v["confidence"] for v in votes if v["confidence"] is not None]
+        avg_conf = sum(conf_vals) / max(1, len(conf_vals))
 
         # Determine failure modes / tie handling
         hold = False
@@ -1116,6 +1195,10 @@ class MACAOrchestrator:
         sorted_counts = sorted([d["count"] for d in bucket.values()], reverse=True)
         is_tie_2_2 = (sorted_counts[:2] == [2, 2])
         has_majority = top_count >= majority_required
+
+        if any_errors:
+            hold = True
+            reason = "Debate incomplete due to API/parse error(s)"
 
         if not has_majority and not is_tie_2_2:
             hold = True

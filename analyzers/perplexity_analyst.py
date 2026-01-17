@@ -77,7 +77,13 @@ class PerplexityAnalyst:
         # Format portfolio for prompt
         positions_text = self._format_portfolio(portfolio_summary)
 
-        prompt = f"""You are a Fundamental Research Analyst with access to comprehensive financial data.
+        prompt = f"""You are a Real-Time Web Research Analyst.
+
+Your unique strength: scan the current public web for verifiable facts (news, filings, earnings, data releases) and cite sources.
+
+You do NOT infer sentiment.
+You do NOT analyze charts.
+You do NOT invent signals.
 
 CURRENT CONTEXT:
 - Date: {current_date}
@@ -85,57 +91,52 @@ CURRENT CONTEXT:
 {positions_text}
 - Available Cash: ${available_cash:,.2f}
 
-YOUR TASK:
-Research and identify the single highest-conviction investment opportunity based on fundamental analysis.
-
-CONSIDER:
-1. Recent earnings, guidance, or financial developments
-2. Valuation relative to peers and historical norms
-3. Industry trends and competitive positioning
-4. Institutional activity and analyst sentiment
-5. Whether rotating out of current positions could improve returns
-
 {additional_context or ""}
 
+YOUR TASK:
+Propose a single trade OR recommend HOLD based on verifiable, time-relevant fundamental catalysts.
+
+YOU MUST:
+1) List every external signal you considered and provide counts.
+2) Rank the top 3 signals by importance.
+3) Cite sources (URLs) for each key claim.
+4) State conflicting signals and why they matter.
+5) Provide a clear invalidation condition.
+6) If evidence is weak/conflicting → proposal_type = NO_OPPORTUNITY.
+
 OUTPUT:
-Return ONLY a valid JSON object (no markdown, no explanation) with this structure:
+Return ONLY valid JSON (no markdown) in this exact structure:
 {{
   "proposal_type": "NEW_BUY" | "SELL" | "ROTATE" | "NO_OPPORTUNITY",
-  "recommendation": {{
-    "ticker": "SYMBOL",
-    "side": "BUY" | "SELL",
-    "conviction_score": 0-100,
-    "thesis": "1-3 sentence investment thesis",
-    "time_horizon": "days" | "weeks" | "months",
-    "catalyst": "what drives this opportunity",
-    "catalyst_deadline": "YYYY-MM-DD or null"
+  "analyst_role": "web_facts",
+  "signal_inventory": {{
+    "total_signals": 0,
+    "by_source": {{"news": 0, "filings": 0, "earnings": 0, "macro": 0, "other": 0}}
   }},
-  "rotation_details": {{
-    "sell_ticker": "SYMBOL or null",
-    "sell_rationale": "why selling",
-    "expected_net_gain": "estimated improvement"
+  "signals_considered": [
+    {{"source": "news|filings|earnings|macro|other", "summary": "what it implies", "url": "https://...", "weight": 0-1, "confidence": 0-1}}
+  ],
+  "recommendation": {{
+    "ticker": "SYMBOL or null",
+    "side": "BUY" | "SELL" | null,
+    "conviction_score": 0-100,
+    "thesis": "1-3 sentence thesis",
+    "thesis_description": "100-200 words explaining why this trade exists NOW from a facts/catalyst view",
+    "time_horizon": "days" | "weeks" | "months",
+    "catalyst": "specific factual catalyst",
+    "catalyst_deadline": "YYYY-MM-DD or null",
+    "invalidation": "what would prove this wrong"
   }},
   "supporting_evidence": {{
     "key_signals": [
-      {{
-        "signal_type": "fundamental",
-        "summary": "brief description",
-        "source": "URL or source name",
-        "confidence": "high" | "medium" | "low"
-      }}
+      {{"signal_type": "fundamental"|"event"|"macro", "summary": "brief", "source": "URL or source name", "confidence": "high"|"medium"|"low"}}
     ],
-    "bull_case": "key bullish factors",
-    "bear_case": "key bearish factors",
+    "bull_case": "bull case + probability",
+    "bear_case": "bear case + probability",
     "risks": ["risk 1", "risk 2"]
   }},
   "time_sensitive": true | false
-}}
-
-IMPORTANT:
-- Be honest about conviction (don't inflate scores)
-- CITE YOUR SOURCES with URLs where possible
-- If no compelling opportunity exists, return proposal_type: "NO_OPPORTUNITY"
-- For ROTATE proposals, the new opportunity must be significantly better"""
+}}"""
 
         try:
             start_time = datetime.now(timezone.utc)
@@ -391,6 +392,121 @@ Be specific about any concerns. Cite sources if you find conflicting information
             }
         }
 
+    # ------------------------------------------------------------------
+    # Debate Layer
+    # ------------------------------------------------------------------
+    async def debate(
+        self,
+        *,
+        scan_cycle_id: str,
+        round_num: int,
+        own_thesis: Dict[str, Any],
+        other_theses: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Participate in committee debate (role-constrained)."""
+
+        if not self.is_configured:
+            return {
+                "speaker": "perplexity",
+                "round": round_num,
+                "message": "Perplexity not configured",
+                "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                "changed_mind": False,
+            }
+
+        system = """You are participating in an investment committee cross-examination.
+
+You are Perplexity in the role of External Reality & Facts Analyst.
+
+RULES:
+1) Stay within your role: verifiable facts, catalysts, what is knowable now.
+2) Do NOT infer sentiment. Do NOT analyze charts.
+3) Do NOT browse for new info in this debate round; react to provided theses only.
+4) Speak in DELTAS (what changes because of others' theses). Do NOT restate your full memo.
+5) If you vote BUY/SELL, you MUST use the committee candidate ticker (provided in the context). Otherwise vote HOLD.
+
+Output ONLY JSON in this schema:
+{
+  "claim": "1 sentence: your current position",
+  "top_signals": ["exactly 2 short bullets"],
+  "counterpoint": "1 sentence: strongest objection you acknowledge",
+  "change_my_mind": "1 explicit condition",
+  "changed_mind": true|false,
+  "vote": {"action": "BUY"|"SELL"|"HOLD", "ticker": "..."|null, "side": "BUY"|"SELL"|null, "confidence": 0.0-1.0}
+}
+"""
+
+        user = {
+            "round": round_num,
+            "own_thesis": own_thesis,
+            "other_theses": other_theses,
+        }
+
+        try:
+            # Perplexity uses an OpenAI-compatible chat endpoint.
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            body = {
+                "model": self.model,
+                "temperature": 0.2,
+                "max_tokens": 900,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+                ],
+            }
+
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                # Must hit the OpenAI-compatible chat/completions endpoint.
+                resp = await client.post(f"{self.base_url}/chat/completions", headers=headers, json=body)
+                if resp.status_code != 200:
+                    return {
+                        "speaker": "perplexity",
+                        "round": round_num,
+                        "message": f"Debate API error {resp.status_code}",
+                        "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                        "changed_mind": False,
+                        "status": "error",
+                    }
+
+                data = resp.json()
+                # Perplexity may return different shapes; accept either.
+                content = None
+                if isinstance(data, dict):
+                    if "choices" in data and data["choices"]:
+                        content = data["choices"][0].get("message", {}).get("content")
+                    elif "output" in data:
+                        content = data.get("output")
+                if not content:
+                    content = json.dumps({"message": "Empty debate response", "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0}}, ensure_ascii=False)
+
+                try:
+                    parsed = json.loads(content) if isinstance(content, str) else content
+                except Exception:
+                    return {
+                        "speaker": "perplexity",
+                        "round": round_num,
+                        "message": "Debate parse error",
+                        "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                        "changed_mind": False,
+                        "status": "error",
+                    }
+
+                if not isinstance(parsed, dict):
+                    parsed = {"message": "Debate non-dict response", "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0}, "changed_mind": False, "status": "error"}
+
+                parsed.update({"speaker": "perplexity", "round": round_num})
+                return parsed
+
+        except Exception as e:
+            return {
+                "speaker": "perplexity",
+                "round": round_num,
+                "message": f"Debate exception: {e}",
+                "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                "changed_mind": False,
+                "status": "error",
+            }
+
     def _build_review(
         self,
         parsed: Dict,
@@ -447,100 +563,6 @@ Be specific about any concerns. Cite sources if you find conflicting information
             "time_sensitive": False,
             "metadata": {"model": self.model, "error": reason}
         }
-
-    # ------------------------------------------------------------------
-    # Debate Layer
-    # ------------------------------------------------------------------
-    async def debate(
-        self,
-        *,
-        scan_cycle_id: str,
-        round_num: int,
-        own_thesis: Dict[str, Any],
-        other_theses: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """Participate in committee debate (role-constrained)."""
-
-        if not self.is_configured:
-            return {
-                "speaker": "perplexity",
-                "round": round_num,
-                "message": "Perplexity not configured",
-                "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
-                "changed_mind": False,
-            }
-
-        system = """You are participating in an investment committee debate.
-
-You are Perplexity in the role of External Reality & Facts Analyst.
-
-RULES:
-1) Stay within your role: verifiable facts, catalysts, and what is knowable now.
-2) Do NOT infer sentiment or technicals.
-3) Do NOT invent new signals; only react to provided theses.
-4) You may defend OR revise your prior vote.
-
-Output ONLY JSON in this schema:
-{
-  "message": "2-6 sentences",
-  "agreements": ["..."],
-  "disagreements": ["..."],
-  "changed_mind": true|false,
-  "vote": {"action": "BUY"|"SELL"|"HOLD", "ticker": "..."|null, "side": "BUY"|"SELL"|null, "confidence": 0.0-1.0}
-}
-"""
-
-        user = {
-            "round": round_num,
-            "own_thesis": own_thesis,
-            "other_theses": other_theses,
-        }
-
-        try:
-            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-            body = {
-                "model": self.model,
-                "temperature": 0.2,
-                "max_tokens": 900,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
-                ],
-            }
-
-            async with httpx.AsyncClient(timeout=45.0) as client:
-                resp = await client.post(self.base_url, headers=headers, json=body)
-                if resp.status_code != 200:
-                    return {
-                        "speaker": "perplexity",
-                        "round": round_num,
-                        "message": f"Debate API error {resp.status_code}",
-                        "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
-                        "changed_mind": False,
-                    }
-
-                data = resp.json()
-                content = None
-                if isinstance(data, dict):
-                    if "choices" in data and data["choices"]:
-                        content = data["choices"][0].get("message", {}).get("content")
-                    elif "output" in data:
-                        content = data.get("output")
-                if not content:
-                    content = json.dumps({"message": "Empty debate response", "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0}}, ensure_ascii=False)
-
-                parsed = json.loads(content)
-                parsed.update({"speaker": "perplexity", "round": round_num})
-                return parsed
-
-        except Exception as e:
-            return {
-                "speaker": "perplexity",
-                "round": round_num,
-                "message": f"Debate exception: {e}",
-                "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
-                "changed_mind": False,
-            }
 
     def _empty_review(self, scan_cycle_id: str, proposal_id: str, reason: str) -> Dict[str, Any]:
         """Return empty review when review fails."""

@@ -13,13 +13,15 @@ from typing import Optional, Dict, Any, List
 
 import httpx
 
+from utils.json_utils import extract_first_json_object
+
 logger = logging.getLogger(__name__)
 
 
 class ClaudeTechnicalValidator:
     """Claude-based technical structure validator."""
 
-    SYSTEM_PROMPT = """You are a Technical Structure Validator on an investment committee.
+    SYSTEM_PROMPT = """You are a Technical Structure Validator on an investment committee cross-examination.
 
 You are given a pre-computed technical_analysis payload (market state, structure, scenarios, verdict).
 
@@ -31,9 +33,13 @@ RULES:
 
 Return ONLY JSON in this schema:
 {
-  "message": "2-6 sentences",
+  "claim": "1 sentence: your current position",
+  "top_signals": ["exactly 2 short bullets"],
+  "counterpoint": "1 sentence: strongest objection you acknowledge",
+  "change_my_mind": "1 explicit condition",
   "verdict": "hypothesis_allowed"|"no_trade"|"analyze_only"|"unknown",
   "invalidation": "clear invalidation",
+  "changed_mind": true|false,
   "vote": {"action": "BUY"|"SELL"|"HOLD", "ticker": "..."|null, "side": "BUY"|"SELL"|null, "confidence": 0.0-1.0}
 }
 """
@@ -102,11 +108,22 @@ Return ONLY JSON in this schema:
                         "verdict": "unknown",
                         "invalidation": "N/A",
                         "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                        "status": "error",
                     }
 
                 data = resp.json()
                 text = data.get("content", [{}])[0].get("text", "")
-                parsed = json.loads(text)
+                parsed, err = extract_first_json_object(text)
+                if not parsed:
+                    return {
+                        "speaker": "claude_technical",
+                        "round": 0,
+                        "message": f"Technical validator parse error: {err}",
+                        "verdict": "unknown",
+                        "invalidation": "N/A",
+                        "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                        "status": "error",
+                    }
                 parsed.update({"speaker": "claude_technical", "round": 0})
                 return parsed
 
@@ -176,11 +193,21 @@ Return ONLY JSON in this schema:
                         "message": f"Debate API error {resp.status_code}",
                         "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
                         "changed_mind": False,
+                        "status": "error",
                     }
 
                 data = resp.json()
                 text = data.get("content", [{}])[0].get("text", "")
-                parsed = json.loads(text)
+                parsed, err = extract_first_json_object(text)
+                if not parsed:
+                    return {
+                        "speaker": "claude_technical",
+                        "round": round_num,
+                        "message": f"Debate parse error: {err}",
+                        "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                        "changed_mind": False,
+                        "status": "error",
+                    }
                 parsed.update({"speaker": "claude_technical", "round": round_num})
                 return parsed
 
@@ -191,4 +218,5 @@ Return ONLY JSON in this schema:
                 "message": f"Debate exception: {e}",
                 "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
                 "changed_mind": False,
+                "status": "error",
             }
