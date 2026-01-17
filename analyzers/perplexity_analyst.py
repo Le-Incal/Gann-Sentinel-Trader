@@ -448,6 +448,100 @@ Be specific about any concerns. Cite sources if you find conflicting information
             "metadata": {"model": self.model, "error": reason}
         }
 
+    # ------------------------------------------------------------------
+    # Debate Layer
+    # ------------------------------------------------------------------
+    async def debate(
+        self,
+        *,
+        scan_cycle_id: str,
+        round_num: int,
+        own_thesis: Dict[str, Any],
+        other_theses: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Participate in committee debate (role-constrained)."""
+
+        if not self.is_configured:
+            return {
+                "speaker": "perplexity",
+                "round": round_num,
+                "message": "Perplexity not configured",
+                "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                "changed_mind": False,
+            }
+
+        system = """You are participating in an investment committee debate.
+
+You are Perplexity in the role of External Reality & Facts Analyst.
+
+RULES:
+1) Stay within your role: verifiable facts, catalysts, and what is knowable now.
+2) Do NOT infer sentiment or technicals.
+3) Do NOT invent new signals; only react to provided theses.
+4) You may defend OR revise your prior vote.
+
+Output ONLY JSON in this schema:
+{
+  "message": "2-6 sentences",
+  "agreements": ["..."],
+  "disagreements": ["..."],
+  "changed_mind": true|false,
+  "vote": {"action": "BUY"|"SELL"|"HOLD", "ticker": "..."|null, "side": "BUY"|"SELL"|null, "confidence": 0.0-1.0}
+}
+"""
+
+        user = {
+            "round": round_num,
+            "own_thesis": own_thesis,
+            "other_theses": other_theses,
+        }
+
+        try:
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            body = {
+                "model": self.model,
+                "temperature": 0.2,
+                "max_tokens": 900,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+                ],
+            }
+
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                resp = await client.post(self.base_url, headers=headers, json=body)
+                if resp.status_code != 200:
+                    return {
+                        "speaker": "perplexity",
+                        "round": round_num,
+                        "message": f"Debate API error {resp.status_code}",
+                        "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                        "changed_mind": False,
+                    }
+
+                data = resp.json()
+                content = None
+                if isinstance(data, dict):
+                    if "choices" in data and data["choices"]:
+                        content = data["choices"][0].get("message", {}).get("content")
+                    elif "output" in data:
+                        content = data.get("output")
+                if not content:
+                    content = json.dumps({"message": "Empty debate response", "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0}}, ensure_ascii=False)
+
+                parsed = json.loads(content)
+                parsed.update({"speaker": "perplexity", "round": round_num})
+                return parsed
+
+        except Exception as e:
+            return {
+                "speaker": "perplexity",
+                "round": round_num,
+                "message": f"Debate exception: {e}",
+                "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                "changed_mind": False,
+            }
+
     def _empty_review(self, scan_cycle_id: str, proposal_id: str, reason: str) -> Dict[str, Any]:
         """Return empty review when review fails."""
         return {

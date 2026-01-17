@@ -1730,6 +1730,56 @@ class TelegramBot:
                 message_type="maca_decision"
             )
 
+    async def send_maca_debate_summary(
+        self,
+        *,
+        cycle_id: str,
+        debate: Dict[str, Any],
+        vote_summary: Dict[str, Any],
+    ) -> bool:
+        """Send committee debate transcript as a standalone Telegram message."""
+
+        try:
+            rounds = debate.get("rounds") or []
+            if not rounds:
+                return False
+
+            lines: List[str] = []
+            lines.append("🗣️ MACA Debate")
+            lines.append(f"Cycle: {cycle_id}")
+            top = (vote_summary or {}).get("top") or {}
+            reason = (vote_summary or {}).get("reason") or ""
+            avg_conf = (vote_summary or {}).get("avg_confidence")
+
+            if top:
+                lines.append(f"Current majority: {top.get('action')} {top.get('ticker') or ''} ({top.get('count')})")
+            if isinstance(avg_conf, (int, float)):
+                lines.append(f"Avg confidence: {avg_conf:.2f}")
+            if reason:
+                lines.append(f"Note: {reason}")
+
+            lines.append("")
+            # Keep it compact: each speaker twice, 1-2 bullets each.
+            for r in rounds:
+                lines.append(f"--- Round {r.get('round')} ---")
+                for t in (r.get("turns") or []):
+                    sp = (t.get("speaker") or "unknown")
+                    msg = (t.get("message") or "").strip().replace("\n", " ")
+                    msg = msg[:260] + ("…" if len(msg) > 260 else "")
+                    v = (t.get("vote") or {})
+                    act = (v.get("action") or "HOLD")
+                    tk = v.get("ticker") or ""
+                    cf = v.get("confidence")
+                    cf_s = f" ({float(cf):.2f})" if isinstance(cf, (int, float)) else ""
+                    lines.append(f"• {sp}: {act} {tk}{cf_s} — {msg}")
+                lines.append("")
+
+            text = "\n".join(lines).strip()
+            return await self.send_message(text, parse_mode=None, message_type="maca_debate")
+        except Exception as e:
+            logger.error(f"Failed to send debate summary: {e}")
+            return False
+
     # =========================================================================
     # POSITIONS & HISTORY FORMATTING
     # =========================================================================

@@ -6,7 +6,7 @@
 
 | Item | Value |
 |------|-------|
-| Version | 2.4.3 |
+| Version | 3.0.0 |
 | Status | Production (Paper Trading) |
 | Deployment | Railway (auto-deploy from GitHub main) |
 | URL | https://gann-sentinel-trader-production.up.railway.app |
@@ -16,11 +16,18 @@
 
 ## 1. What Is GST?
 
-An AI-powered autonomous trading system that combines multiple AI agents for market analysis and decision-making. Currently running in Alpaca paper trading mode with Telegram-based human approval for all trades.
+A **committee-based, multi-agent trading decision system** with:
+- Explicit role separation
+- Thesis-first reasoning
+- Visible AI debate (2 rounds)
+- Majority voting with tie-breaking
+- Technical validation as check-and-balance
+- Explainable Telegram output
+- HOLD as a first-class outcome
 
 **Core Philosophy: "ANCHOR in history, ORIENT toward future"**
 
-The system combines historical pattern recognition with forward-looking catalyst analysis. It practices second-order thinking to find non-obvious opportunities.
+This system is **not** a black-box trading bot. It prioritizes clarity, discipline, auditability, and trust over speed or trade frequency.
 
 **Example:**
 ```
@@ -33,70 +40,130 @@ Second-Order: SpaceX IPO → attention to space sector → investors comparison 
 
 ---
 
-## 2. Architecture Overview
+## 2. Architecture Overview (v3.0.0)
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         GANN SENTINEL TRADER v2.4.3                         │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-          ┌───────────────────────────┼───────────────────────────┐
-          ▼                           ▼                           ▼
-┌─────────────────┐           ┌─────────────────┐           ┌─────────────────┐
-│    SCANNERS     │           │   AI COUNCIL    │           │    EXECUTORS    │
-│  (Data Input)   │           │     (MACA)      │           │    (Output)     │
-└─────────────────┘           └─────────────────┘           └─────────────────┘
-│ • Grok          │           │ • Grok Thesis   │           │ • Risk Engine   │
-│ • FRED          │    ───►   │ • Perplexity    │    ───►   │ • Alpaca        │
-│ • Polymarket    │           │ • ChatGPT       │           │ • Telegram      │
-│ • Technical     │           │ • Claude        │           │                 │
-│ • Event (27)    │           │   (Synthesis)   │           │                 │
-└─────────────────┘           └─────────────────┘           └─────────────────┘
+Scanners (data only)
+       ↓
+Analysts (independent theses)
+       ↓
+Debate Layer (cross-examination, 2 rounds)
+       ↓
+Synthesizer / Chair (tie-break + final thesis)
+       ↓
+Risk Engine (hard constraints)
+       ↓
+Telegram (explainability + debate transcript)
+       ↓
+Execution (paper or live)
+       ↓
+Learning / Logging
 ```
-
-### MACA (Multi-Agent Consensus Architecture)
-
-Four AI systems work together:
-
-| AI | Role | Specialty |
-|----|------|-----------|
-| **Grok** | Signal Generator | Social sentiment, X/Twitter trends, live search |
-| **Perplexity** | Researcher | Fundamental analysis, citations, financial data |
-| **ChatGPT** | Pattern Finder | Technical patterns, risk scenarios, market structure |
-| **Claude** | Senior Trader (CIO) | Synthesis, final decision, conviction scoring |
-
-**MACA Flow:**
-1. Phase 1: Grok, Perplexity, ChatGPT generate theses (parallel)
-2. Phase 2: Claude synthesizes all theses
-3. Phase 3: Peer review (if conviction ≥ 80)
-4. Phase 4: Final decision → Risk Engine → Human Approval
 
 ---
 
-## 3. File Structure
+## 3. Model Roles (STRICT)
+
+Each AI model has a **single epistemic role**. No model may operate outside its role.
+
+### Scanners (No Opinions)
+| Scanner | Source | Purpose |
+|---------|--------|---------|
+| FRED Scanner | Federal Reserve | Macroeconomic indicators |
+| Polymarket Scanner | Prediction Markets | Market expectations (NO SPORTS) |
+| Event Scanner | Grok (parsed) | 27 corporate event types |
+| Technical Scanner | Alpaca | OHLCV + indicators ONLY |
+
+Scanners **must not** propose trades or opinions.
+
+### Analysts (Each produces a thesis)
+
+| Model | Role | Purpose |
+|-------|------|---------|
+| **Grok** | Narrative Momentum Analyst | Detect emerging/accelerating narratives from X/Twitter |
+| **Perplexity** | External Reality Analyst | Web facts, filings, earnings, macro news |
+| **ChatGPT** | Sentiment & Cognitive Bias Analyst | Market psychology & bias detection |
+| **Claude** | Technical Structure Validator | Chart validity ONLY (SUPPORTS/WEAKENS/INVALIDATES) |
+
+Claude **must not**: browse, propose trades independently, or override synthesis.
+
+### Synthesizer / Chair
+
+- Implemented as **ChatGPT Chair** (separate role from ChatGPT Analyst)
+- Does NOT generate new signals or browse
+- Weighs analyst theses + debate outcomes
+- Breaks **2-2 vote ties**
+- Produces the **Final Investment Thesis**
+- Defaults to HOLD when ambiguity remains
+
+---
+
+## 4. Debate Layer
+
+### Purpose
+Enable **visible, logged disagreement** between analysts before synthesis.
+
+### Debate Rules
+- Debate occurs **after analysts submit initial theses**
+- Every analyst speaks **exactly twice** (2 rounds)
+- No new data sources allowed during debate
+- Analysts may defend OR revise their position
+- Each turn must end with an explicit **vote**
+
+### Debate Trigger
+Debate is triggered if:
+- Analysts disagree on action (LONG / SHORT / HOLD)
+- OR confidence dispersion exceeds threshold
+- OR Claude issues a technical INVALIDATION
+
+### Voting & Consensus
+
+| Vote Pattern | Outcome |
+|--------------|---------|
+| 4–0 | Execute |
+| 3–1 | Execute |
+| 2–2 | Chair breaks tie |
+| 2–1–1 | HOLD |
+| Majority HOLD | HOLD |
+
+**Technical Check-and-Balance:** If Claude outputs INVALIDATES, require supermajority (3 of 4) to proceed.
+
+---
+
+## 5. File Structure
 
 ```
 gann-sentinel-trader/
 ├── agent.py                 # Main orchestrator - START HERE
 ├── temporal.py              # Shared time framework (market hours, holidays)
-├── database.py              # SQLite persistence layer
+├── config.py                # All configuration including debate flags
 │
 ├── SCANNERS (Data Input)
-│   ├── grok_scanner.py      # xAI Grok with live_search
+│   ├── grok_scanner.py      # xAI Grok with live_search + debate()
 │   ├── fred_scanner.py      # Federal Reserve macro data
 │   ├── polymarket_scanner.py # Prediction markets (17 categories)
 │   ├── technical_scanner.py # 5-year chart analysis via Alpaca
 │   └── event_scanner.py     # 27 corporate event types
 │
 ├── ANALYZERS (AI Council)
-│   ├── claude_analyst.py    # Claude synthesis + decisions
-│   ├── claude_maca_extension.py # MACA-specific Claude logic
-│   ├── chatgpt_analyst.py   # GPT-4o analysis
-│   └── maca_orchestrator.py # 4-phase MACA cycle
+│   ├── perplexity_analyst.py   # External facts + debate()
+│   ├── chatgpt_analyst.py      # Sentiment analysis + debate()
+│   ├── chatgpt_chair.py        # NEW: Synthesizer/Chair (tie-breaker)
+│   ├── claude_technical_validator.py # NEW: Technical validation only
+│   └── claude_analyst.py       # Legacy (kept for backwards compatibility)
+│
+├── CORE
+│   └── maca_orchestrator.py # Committee debate + synthesis
+│
+├── STORAGE
+│   └── database.py          # SQLite with debate_sessions + debate_turns
 │
 ├── EXECUTORS
 │   ├── risk_engine.py       # Position sizing, limits, validation
-│   └── telegram_bot.py      # Bot interface + approval workflow
+│   └── alpaca_executor.py   # Alpaca trading API
+│
+├── NOTIFICATIONS
+│   └── telegram_bot.py      # Bot interface + debate display
 │
 ├── UTILITIES
 │   ├── learning_engine.py   # Performance tracking + adaptation
@@ -104,89 +171,51 @@ gann-sentinel-trader/
 │   └── exporter.py          # CSV/Parquet export
 │
 └── DOCS
-    ├── GST_MASTER_FRAMEWORK.md  # Complete system documentation
-    ├── MACA_SPEC_v1.md          # MACA architecture details
-    └── PHASE2_DEPLOYMENT_GUIDE.md
+    ├── CHANGELOG.md         # Version history and bug fixes
+    ├── GST_MASTER_FRAMEWORK.md
+    └── MACA_SPEC_v1.md
 ```
 
 ---
 
-## 4. Key Concepts
+## 6. Configuration Flags
 
-### Signal Categories
-
-| Scanner | Source | Signals |
-|---------|--------|---------|
-| Grok | xAI API | Sentiment, catalysts, trending narratives |
-| FRED | Federal Reserve | Yields, CPI, GDP, unemployment |
-| Polymarket | Prediction Markets | 17 investment categories (excludes sports/entertainment) |
-| Technical | Alpaca | Support/resistance, trends, volume |
-| Event | Grok (parsed) | 27 corporate event types |
-
-### The 27 Event Types
-
-Leadership changes, insider buying/selling, buybacks, dividends, FDA approvals, DOJ investigations, S&P 500 changes, activist investors, short seller reports, government contracts, M&A, spinoffs, bankruptcies, and more.
-
-### Risk Parameters
-
+### Debate Layer (config.py)
 ```python
-CONVICTION_THRESHOLD = 80      # Min score to trigger trade
-MAX_POSITION_SIZE_PCT = 20     # Max 20% per position
-DAILY_LOSS_LIMIT_PCT = 3       # Max 3% daily drawdown
-SECTOR_CONCENTRATION_PCT = 40  # Max 40% in one sector
-MIN_LIQUIDITY = 1_000_000      # $1M daily volume minimum
-DEFAULT_STOP_LOSS_PCT = 8      # 8% stop loss
+DEBATE_ENABLED = True         # Enable 2-round cross-examination
+DEBATE_ROUNDS = 2             # Number of debate rounds
+DEBATE_MIN_AVG_CONFIDENCE = 0.60  # Min avg confidence to proceed
+TECH_INVALIDATION_SUPERMAJORITY = True  # Require 3/4 to override tech veto
+```
+
+### Environment Variables
+```bash
+# Required
+XAI_API_KEY=           # Grok
+ANTHROPIC_API_KEY=     # Claude
+ALPACA_API_KEY=
+ALPACA_SECRET_KEY=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+
+# MACA (required for committee mode)
+PERPLEXITY_API_KEY=    # Perplexity Sonar Pro
+OPENAI_API_KEY=        # GPT-4o (used by ChatGPT Analyst AND Chair)
+
+# Optional
+DEBATE_ENABLED=ON      # Default: ON
+DEBATE_ROUNDS=2        # Default: 2
+LOG_LEVEL=INFO
 ```
 
 ---
 
-## 5. Development Workflow
-
-### Philosophy: "Build It Lean"
-
-1. Complete Phase 1 before adding Phase 2 features
-2. Observe production behavior before adding complexity
-3. Avoid premature optimization
-
-### TDD Approach
-
-```bash
-# 1. Write tests first
-# 2. Run tests, confirm they fail
-# 3. Implement until tests pass
-# 4. Commit
-```
-
-### Deployment
-
-```bash
-# Auto-deploys on push to main
-git add .
-git commit -m "description"
-git push origin main
-
-# Verify
-curl https://gann-sentinel-trader-production.up.railway.app/health
-```
-
-### Logs API Endpoints
-
-| Endpoint | Auth | Description |
-|----------|------|-------------|
-| `GET /health` | No | Service health |
-| `GET /api/status` | Token | Full system status |
-| `GET /api/logs` | Token | Telegram history |
-| `GET /api/errors` | Token | System errors |
-| `GET /api/signals` | Token | Recent signals |
-
----
-
-## 6. Telegram Commands
+## 7. Telegram Commands
 
 | Command | Description |
 |---------|-------------|
-| `/scan` | Run full MACA scan cycle |
-| `/check [TICKER]` | Analyze specific stock with MACA |
+| `/scan` | Run full committee debate cycle |
+| `/check [TICKER]` | Analyze specific stock with full debate |
 | `/status` | Portfolio and system health |
 | `/positions` | Current open positions |
 | `/pending` | Trades awaiting approval |
@@ -201,51 +230,23 @@ curl https://gann-sentinel-trader-production.up.railway.app/health
 
 ---
 
-## 7. Environment Variables
-
-### Required
-```bash
-XAI_API_KEY=           # Grok
-ANTHROPIC_API_KEY=     # Claude
-ALPACA_API_KEY=        
-ALPACA_SECRET_KEY=     
-ALPACA_PAPER=true      # Paper trading mode
-TELEGRAM_BOT_TOKEN=    
-TELEGRAM_CHAT_ID=      
-```
-
-### Optional (MACA)
-```bash
-MACA_ENABLED=true
-PERPLEXITY_API_KEY=    # Perplexity Sonar Pro
-OPENAI_API_KEY=        # GPT-4o
-```
-
-### Optional (Monitoring)
-```bash
-LOGS_API_TOKEN=        # For remote monitoring
-LOG_LEVEL=INFO
-```
-
----
-
-## 8. Current State (v2.4.3)
+## 8. Current State (v3.0.0)
 
 ### What's Working
-- Full MACA for both scheduled scans and `/check` command
+- **Committee-based debate** with 4 AI analysts
+- **2-round cross-examination** before synthesis
+- **Majority voting** with Chair tie-breaker
+- **Technical check-and-balance** (Claude as validator)
+- Trade execution pipeline (scan → debate → approve → Alpaca order)
 - Smart scheduling (2x daily: 9:35 AM, 12:30 PM ET)
 - 27 event type detection
 - Learning Engine tracking outcomes
-- Sports/entertainment filter for Polymarket
-- Trade blocker visibility in Telegram
-- Logs API for remote monitoring
-- **Trade execution pipeline** (scan → approve → Alpaca order)
+- Debate transcript in Telegram
 
 ### Smart Schedule
 ```
 Scheduled Scans: 9:35 AM ET, 12:30 PM ET (weekdays only)
 Manual Commands: /scan and /check always available
-Cost Reduction: ~75% vs hourly scanning
 ```
 
 ### Known Considerations
@@ -258,11 +259,15 @@ Cost Reduction: ~75% vs hourly scanning
 ## 9. Safety Architecture
 
 ```
-Signal Sources → Grok/FRED/Polymarket/Technical/Event
+Signal Sources → FRED/Polymarket/Technical/Event (data only)
        ↓
-AI Council → Grok + Perplexity + ChatGPT generate theses
+AI Analysts → Grok + Perplexity + ChatGPT + Claude (theses)
        ↓
-Claude → Synthesizes, assigns conviction score
+Debate Layer → 2 rounds, each speaks twice
+       ↓
+Vote Summary → Majority wins, Chair breaks ties
+       ↓
+Chair Synthesis → Final Investment Thesis
        ↓
 Risk Engine → Position sizing, limits, validation
        ↓
@@ -272,62 +277,48 @@ Execution → Alpaca paper trading
 ```
 
 **Key Safety Principles:**
-1. Multiple AI sources prevent echo chambers
-2. Risk Engine has final authority on position sizing
-3. Human approval required for ALL trades
-4. Paper trading until system proves itself
+1. **Multiple AI sources prevent echo chambers** - 4 independent theses
+2. **Visible disagreement is information** - Debate transcripts logged
+3. **Roles are sacred** - No AI operates outside its role
+4. **Technical veto power** - Claude can block weak consensus
+5. **HOLD is a success outcome** - Capital preservation > opportunity
+6. **Human approval required for ALL trades**
 
 ---
 
-## 10. Common Tasks
+## 10. Design Principles (DO NOT VIOLATE)
 
-### Add a new ticker to watchlist
-Edit `config.py` or pass via environment variable.
+1. HOLD is a success outcome
+2. Disagreement is information
+3. Roles are sacred
+4. Explainability > frequency
+5. Capital preservation > opportunity
 
-### Debug a failed scan
-```bash
-# Check Railway logs
-# Or use Logs API:
-curl -H "Authorization: Bearer TOKEN" \
-  https://gann-sentinel-trader-production.up.railway.app/api/errors
-```
+**Optimize for:** clarity, discipline, auditability, trust
 
-### Test locally
-```bash
-python -m pytest tests/ -v
-```
-
-### Check system status
-```bash
-curl https://gann-sentinel-trader-production.up.railway.app/api/status \
-  -H "Authorization: Bearer QzHBtENzt-sYeLXKSUzEN_v6VREwfEnGaqpoQVmOBWE"
-```
+**DO NOT optimize for:** speed, trade frequency, cleverness
 
 ---
 
-## 11. Documentation Links
+## 11. Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 3.0.0 | Jan 2026 | Committee-based debate architecture |
+| 2.4.3 | Jan 2026 | Trade execution pipeline fixes |
+| 2.4.2 | Jan 2026 | Full MACA for scheduled scans |
+| 2.4.0 | Jan 2026 | Learning Engine, Smart Scheduling |
+| 2.3.0 | Jan 2026 | Event Scanner (27 types) |
+| 2.0.0 | Jan 2026 | Forward-predictive system |
+| 1.0.0 | Dec 2025 | Initial release |
+
+---
+
+## 12. Documentation Links
 
 - **Changelog:** `CHANGELOG.md` - Version history and bug fixes
 - **Master Framework:** `GST_MASTER_FRAMEWORK.md` - Complete system docs
 - **MACA Spec:** `MACA_SPEC_v1.md` - Multi-agent architecture
-- **Deployment:** `PHASE2_DEPLOYMENT_GUIDE.md` - Setup instructions
-- **Signal Spec:** `GROK_SIGNAL_AGENT_SPEC_v1_1.md` - Grok scanner details
-- **Forward System:** `FORWARD_PREDICTIVE_SYSTEM_v2_1.md` - Predictive methodology
-
----
-
-## 12. Version History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 2.4.3 | Jan 2026 | Trade execution pipeline fixes (see CHANGELOG.md) |
-| 2.4.2 | Jan 2026 | Full MACA for scheduled scans, analysis.id fix |
-| 2.4.1 | Jan 2026 | Trade blocker visibility |
-| 2.4.0 | Jan 2026 | Learning Engine, Smart Scheduling |
-| 2.3.0 | Jan 2026 | Event Scanner (27 types) |
-| 2.2.0 | Jan 2026 | MACA for /check command |
-| 2.0.0 | Jan 2026 | Forward-predictive system |
-| 1.0.0 | Dec 2025 | Initial release |
 
 ---
 
@@ -341,5 +332,5 @@ curl https://gann-sentinel-trader-production.up.railway.app/api/status \
 
 ---
 
-*Last Updated: January 14, 2026*
+*Last Updated: January 17, 2026*
 *Maintainer: Kyle + Claude*

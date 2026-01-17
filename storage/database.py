@@ -245,6 +245,41 @@ class Database:
                 )
             """)
 
+            # =========================================================================
+            # NEW: Debate Sessions Table for Investment Committee Deliberation
+            # =========================================================================
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS debate_sessions (
+                    id TEXT PRIMARY KEY,
+                    scan_cycle_id TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # =========================================================================
+            # NEW: Debate Turns Table for Recording Each Speaker's Arguments
+            # =========================================================================
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS debate_turns (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    scan_cycle_id TEXT NOT NULL,
+                    round INTEGER NOT NULL,
+                    speaker TEXT NOT NULL,
+                    message TEXT,
+                    agreements JSON,
+                    disagreements JSON,
+                    changed_mind INTEGER,
+                    vote_action TEXT,
+                    vote_ticker TEXT,
+                    vote_side TEXT,
+                    vote_confidence REAL,
+                    raw JSON,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES debate_sessions(id)
+                )
+            """)
+
             # Create indices
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_timestamp ON signals(timestamp_utc)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_ticker ON signals(ticker)")
@@ -261,6 +296,11 @@ class Database:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_proposals_source ON ai_proposals(ai_source)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_reviews_cycle ON ai_reviews(scan_cycle_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_scan_cycles_status ON scan_cycles(status)")
+
+            # Debate indices
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_debate_sessions_cycle ON debate_sessions(scan_cycle_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_debate_turns_session ON debate_turns(session_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_debate_turns_cycle ON debate_turns(scan_cycle_id)")
 
             logger.info(f"Database initialized at {self.db_path}")
 
@@ -732,6 +772,68 @@ class Database:
             # Sort by date descending
             result = sorted(daily.values(), key=lambda x: x["date"], reverse=True)
             return result
+
+    # =========================================================================
+    # DEBATE SESSIONS AND TURNS
+    # =========================================================================
+
+    def create_debate_session(self, scan_cycle_id: str) -> str:
+        """Create a new debate session for a scan cycle."""
+        import uuid
+        session_id = str(uuid.uuid4())
+        with self._get_connection() as conn:
+            conn.execute(
+                "INSERT INTO debate_sessions (id, scan_cycle_id) VALUES (?, ?)",
+                (session_id, scan_cycle_id),
+            )
+            conn.commit()
+        return session_id
+
+    def save_debate_turn(self, session_id: str, scan_cycle_id: str, turn: dict) -> str:
+        """Persist a single debate turn."""
+        import uuid
+        turn_id = str(uuid.uuid4())
+        vote = turn.get("vote") or {}
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO debate_turns (
+                    id, session_id, scan_cycle_id, round, speaker, message,
+                    agreements, disagreements, changed_mind,
+                    vote_action, vote_ticker, vote_side, vote_confidence,
+                    raw
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    turn_id,
+                    session_id,
+                    scan_cycle_id,
+                    turn.get("round", 0),
+                    turn.get("speaker", "unknown"),
+                    turn.get("message"),
+                    json.dumps(turn.get("agreements")) if turn.get("agreements") else None,
+                    json.dumps(turn.get("disagreements")) if turn.get("disagreements") else None,
+                    1 if turn.get("changed_mind") else 0,
+                    vote.get("action"),
+                    vote.get("ticker"),
+                    vote.get("side"),
+                    vote.get("confidence"),
+                    json.dumps(turn),
+                ),
+            )
+            conn.commit()
+        return turn_id
+
+    def get_debate_turns(self, session_id: str) -> List[dict]:
+        """Get all debate turns for a session."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM debate_turns WHERE session_id = ? ORDER BY round, created_at",
+                (session_id,)
+            )
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
 
     # =========================================================================
     # SIGNALS (existing)

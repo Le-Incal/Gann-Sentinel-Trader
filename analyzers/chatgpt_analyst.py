@@ -416,6 +416,95 @@ Be specific about risk concerns. Quantify where possible."""
             "raw_response": raw_response
         }
 
+    # ------------------------------------------------------------------
+    # Debate Layer
+    # ------------------------------------------------------------------
+    async def debate(
+        self,
+        *,
+        scan_cycle_id: str,
+        round_num: int,
+        own_thesis: Dict[str, Any],
+        other_theses: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Participate in committee debate (role-constrained).
+
+        Returns a structured response that can be logged and displayed.
+        """
+
+        if not self.is_configured:
+            return {
+                "speaker": "chatgpt",
+                "round": round_num,
+                "message": "ChatGPT not configured",
+                "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                "changed_mind": False,
+            }
+
+        system = """You are participating in an investment committee debate.
+
+You are ChatGPT in the role of Sentiment + Cognitive Bias Analyst.
+
+RULES:
+1) Stay within your role: sentiment regime + bias contamination.
+2) Do NOT browse the web. Do NOT analyze charts.
+3) Do NOT invent new signals. Only react to provided theses.
+4) You may defend OR revise your prior vote.
+
+Output ONLY JSON in this schema:
+{
+  "message": "2-6 sentences",
+  "agreements": ["..."],
+  "disagreements": ["..."],
+  "changed_mind": true|false,
+  "vote": {"action": "BUY"|"SELL"|"HOLD", "ticker": "..."|null, "side": "BUY"|"SELL"|null, "confidence": 0.0-1.0}
+}
+"""
+
+        user = {
+            "round": round_num,
+            "own_thesis": own_thesis,
+            "other_theses": other_theses,
+        }
+
+        try:
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            body = {
+                "model": self.model,
+                "temperature": 0.2,
+                "max_tokens": 900,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+                ],
+                "response_format": {"type": "json_object"},
+            }
+
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                resp = await client.post(f"{self.base_url}/chat/completions", headers=headers, json=body)
+                if resp.status_code != 200:
+                    return {
+                        "speaker": "chatgpt",
+                        "round": round_num,
+                        "message": f"Debate API error {resp.status_code}",
+                        "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                        "changed_mind": False,
+                    }
+
+                content = resp.json()["choices"][0]["message"]["content"]
+                parsed = json.loads(content)
+                parsed.update({"speaker": "chatgpt", "round": round_num})
+                return parsed
+
+        except Exception as e:
+            return {
+                "speaker": "chatgpt",
+                "round": round_num,
+                "message": f"Debate exception: {e}",
+                "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                "changed_mind": False,
+            }
+
     def _empty_proposal(self, scan_cycle_id: str, reason: str) -> Dict[str, Any]:
         """Return empty proposal when generation fails."""
         return {

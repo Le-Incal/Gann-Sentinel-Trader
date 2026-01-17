@@ -20,14 +20,17 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List, TYPE_CHECKING
+from typing import Optional, Dict, Any, List, TYPE_CHECKING, Tuple
+
+from config import Config
 
 if TYPE_CHECKING:
     from storage.database import Database
     from scanners.grok_scanner import GrokScanner
     from analyzers.perplexity_analyst import PerplexityAnalyst
     from analyzers.chatgpt_analyst import ChatGPTAnalyst
-    from analyzers.claude_maca_extension import ClaudeMACAMixin
+    from analyzers.chatgpt_chair import ChatGPTChair
+    from analyzers.claude_technical_validator import ClaudeTechnicalValidator
     from notifications.telegram_bot import TelegramBot
 
 logger = logging.getLogger(__name__)
@@ -37,8 +40,12 @@ class MACAOrchestrator:
     """
     Orchestrates the Multi-Agent Consensus Architecture (MACA) scan cycle.
 
-    Coordinates Grok, Perplexity, and ChatGPT for thesis generation,
-    with Claude as the Chief Investment Officer for synthesis and final decisions.
+    Architecture (current):
+    - Phase 1: Parallel thesis generation (Grok, Perplexity, ChatGPT)
+    - Phase 1b: Committee Debate (2 rounds; each speaker twice; visible log)
+    - Phase 2: Chair synthesis (ChatGPT Chair)
+
+    Claude is used as the Technical Validator (check-and-balance), not as chair.
     """
 
     def __init__(
@@ -47,7 +54,8 @@ class MACAOrchestrator:
         grok: "GrokScanner",
         perplexity: "PerplexityAnalyst",
         chatgpt: "ChatGPTAnalyst",
-        claude: "ClaudeMACAMixin",
+        chair: "ChatGPTChair",
+        claude_technical: "ClaudeTechnicalValidator",
         telegram: Optional["TelegramBot"] = None
     ):
         """
@@ -58,7 +66,8 @@ class MACAOrchestrator:
             grok: Grok scanner for sentiment analysis
             perplexity: Perplexity analyst for fundamental research
             chatgpt: ChatGPT analyst for pattern recognition
-            claude: Claude analyst with MACA synthesis capability
+            chair: ChatGPT Chair synthesizer
+            claude_technical: Claude technical validator (check-and-balance)
             telegram: Optional Telegram bot for notifications
         """
         # Defensive check: ensure db is an instance, not a class
@@ -70,7 +79,8 @@ class MACAOrchestrator:
         self.grok = grok
         self.perplexity = perplexity
         self.chatgpt = chatgpt
-        self.claude = claude
+        self.chair = chair
+        self.claude_technical = claude_technical
         self.telegram = telegram
 
         # Track API costs per cycle
@@ -79,7 +89,7 @@ class MACAOrchestrator:
     @property
     def is_configured(self) -> bool:
         """Check if all AI components are properly configured."""
-        components = [self.grok, self.perplexity, self.chatgpt, self.claude]
+        components = [self.grok, self.perplexity, self.chatgpt, self.chair, self.claude_technical]
         for component in components:
             if component is None:
                 return False
@@ -130,6 +140,44 @@ class MACAOrchestrator:
     # Conviction threshold for trade execution
     CONVICTION_THRESHOLD = 80
 
+    # Debate constants
+    DEBATE_ROUNDS = 2
+
+    def _build_signal_context(
+        self,
+        fred_signals: Optional[List[Dict[str, Any]]] = None,
+        polymarket_signals: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """Build a compact, analyst-readable signal inventory for prompts.
+
+        This is intentionally short (fits within token budgets) but explicit
+        enough that each analyst can:
+          - state how many signals were considered
+          - rank what mattered
+          - explain conflicts
+        """
+
+        fred_signals = fred_signals or []
+        polymarket_signals = polymarket_signals or []
+
+        def _sig_line(s: Dict[str, Any]) -> str:
+            summary = s.get("summary") or s.get("description") or ""
+            src = s.get("source") or s.get("source_type") or ""
+            conf = s.get("confidence")
+            conf_txt = f" (conf={conf:.2f})" if isinstance(conf, (int, float)) else ""
+            return f"- [{src}] {summary}{conf_txt}".strip()
+
+        lines: List[str] = []
+        lines.append("SIGNAL INVENTORY (for attribution + counts):")
+        lines.append(f"- FRED signals: {len(fred_signals)}")
+        for s in fred_signals[:6]:
+            lines.append(_sig_line(s))
+        lines.append(f"- Polymarket signals: {len(polymarket_signals)} (NO sports/entertainment)")
+        for s in polymarket_signals[:6]:
+            lines.append(_sig_line(s))
+
+        return "\n".join(lines)
+
     async def run_scan_cycle(
         self,
         portfolio: Dict[str, Any],
@@ -175,22 +223,38 @@ class MACAOrchestrator:
                 cycle_id=cycle_id,
                 portfolio=portfolio,
                 available_cash=available_cash,
-                market_context=market_context
+                market_context=market_context,
+                fred_signals=fred_signals,
+                polymarket_signals=polymarket_signals
             )
 
             phase1_complete = datetime.now(timezone.utc)
             logger.info(f"Phase 1 complete: {len(proposals)} proposals generated")
 
             # ================================================================
-            # PHASE 2: Claude synthesis
+            # PHASE 1B: Debate (optional)
+            # ================================================================
+            debate, vote_summary, proposals_with_tech, signal_inventory = await self._phase1b_debate(
+                cycle_id=cycle_id,
+                proposals=proposals,
+                fred_signals=fred_signals,
+                polymarket_signals=polymarket_signals,
+                technical_analysis=technical_analysis,
+            )
+
+            # ================================================================
+            # PHASE 2: Chair synthesis
             # ================================================================
             synthesis = await self._phase2_synthesize(
                 cycle_id=cycle_id,
-                proposals=proposals,
+                proposals=proposals_with_tech,
                 portfolio=portfolio,
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
-                technical_analysis=technical_analysis
+                technical_analysis=technical_analysis,
+                debate=debate,
+                vote_summary=vote_summary,
+                signal_inventory=signal_inventory,
             )
 
             phase2_complete = datetime.now(timezone.utc)
@@ -226,8 +290,14 @@ class MACAOrchestrator:
             has_side = recommendation.get("side") in ["BUY", "SELL"]
             is_actionable = decision_type in ["TRADE", "WATCH"]  # Either TRADE or WATCH can be actionable
 
+            # ------------------------------------------------
+            # Consensus failure modes (hard gate)
+            # Use debate vote summary as the source of truth.
+            # ------------------------------------------------
+            consensus = vote_summary or {"hold": False, "reason": ""}
+
             # Proceed if: high conviction + valid ticker/side + not explicitly NO_TRADE
-            proceed = meets_threshold and has_ticker and has_side and is_actionable
+            proceed = meets_threshold and has_ticker and has_side and is_actionable and not consensus.get("hold", False)
 
             logger.info(f"DEBUG DECISION: meets_threshold={meets_threshold}, has_ticker={has_ticker}, "
                        f"has_side={has_side}, is_actionable={is_actionable}, proceed={proceed}")
@@ -245,8 +315,9 @@ class MACAOrchestrator:
                 "final_conviction": conviction,
                 "proceed_to_execution": proceed,
                 "recommendation": recommendation if proceed else None,
-                "source": "claude_synthesis_direct",
+                "source": "chair_synthesis",
                 "rationale": synthesis.get("rationale", ""),
+                "consensus": consensus,
             }
 
             logger.info(f"DEBUG FINAL_DECISION: proceed_to_execution={final_decision.get('proceed_to_execution')}")
@@ -268,7 +339,7 @@ class MACAOrchestrator:
                 await self._notify_decision(
                     final_decision=final_decision,
                     synthesis=synthesis,
-                    proposals=proposals,
+                    proposals=proposals_with_tech,
                     technical_analysis=technical_analysis,
                     portfolio=portfolio
                 )
@@ -280,7 +351,7 @@ class MACAOrchestrator:
                 "status": "completed",
                 "decision_type": decision_type,
                 "synthesis": synthesis,
-                "proposals": proposals,
+                "proposals": proposals_with_tech,
                 "reviews": [],  # No reviews in 2-phase architecture
                 "final_decision": final_decision,
                 "proceed_to_execution": proceed,
@@ -369,15 +440,29 @@ class MACAOrchestrator:
             logger.info(f"Phase 1 complete for {ticker}: {len(proposals)} proposals generated")
 
             # ================================================================
-            # PHASE 2: Claude synthesis
+            # PHASE 1B: Debate (optional)
+            # ================================================================
+            debate, vote_summary, proposals_with_tech, signal_inventory = await self._phase1b_debate(
+                cycle_id=cycle_id,
+                proposals=proposals,
+                fred_signals=fred_signals,
+                polymarket_signals=polymarket_signals,
+                technical_analysis=technical_analysis,
+            )
+
+            # ================================================================
+            # PHASE 2: Chair synthesis
             # ================================================================
             synthesis = await self._phase2_synthesize(
                 cycle_id=cycle_id,
-                proposals=proposals,
+                proposals=proposals_with_tech,
                 portfolio=portfolio,
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
-                technical_analysis=technical_analysis
+                technical_analysis=technical_analysis,
+                debate=debate,
+                vote_summary=vote_summary,
+                signal_inventory=signal_inventory,
             )
 
             phase2_complete = datetime.now(timezone.utc)
@@ -397,7 +482,10 @@ class MACAOrchestrator:
             has_side = recommendation.get("side") in ["BUY", "SELL"]
             is_actionable = decision_type in ["TRADE", "WATCH"]
 
-            proceed = meets_threshold and has_ticker and has_side and is_actionable
+            # Use debate vote summary as the source of truth.
+            consensus = vote_summary or {"hold": False, "reason": ""}
+
+            proceed = meets_threshold and has_ticker and has_side and is_actionable and not consensus.get("hold", False)
 
             logger.info(f"Ticker check decision for {ticker}: proceed={proceed}, conviction={conviction}")
 
@@ -410,9 +498,10 @@ class MACAOrchestrator:
                 "final_conviction": conviction,
                 "proceed_to_execution": proceed,
                 "recommendation": recommendation if proceed else None,
-                "source": "claude_synthesis_direct",
+                "source": "chair_synthesis",
                 "rationale": synthesis.get("rationale", ""),
-                "ticker_checked": ticker
+                "ticker_checked": ticker,
+                "consensus": consensus,
             }
 
             # Update scan cycle record
@@ -428,7 +517,7 @@ class MACAOrchestrator:
                 await self._notify_decision(
                     final_decision=final_decision,
                     synthesis=synthesis,
-                    proposals=proposals,
+                    proposals=proposals_with_tech,
                     technical_analysis=technical_analysis,
                     portfolio=portfolio
                 )
@@ -441,7 +530,7 @@ class MACAOrchestrator:
                 "ticker": ticker,
                 "decision_type": decision_type,
                 "synthesis": synthesis,
-                "proposals": proposals,
+                "proposals": proposals_with_tech,
                 "reviews": [],  # No reviews in 2-phase architecture
                 "final_decision": final_decision,
                 "proceed_to_execution": proceed,
@@ -667,7 +756,9 @@ class MACAOrchestrator:
         cycle_id: str,
         portfolio: Dict[str, Any],
         available_cash: float,
-        market_context: Optional[str] = None
+        market_context: Optional[str] = None,
+        fred_signals: Optional[List[Dict[str, Any]]] = None,
+        polymarket_signals: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Phase 1: Generate thesis proposals from all AI sources in parallel.
@@ -691,6 +782,14 @@ class MACAOrchestrator:
             "cash": available_cash
         }
 
+        # Build shared context so each analyst can explicitly attribute signals.
+        signal_context = self._build_signal_context(
+            fred_signals=fred_signals,
+            polymarket_signals=polymarket_signals,
+        )
+
+        combined_context = "\n\n".join([c for c in [market_context, signal_context] if c])
+
         # Generate theses in parallel with timeout handling
         tasks = []
 
@@ -702,7 +801,7 @@ class MACAOrchestrator:
                 portfolio_summary=portfolio_summary,
                 available_cash=available_cash,
                 scan_cycle_id=cycle_id,
-                market_context=market_context
+                market_context=combined_context
             ))
         else:
             # Grok scanner might use different method signature
@@ -720,6 +819,7 @@ class MACAOrchestrator:
             portfolio_summary=portfolio_summary,
             available_cash=available_cash,
             scan_cycle_id=cycle_id
+            ,additional_context=signal_context
         ))
 
         # ChatGPT thesis
@@ -729,7 +829,8 @@ class MACAOrchestrator:
             portfolio_summary=portfolio_summary,
             available_cash=available_cash,
             scan_cycle_id=cycle_id,
-            market_context=market_context
+            market_context=combined_context,
+            additional_context=signal_context
         ))
 
         # Wait for all with timeout
@@ -747,6 +848,306 @@ class MACAOrchestrator:
                 self.db.save_ai_proposal(result)
 
         return proposals
+
+    async def _phase1b_debate(
+        self,
+        *,
+        cycle_id: str,
+        proposals: List[Dict[str, Any]],
+        fred_signals: List[Dict[str, Any]],
+        polymarket_signals: List[Dict[str, Any]],
+        technical_analysis: Optional[Dict[str, Any]],
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], Dict[str, Any]]:
+        """Optional committee debate.
+
+        Returns: (debate_summary, vote_summary, proposals_with_tech, signal_inventory)
+        """
+
+        # Signal inventory for explainability/debuggability.
+        signal_inventory: Dict[str, Any] = {
+            "by_source": {
+                "FRED": len(fred_signals or []),
+                "Polymarket": len(polymarket_signals or []),
+                "Technical": 1 if technical_analysis else 0,
+            },
+            "total": int(len(fred_signals or []) + len(polymarket_signals or []) + (1 if technical_analysis else 0)),
+        }
+
+        if not Config.DEBATE_ENABLED:
+            return {}, {"hold": False, "reason": "Debate disabled"}, proposals, signal_inventory
+
+        # Determine a candidate ticker/side from the initial proposals.
+        candidate_ticker, candidate_side = self._pick_candidate_from_proposals(proposals)
+
+        # Create DB session for the debate transcript.
+        session_id = None
+        try:
+            session_id = self.db.create_debate_session(cycle_id)
+        except Exception as e:
+            logger.warning(f"Could not create debate session: {e}")
+
+        # Add technical validator as a committee member (round 0).
+        tech_turn0 = await self.claude_technical.initial_vote(
+            scan_cycle_id=cycle_id,
+            candidate_ticker=candidate_ticker,
+            candidate_side=candidate_side,
+            technical_analysis=technical_analysis,
+        )
+        if session_id:
+            try:
+                self.db.save_debate_turn(session_id, cycle_id, tech_turn0)
+            except Exception:
+                pass
+
+        tech_proposal = self._technical_turn_to_proposal(cycle_id, tech_turn0)
+        proposals_with_tech = list(proposals or []) + [tech_proposal]
+
+        # Seed "own_thesis" payloads.
+        base_theses = [self._proposal_to_thesis_stub(p) for p in proposals_with_tech]
+
+        # Track last turn by speaker.
+        last_turns: Dict[str, Dict[str, Any]] = {
+            "grok": {"speaker": "grok", "round": 0, "vote": self._proposal_to_vote(self._get_by_ai(proposals_with_tech, "grok"))},
+            "perplexity": {"speaker": "perplexity", "round": 0, "vote": self._proposal_to_vote(self._get_by_ai(proposals_with_tech, "perplexity"))},
+            "chatgpt": {"speaker": "chatgpt", "round": 0, "vote": self._proposal_to_vote(self._get_by_ai(proposals_with_tech, "chatgpt"))},
+            "claude_technical": tech_turn0,
+        }
+
+        rounds: List[Dict[str, Any]] = []
+
+        # Debate rounds: each speaker speaks once per round.
+        for r in range(1, max(1, Config.DEBATE_ROUNDS) + 1):
+            round_turns: List[Dict[str, Any]] = []
+
+            # Prepare other theses (latest known) for each speaker.
+            for speaker in ["grok", "perplexity", "chatgpt", "claude_technical"]:
+                own = self._speaker_own_thesis_stub(speaker, proposals_with_tech, tech_turn0)
+                others = [t for t in base_theses if t.get("speaker") != speaker]
+
+                try:
+                    if speaker == "grok":
+                        turn = await self.grok.debate(scan_cycle_id=cycle_id, round_num=r, own_thesis=own, other_theses=others)
+                    elif speaker == "perplexity":
+                        turn = await self.perplexity.debate(scan_cycle_id=cycle_id, round_num=r, own_thesis=own, other_theses=others)
+                    elif speaker == "chatgpt":
+                        turn = await self.chatgpt.debate(scan_cycle_id=cycle_id, round_num=r, own_thesis=own, other_theses=others)
+                    else:
+                        turn = await self.claude_technical.debate(
+                            scan_cycle_id=cycle_id,
+                            round_num=r,
+                            own_thesis=own,
+                            other_theses=others,
+                            technical_analysis=technical_analysis,
+                        )
+                except Exception as e:
+                    turn = {
+                        "speaker": speaker,
+                        "round": r,
+                        "message": f"Debate error: {e}",
+                        "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                        "changed_mind": False,
+                    }
+
+                # Normalize and persist.
+                turn.setdefault("speaker", speaker)
+                turn.setdefault("round", r)
+                if session_id:
+                    try:
+                        self.db.save_debate_turn(session_id, cycle_id, turn)
+                    except Exception:
+                        pass
+                last_turns[speaker] = turn
+                round_turns.append(turn)
+
+            rounds.append({"round": r, "turns": round_turns})
+
+        debate_summary = {
+            "session_id": session_id,
+            "rounds": rounds,
+        }
+
+        vote_summary = self._summarize_votes(last_turns, tech_turn0)
+
+        # Telegram: optionally show the debate as its own message.
+        if self.telegram and debate_summary.get("rounds"):
+            try:
+                await self.telegram.send_maca_debate_summary(
+                    cycle_id=cycle_id,
+                    debate=debate_summary,
+                    vote_summary=vote_summary,
+                )
+            except Exception:
+                pass
+
+        return debate_summary, vote_summary, proposals_with_tech, signal_inventory
+
+    def _get_by_ai(self, proposals: List[Dict[str, Any]], ai_source: str) -> Optional[Dict[str, Any]]:
+        for p in proposals or []:
+            if (p.get("ai_source") or p.get("speaker")) == ai_source:
+                return p
+            # Some proposals store ai_source under metadata
+            if p.get("metadata", {}).get("ai_source") == ai_source:
+                return p
+        return None
+
+    def _proposal_to_vote(self, proposal: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not proposal:
+            return {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0}
+        rec = proposal.get("recommendation") or {}
+        ticker = rec.get("ticker") or proposal.get("ticker")
+        side = rec.get("side") or proposal.get("side")
+        conviction = rec.get("conviction_score")
+        # Some proposals store confidence directly
+        conf = proposal.get("confidence")
+        if conf is None and isinstance(conviction, (int, float)):
+            conf = float(conviction) / 100.0
+        action = "HOLD"
+        if side in ["BUY", "SELL"] and ticker:
+            action = side
+        return {
+            "action": action,
+            "ticker": ticker,
+            "side": side if side in ["BUY", "SELL"] else None,
+            "confidence": float(conf) if isinstance(conf, (int, float)) else 0.0,
+        }
+
+    def _proposal_to_thesis_stub(self, proposal: Dict[str, Any]) -> Dict[str, Any]:
+        rec = proposal.get("recommendation") or {}
+        speaker = proposal.get("ai_source") or proposal.get("speaker") or "unknown"
+        return {
+            "speaker": speaker,
+            "proposal_type": proposal.get("proposal_type"),
+            "vote": self._proposal_to_vote(proposal),
+            "thesis": rec.get("thesis") or proposal.get("thesis") or "",
+            "key_signals": (proposal.get("supporting_evidence") or {}).get("key_signals") or [],
+            "signals_count": (proposal.get("supporting_evidence") or {}).get("signals_count"),
+        }
+
+    def _technical_turn_to_proposal(self, scan_cycle_id: str, tech_turn: Dict[str, Any]) -> Dict[str, Any]:
+        vote = tech_turn.get("vote") or {}
+        return {
+            "schema_version": "1.0.0",
+            "proposal_id": str(uuid.uuid4()),
+            "ai_source": "claude_technical",
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "scan_cycle_id": scan_cycle_id,
+            "proposal_type": "TECHNICAL_VALIDATION",
+            "recommendation": {
+                "ticker": vote.get("ticker"),
+                "side": vote.get("action") if vote.get("action") in ["BUY", "SELL"] else None,
+                "conviction_score": int(round(float(vote.get("confidence", 0.0)) * 100)),
+                "thesis": tech_turn.get("message") or "",
+                "time_horizon": "unspecified",
+                "catalyst": None,
+                "catalyst_deadline": None,
+            },
+            "supporting_evidence": {
+                "technical_verdict": tech_turn.get("verdict"),
+                "invalidation": tech_turn.get("invalidation"),
+            },
+            "raw_data": tech_turn,
+            "time_sensitive": False,
+            "metadata": {"role": "technical_validator"},
+        }
+
+    def _pick_candidate_from_proposals(self, proposals: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
+        counts: Dict[Tuple[str, str], int] = {}
+        for p in proposals or []:
+            v = self._proposal_to_vote(p)
+            if v.get("action") in ["BUY", "SELL"] and v.get("ticker"):
+                key = (v.get("ticker"), v.get("action"))
+                counts[key] = counts.get(key, 0) + 1
+        if not counts:
+            return None, None
+        (ticker, action), _ = max(counts.items(), key=lambda kv: kv[1])
+        return ticker, action
+
+    def _speaker_own_thesis_stub(self, speaker: str, proposals_with_tech: List[Dict[str, Any]], tech_turn0: Dict[str, Any]) -> Dict[str, Any]:
+        if speaker == "claude_technical":
+            return {
+                "speaker": "claude_technical",
+                "vote": (tech_turn0.get("vote") or {}),
+                "thesis": tech_turn0.get("message") or "",
+                "technical_verdict": tech_turn0.get("verdict"),
+            }
+        p = self._get_by_ai(proposals_with_tech, speaker)
+        return self._proposal_to_thesis_stub(p or {"ai_source": speaker, "recommendation": {}, "supporting_evidence": {}})
+
+    def _summarize_votes(self, last_turns: Dict[str, Dict[str, Any]], tech_turn0: Dict[str, Any]) -> Dict[str, Any]:
+        """Compute majority/tie, confidence aggregates, and hard-gate failure modes."""
+
+        speakers = ["grok", "perplexity", "chatgpt", "claude_technical"]
+        votes: List[Dict[str, Any]] = []
+        for s in speakers:
+            t = last_turns.get(s) or {}
+            v = t.get("vote") or {}
+            votes.append({
+                "speaker": s,
+                "action": (v.get("action") or "HOLD").upper(),
+                "ticker": v.get("ticker"),
+                "side": v.get("side") or (v.get("action") if v.get("action") in ["BUY", "SELL"] else None),
+                "confidence": float(v.get("confidence")) if isinstance(v.get("confidence"), (int, float)) else 0.0,
+            })
+
+        # Count votes by (action,ticker)
+        bucket: Dict[Tuple[str, Optional[str]], Dict[str, Any]] = {}
+        for v in votes:
+            key = (v["action"], v.get("ticker"))
+            if key not in bucket:
+                bucket[key] = {"count": 0, "confidence_sum": 0.0}
+            bucket[key]["count"] += 1
+            bucket[key]["confidence_sum"] += float(v.get("confidence", 0.0))
+
+        n = len(votes)
+        majority_required = (n // 2) + 1
+        top_key = None
+        top_count = 0
+        for k, d in bucket.items():
+            if d["count"] > top_count:
+                top_key, top_count = k, d["count"]
+
+        avg_conf = sum(v["confidence"] for v in votes) / max(1, n)
+
+        # Determine failure modes / tie handling
+        hold = False
+        reason = ""
+
+        # Identify tie: 2-2 split across two distinct keys
+        sorted_counts = sorted([d["count"] for d in bucket.values()], reverse=True)
+        is_tie_2_2 = (sorted_counts[:2] == [2, 2])
+        has_majority = top_count >= majority_required
+
+        if not has_majority and not is_tie_2_2:
+            hold = True
+            reason = "No majority consensus (fragmented votes)"
+
+        if avg_conf < float(Config.DEBATE_MIN_AVG_CONFIDENCE):
+            hold = True
+            reason = reason or f"Low average confidence ({avg_conf:.2f})"
+
+        # Technical check-and-balance:
+        tech_verdict = (tech_turn0.get("verdict") or "unknown")
+        if Config.TECH_INVALIDATION_SUPERMAJORITY and tech_verdict in ["no_trade", "analyze_only"]:
+            # Require supermajority (3/4) to proceed with a trade recommendation.
+            if top_key and top_key[0] in ["BUY", "SELL"] and top_count < 3:
+                hold = True
+                reason = reason or f"Technical validator restricts trading (verdict={tech_verdict}); needs supermajority"
+
+        # If it's a clean 2-2 tie, allow chair tie-breaker (do not HOLD here).
+        if is_tie_2_2 and not hold:
+            reason = "Vote tie (2-2); Chair will break"
+
+        return {
+            "n": n,
+            "votes": votes,
+            "buckets": {f"{k[0]}:{k[1] or 'NA'}": v for k, v in bucket.items()},
+            "top": {"action": top_key[0], "ticker": top_key[1], "count": top_count} if top_key else None,
+            "avg_confidence": avg_conf,
+            "tie_2_2": is_tie_2_2,
+            "hold": hold,
+            "reason": reason,
+            "technical_verdict": tech_verdict,
+        }
 
     async def _safe_generate_thesis(
         self,
@@ -910,44 +1311,65 @@ class MACAOrchestrator:
         portfolio: Dict[str, Any],
         fred_signals: List[Dict[str, Any]],
         polymarket_signals: List[Dict[str, Any]],
-        technical_analysis: Optional[Dict[str, Any]]
+        technical_analysis: Optional[Dict[str, Any]],
+        debate: Optional[Dict[str, Any]] = None,
+        vote_summary: Optional[Dict[str, Any]] = None,
+        signal_inventory: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Phase 2: Claude synthesizes all proposals into a recommendation.
+        """Phase 2: Chair synthesizes proposals + debate into a final thesis."""
 
-        Args:
-            cycle_id: Current scan cycle ID
-            proposals: List of thesis proposals from Phase 1
-            portfolio: Current portfolio state
-            fred_signals: Macro indicators from FRED
-            polymarket_signals: Prediction market data
-            technical_analysis: Technical chart analysis
-
-        Returns:
-            SynthesisDecision from Claude
-        """
-        logger.info(f"Phase 2: Claude synthesis for cycle {cycle_id}")
-
-        context = {
-            "proposals": proposals,
-            "portfolio": portfolio,
-            "fred_signals": fred_signals,
-            "polymarket_signals": polymarket_signals,
-            "technical_analysis": technical_analysis
-        }
+        logger.info(f"Phase 2: Chair synthesis for cycle {cycle_id}")
 
         try:
-            synthesis = await asyncio.wait_for(
-                self.claude.synthesize_proposals(context, cycle_id),
-                timeout=45.0
+            chair_out = await asyncio.wait_for(
+                self.chair.synthesize(
+                    cycle_id=cycle_id,
+                    proposals=proposals,
+                    debate=debate,
+                    signal_inventory=signal_inventory,
+                    technical_analysis=technical_analysis,
+                    vote_summary=vote_summary,
+                ),
+                timeout=60.0,
             )
-            return synthesis
         except asyncio.TimeoutError:
-            logger.error("Claude synthesis timed out")
-            return self._empty_synthesis(cycle_id, "Synthesis timeout")
+            logger.error("Chair synthesis timed out")
+            return self._empty_synthesis(cycle_id, "Chair synthesis timeout")
         except Exception as e:
-            logger.error(f"Claude synthesis error: {e}")
+            logger.error(f"Chair synthesis error: {e}")
             return self._empty_synthesis(cycle_id, str(e))
+
+        # Normalize into the legacy synthesis structure expected by the rest of the pipeline.
+        final_thesis = (chair_out or {}).get("final_thesis", {})
+        action = (final_thesis.get("action") or "HOLD").upper()
+        ticker = final_thesis.get("ticker")
+        side = action if action in ["BUY", "SELL"] else None
+        confidence = final_thesis.get("confidence")
+        conviction_score = int(round(float(confidence) * 100)) if isinstance(confidence, (int, float)) else 0
+
+        decision_type = (chair_out or {}).get("decision_type")
+        if not decision_type:
+            decision_type = "TRADE" if action in ["BUY", "SELL"] else "NO_TRADE"
+
+        synthesis = {
+            "decision_type": decision_type,
+            "rationale": (final_thesis.get("description") or "")[:2000],
+            "recommendation": {
+                "ticker": ticker,
+                "side": side,
+                "conviction_score": conviction_score,
+                "thesis": final_thesis.get("summary") or final_thesis.get("description") or "",
+                "time_horizon": final_thesis.get("time_horizon") or "unspecified",
+                "catalyst": None,
+                "catalyst_deadline": None,
+            },
+            "final_thesis": final_thesis,
+            "committee_notes": (chair_out or {}).get("committee_notes", {}),
+            "tie_break_used": bool((chair_out or {}).get("tie_break_used")),
+            "vote_summary": vote_summary or {},
+            "debate": debate or {},
+        }
+        return synthesis
 
     async def _notify_decision(
         self,

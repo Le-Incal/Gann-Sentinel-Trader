@@ -52,7 +52,25 @@ class Config:
     
     # Logging level
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
-    
+
+    # ==========================================================================
+    # INVESTMENT COMMITTEE DEBATE LAYER
+    # ==========================================================================
+
+    # If enabled, after initial theses are generated, the system runs a
+    # structured 2-round cross-examination. Each analyst speaks twice.
+    # A simple majority decides the outcome. In the case of a 2-2 tie,
+    # the Synthesizer (Chair) serves as the tie-breaker.
+    DEBATE_ENABLED: bool = os.getenv("DEBATE_ENABLED", "ON").upper() == "ON"
+    DEBATE_ROUNDS: int = int(os.getenv("DEBATE_ROUNDS", "2"))
+
+    # Confidence thresholds used by the orchestrator for HOLD gating.
+    DEBATE_MIN_AVG_CONFIDENCE: float = float(os.getenv("DEBATE_MIN_AVG_CONFIDENCE", "0.60"))
+
+    # Technical check-and-balance: if Claude technical verdict is INVALIDATE,
+    # require a supermajority (3/4) to proceed with a trade.
+    TECH_INVALIDATION_SUPERMAJORITY: bool = os.getenv("TECH_INVALIDATION_SUPERMAJORITY", "ON").upper() == "ON"
+
     # ==========================================================================
     # TRADING PARAMETERS
     # ==========================================================================

@@ -1351,6 +1351,71 @@ Respond ONLY with valid JSON:
         
         return signals
 
+    # ---------------------------------------------------------------------
+    # Debate Layer
+    # ---------------------------------------------------------------------
+    async def debate(
+        self,
+        *,
+        scan_cycle_id: str,
+        round_num: int,
+        own_thesis: Dict[str, Any],
+        other_theses: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Participate in committee debate (narrative momentum role).
+
+        Grok is expected to leverage its X/Twitter strengths, but in debate mode
+        it MUST NOT fetch new info; it reacts to the provided theses only.
+        """
+
+        if not self.is_configured:
+            return {
+                "speaker": "grok",
+                "round": round_num,
+                "message": "Grok not configured",
+                "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                "changed_mind": False,
+            }
+
+        system = """You are participating in an investment committee debate.
+
+You are Grok in the role of Narrative Momentum Analyst.
+
+RULES:
+1) Stay within role: narrative shifts, attention, momentum, crowd behavior on X.
+2) Do NOT browse or search. Do NOT fetch new posts. Only react to provided theses.
+3) Do NOT invent signals. You may defend or revise your prior vote.
+
+Output ONLY JSON in this schema:
+{
+  "message": "2-6 sentences",
+  "agreements": ["..."],
+  "disagreements": ["..."],
+  "changed_mind": true|false,
+  "vote": {"action": "BUY"|"SELL"|"HOLD", "ticker": "..."|null, "side": "BUY"|"SELL"|null, "confidence": 0.0-1.0}
+}
+"""
+
+        user = {
+            "scan_cycle_id": scan_cycle_id,
+            "round": round_num,
+            "own_thesis": own_thesis,
+            "other_theses": other_theses,
+        }
+
+        parsed = await self._call_grok(system_prompt=system, user_message=json.dumps(user, ensure_ascii=False), use_search=False)
+        if not parsed:
+            return {
+                "speaker": "grok",
+                "round": round_num,
+                "message": "Grok debate failed",
+                "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
+                "changed_mind": False,
+            }
+
+        parsed.update({"speaker": "grok", "round": round_num})
+        return parsed
+
 
 # =============================================================================
 # CONVENIENCE FUNCTIONS

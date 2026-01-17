@@ -45,6 +45,8 @@ try:
     from core.maca_orchestrator import MACAOrchestrator
     from analyzers.perplexity_analyst import PerplexityAnalyst
     from analyzers.chatgpt_analyst import ChatGPTAnalyst
+    from analyzers.chatgpt_chair import ChatGPTChair
+    from analyzers.claude_technical_validator import ClaudeTechnicalValidator
     MACA_AVAILABLE = True
 except ImportError as e:
     MACA_AVAILABLE = False
@@ -137,18 +139,23 @@ class GannSentinelAgent:
             try:
                 self.perplexity = PerplexityAnalyst()
                 self.chatgpt = ChatGPTAnalyst()
+                self.chair = ChatGPTChair()
+                self.claude_technical = ClaudeTechnicalValidator()
 
                 self.maca = MACAOrchestrator(
                     db=self.db,
                     grok=self.grok,
                     perplexity=self.perplexity,
                     chatgpt=self.chatgpt,
-                    claude=self.analyst,
+                    chair=self.chair,
+                    claude_technical=self.claude_technical,
                     telegram=self.telegram
                 )
-                logger.info("MACA Orchestrator initialized")
+                logger.info("MACA Orchestrator initialized with Chair and Technical Validator")
             except Exception as e:
                 logger.error(f"Failed to initialize MACA: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 self.maca = None
         elif self.maca_enabled and not MACA_AVAILABLE:
             logger.warning("MACA enabled but components not available")
