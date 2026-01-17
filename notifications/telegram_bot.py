@@ -1349,6 +1349,7 @@ class TelegramBot:
         lines.append(f"{emoji} {source}")
         lines.append("-" * 30)
 
+        key_signals = proposal.get("supporting_evidence", {}).get("key_signals", [])
         if proposal_type == "NO_OPPORTUNITY" or not ticker:
             lines.append("Recommendation: HOLD")
             lines.append(f"Conviction: {conviction}/100")
@@ -1362,8 +1363,18 @@ class TelegramBot:
                     src = sc.get("source") or "unknown"
                     summary = sc.get("summary") or ""
                     lines.append(f"  - [{src}] {summary[:120]}")
+            elif key_signals:
+                lines.append("Key signals:")
+                for ks in key_signals[:2]:
+                    s = ks.get("summary") or ""
+                    src = ks.get("source") or ks.get("signal_type") or ""
+                    lines.append(f"  - [{src}] {s[:120]}")
+            else:
+                lines.append("Key signals: none provided")
             if thesis:
                 lines.append(f"\nThesis: {thesis[:200]}")
+            if thesis_desc:
+                lines.append(f"\nNarrative: {thesis_desc[:250]}...")
         else:
             lines.append(f"Recommendation: {side}")
             lines.append(f"Ticker: {ticker}")
@@ -1386,13 +1397,14 @@ class TelegramBot:
                 lines.append(f"\nCatalyst: {catalyst}")
 
             # Key signals (top 3)
-            key_signals = proposal.get("supporting_evidence", {}).get("key_signals", [])
             if key_signals:
                 lines.append("Key signals:")
                 for ks in key_signals[:3]:
                     s = ks.get("summary") or ""
                     src = ks.get("source") or ks.get("signal_type") or ""
                     lines.append(f"  - [{src}] {s[:120]}")
+            else:
+                lines.append("Key signals: none provided")
 
             # Signals considered (top 2)
             considered = proposal.get("signals_considered", []) or []
