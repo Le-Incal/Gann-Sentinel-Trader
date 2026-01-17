@@ -129,6 +129,7 @@ class GannSentinelAgent:
             token=Config.TELEGRAM_BOT_TOKEN,
             chat_id=Config.TELEGRAM_CHAT_ID
         )
+        self.telegram.set_database(self.db)
 
         # Initialize Learning Engine and Smart Scheduler
         self.learning_engine = LearningEngine(db=self.db, executor=self.executor)
