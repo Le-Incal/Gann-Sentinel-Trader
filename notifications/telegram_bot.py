@@ -526,7 +526,15 @@ class TelegramBot:
 
     def _build_conviction_bar(self, conviction: int) -> str:
         """Build a visual conviction bar."""
-        filled = int(conviction / 10)
+        # Handle None or invalid values
+        if conviction is None:
+            conviction = 0
+        try:
+            conviction = int(conviction)
+        except (TypeError, ValueError):
+            conviction = 0
+        conviction = max(0, min(100, conviction))  # Clamp to 0-100
+        filled = conviction // 10
         empty = 10 - filled
         return f"[{BAR_FILLED * filled}{BAR_EMPTY * empty}]"
 
@@ -1590,21 +1598,35 @@ class TelegramBot:
         lines.append(f"{EMOJI_BRAIN} CLAUDE'S SYNTHESIS (Senior Trader)")
         lines.append("=" * 40)
 
-        decision_type = synthesis.get("decision_type", "NO_TRADE")
-        rec = synthesis.get("recommendation", {})
-        selected = synthesis.get("selected_proposal", {})
-        cross_val = synthesis.get("cross_validation", {})
-        rationale = synthesis.get("rationale", "")
+        # Defensive: ensure synthesis is a dict
+        if not isinstance(synthesis, dict):
+            synthesis = {}
+        
+        decision_type = synthesis.get("decision_type") or "NO_TRADE"
+        rec = synthesis.get("recommendation") or {}
+        if not isinstance(rec, dict):
+            rec = {}
+        selected = synthesis.get("selected_proposal") or {}
+        if not isinstance(selected, dict):
+            selected = {}
+        cross_val = synthesis.get("cross_validation") or {}
+        if not isinstance(cross_val, dict):
+            cross_val = {}
+        rationale = synthesis.get("rationale") or ""
 
         ticker = rec.get("ticker")
-        side = rec.get("side", "")
-        conviction = rec.get("conviction_score", 0)
-        thesis = rec.get("thesis", "")
-        final_thesis = synthesis.get("final_thesis", {}) or {}
-        ctx_explain = synthesis.get("context_explainers", {}) or {}
-        position_size = rec.get("position_size_pct", 0)
-        stop_loss = rec.get("stop_loss_pct", 0)
-        time_horizon = rec.get("time_horizon", "")
+        side = rec.get("side") or ""
+        conviction = rec.get("conviction_score") or 0
+        thesis = rec.get("thesis") or ""
+        final_thesis = synthesis.get("final_thesis") or {}
+        if not isinstance(final_thesis, dict):
+            final_thesis = {}
+        ctx_explain = synthesis.get("context_explainers") or {}
+        if not isinstance(ctx_explain, dict):
+            ctx_explain = {}
+        position_size = rec.get("position_size_pct") or 0
+        stop_loss = rec.get("stop_loss_pct") or 0
+        time_horizon = rec.get("time_horizon") or ""
 
         bar = self._build_conviction_bar(conviction)
         is_actionable = decision_type == "TRADE" and conviction >= 80
@@ -1899,6 +1921,7 @@ class TelegramBot:
             logger.error(f"Failed to send Debate message: {e}")
 
         # Message 3: Decision with buttons
+        msg2 = None
         try:
             msg2 = self.format_decision_message(
                 synthesis=synthesis,
@@ -1906,6 +1929,7 @@ class TelegramBot:
                 portfolio=portfolio,
                 trade_id=trade_id
             )
+            logger.info(f"Decision message formatted, length={len(msg2)}")
 
             if trade_id and synthesis.get("decision_type") == "TRADE":
                 # Send with approval buttons
@@ -1928,10 +1952,24 @@ class TelegramBot:
             logger.error(f"Failed to send Decision message with buttons: {e}")
             import traceback
             traceback.print_exc()
-            # Fallback: send without buttons
+            # Fallback: send simple message without buttons
             try:
-                return await self.send_message(msg2[:3950], parse_mode=None, message_type="maca_decision")
-            except Exception:
+                if msg2:
+                    return await self.send_message(msg2[:3950], parse_mode=None, message_type="maca_decision")
+                else:
+                    # msg2 wasn't created - send minimal fallback
+                    fallback = (
+                        f"========================================\n"
+                        f"{EMOJI_BRAIN} CLAUDE'S SYNTHESIS\n"
+                        f"========================================\n\n"
+                        f"Decision: {synthesis.get('decision_type', 'NO_TRADE')}\n"
+                        f"Conviction: {synthesis.get('recommendation', {}).get('conviction_score', 0)}/100\n\n"
+                        f"Rationale: {synthesis.get('rationale', 'See logs for details')[:300]}\n\n"
+                        f"[Error formatting full message - check logs]"
+                    )
+                    return await self.send_message(fallback, parse_mode=None, message_type="maca_decision")
+            except Exception as fallback_error:
+                logger.error(f"Fallback message also failed: {fallback_error}")
                 return False
 
     async def send_maca_debate_summary(
