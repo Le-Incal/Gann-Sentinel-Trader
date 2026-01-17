@@ -1512,7 +1512,13 @@ class TelegramBot:
         lines.append("=" * 40)
         lines.append(f"{EMOJI_BRAIN} Claude's synthesis follows...")
 
-        return "\n".join(lines)
+        message = "\n".join(lines)
+        
+        # Truncate if too long for Telegram (4096 char limit)
+        if len(message) > 4000:
+            message = message[:3950] + "\n\n[Truncated for length...]"
+        
+        return message
 
     def format_decision_message(
         self,
@@ -1711,7 +1717,13 @@ class TelegramBot:
             lines.append(f"  Cash: ${cash:,.2f}")
             lines.append(f"  Positions: {position_count}")
 
-        return "\n".join(lines)
+        message = "\n".join(lines)
+        
+        # Truncate if too long for Telegram (4096 char limit, leave room for buttons)
+        if len(message) > 3800:
+            message = message[:3750] + "\n\n[Truncated for length...]"
+        
+        return message
 
     async def send_message_with_buttons(
         self,
@@ -1838,66 +1850,89 @@ class TelegramBot:
         Message 2: Debate transcript (who changed mind and why)
         Message 3: Chart analysis + Claude's decision + trade status
         """
-        # Message 1: AI Council with signal inventory
-        msg1 = self.format_ai_council_message(proposals, signal_inventory=signal_inventory)
-        await self.send_message(msg1, parse_mode=None, message_type="maca_ai_council")
+        try:
+            # Message 1: AI Council with signal inventory
+            msg1 = self.format_ai_council_message(proposals, signal_inventory=signal_inventory)
+            
+            # Truncate if needed
+            if len(msg1) > 4000:
+                msg1 = msg1[:3950] + "\n\n[Truncated]"
+                
+            await self.send_message(msg1, parse_mode=None, message_type="maca_ai_council")
+        except Exception as e:
+            logger.error(f"Failed to send AI Council message: {e}")
+            import traceback
+            traceback.print_exc()
 
         # Small delay between messages
         import asyncio
         await asyncio.sleep(0.5)
 
         # Message 2: Debate transcript (if available) or unanimous agreement note
-        if debate and (debate.get("rounds") or []):
-            await self.send_maca_debate_summary(
-                cycle_id=cycle_id or "",
-                debate=debate,
-                vote_summary=vote_summary or {},
-            )
-            await asyncio.sleep(0.5)
-        else:
-            vs = vote_summary or {}
-            reason = vs.get("reason") or ""
-            hold = vs.get("hold") is True
-            if hold and reason:
-                lines = [
-                    "\U0001F5E3\uFE0F MACA Debate (IC Minutes)",
-                    f"Cycle: {cycle_id or 'N/A'}",
-                    "",
-                    "\u2705 Unanimous Agreement: HOLD",
-                    f"Reason: {reason[:220]}",
-                ]
-                await self.send_message(
-                    "\n".join(lines),
-                    parse_mode=None,
-                    message_type="maca_debate",
+        try:
+            if debate and (debate.get("rounds") or []):
+                await self.send_maca_debate_summary(
+                    cycle_id=cycle_id or "",
+                    debate=debate,
+                    vote_summary=vote_summary or {},
                 )
                 await asyncio.sleep(0.5)
+            else:
+                vs = vote_summary or {}
+                reason = vs.get("reason") or ""
+                hold = vs.get("hold") is True
+                if hold and reason:
+                    lines = [
+                        "\U0001F5E3\uFE0F MACA Debate (IC Minutes)",
+                        f"Cycle: {cycle_id or 'N/A'}",
+                        "",
+                        "\u2705 Unanimous Agreement: HOLD",
+                        f"Reason: {reason[:220]}",
+                    ]
+                    await self.send_message(
+                        "\n".join(lines),
+                        parse_mode=None,
+                        message_type="maca_debate",
+                    )
+                    await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"Failed to send Debate message: {e}")
 
         # Message 3: Decision with buttons
-        msg2 = self.format_decision_message(
-            synthesis=synthesis,
-            technical_signals=technical_signals,
-            portfolio=portfolio,
-            trade_id=trade_id
-        )
+        try:
+            msg2 = self.format_decision_message(
+                synthesis=synthesis,
+                technical_signals=technical_signals,
+                portfolio=portfolio,
+                trade_id=trade_id
+            )
 
-        if trade_id and synthesis.get("decision_type") == "TRADE":
-            # Send with approval buttons
-            keyboard = self.build_approval_keyboard(trade_id)
-            return await self.send_message_with_buttons(
-                text=msg2,
-                reply_markup=keyboard,
-                message_type="maca_decision",
-                related_entity_id=trade_id
-            )
-        else:
-            # Send with command buttons only
-            keyboard = self.build_command_keyboard()
-            return await self.send_message_with_buttons(
-                text=msg2,
-                reply_markup=keyboard,
-                message_type="maca_decision"
-            )
+            if trade_id and synthesis.get("decision_type") == "TRADE":
+                # Send with approval buttons
+                keyboard = self.build_approval_keyboard(trade_id)
+                return await self.send_message_with_buttons(
+                    text=msg2,
+                    reply_markup=keyboard,
+                    message_type="maca_decision",
+                    related_entity_id=trade_id
+                )
+            else:
+                # Send with command buttons only
+                keyboard = self.build_command_keyboard()
+                return await self.send_message_with_buttons(
+                    text=msg2,
+                    reply_markup=keyboard,
+                    message_type="maca_decision"
+                )
+        except Exception as e:
+            logger.error(f"Failed to send Decision message with buttons: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback: send without buttons
+            try:
+                return await self.send_message(msg2[:3950], parse_mode=None, message_type="maca_decision")
+            except Exception:
+                return False
 
     async def send_maca_debate_summary(
         self,

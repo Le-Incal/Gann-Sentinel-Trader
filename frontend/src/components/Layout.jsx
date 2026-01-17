@@ -26,8 +26,8 @@ export default function Layout() {
           <div className="flex items-center justify-between h-16">
             {/* Logo */}
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-lime-500 to-schwab-500 flex items-center justify-center shadow-sm">
-                <span className="text-white font-bold text-lg">G</span>
+              <div className="w-11 h-11 rounded-xl bg-white border border-gray-200 flex items-center justify-center shadow-sm overflow-hidden p-1">
+                <img src="/logo.svg" alt="Gann Sentinel" className="w-full h-full object-contain" />
               </div>
               <div>
                 <h1 className="text-gray-900 font-semibold text-lg tracking-tight">
@@ -89,8 +89,8 @@ export default function Layout() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-lime-500 to-schwab-500 flex items-center justify-center">
-                <span className="text-white font-bold text-sm">G</span>
+              <div className="w-8 h-8 rounded-lg bg-white border border-gray-200 flex items-center justify-center overflow-hidden p-0.5">
+                <img src="/logo.svg" alt="Gann Sentinel" className="w-full h-full object-contain" />
               </div>
               <div>
                 <p className="text-gray-700 text-sm font-medium">
