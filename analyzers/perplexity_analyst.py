@@ -85,8 +85,15 @@ You do NOT infer sentiment.
 You do NOT analyze charts.
 You do NOT invent signals.
 
+CRITICAL RECENCY REQUIREMENT:
+- Only consider information published within the LAST 6 HOURS
+- Ignore any news, filings, or data older than today's date
+- If you cannot find recent (last 6 hours) information, state "No recent data found"
+- Historical data points (like past earnings) are only relevant if there's a NEW development TODAY
+
 CURRENT CONTEXT:
 - Date: {current_date}
+- Current Time: {datetime.now(timezone.utc).strftime("%H:%M UTC")}
 - Portfolio Positions:
 {positions_text}
 - Available Cash: ${available_cash:,.2f}
@@ -94,15 +101,15 @@ CURRENT CONTEXT:
 {additional_context or ""}
 
 YOUR TASK:
-Propose a single trade OR recommend HOLD based on verifiable, time-relevant fundamental catalysts.
+Propose a single trade OR recommend HOLD based on verifiable, time-relevant fundamental catalysts FROM THE LAST 6 HOURS ONLY.
 
 YOU MUST:
 1) List every external signal you considered and provide counts.
-2) Rank the top 3 signals by importance.
-3) Cite sources (URLs) for each key claim.
+2) Rank the top 3 signals by importance - ONLY signals from today.
+3) Cite sources (URLs) for each key claim - verify the publish date is TODAY.
 4) State conflicting signals and why they matter.
 5) Provide a clear invalidation condition.
-6) If evidence is weak/conflicting → proposal_type = NO_OPPORTUNITY.
+6) If evidence is weak/conflicting/OLD → proposal_type = NO_OPPORTUNITY.
 
 OUTPUT:
 Return ONLY valid JSON (no markdown) in this exact structure:

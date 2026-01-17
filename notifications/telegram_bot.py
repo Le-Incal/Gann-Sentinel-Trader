@@ -1352,9 +1352,9 @@ class TelegramBot:
         key_signals = proposal.get("supporting_evidence", {}).get("key_signals", [])
         if proposal_type == "NO_OPPORTUNITY" or not ticker:
             lines.append("Recommendation: HOLD")
-            lines.append(f"Conviction: {conviction}/100")
             if sig_total is not None:
                 lines.append(f"Signals received: {sig_total}")
+            lines.append(f"Conviction: {conviction}/100")
             lines.append(bar)
             considered = proposal.get("signals_considered", []) or []
             if considered:
@@ -1371,32 +1371,23 @@ class TelegramBot:
                     lines.append(f"  - [{src}] {s[:120]}")
             else:
                 lines.append("Key signals: none provided")
-            if thesis:
-                lines.append(f"\nThesis: {thesis[:200]}")
-            if thesis_desc:
-                lines.append(f"\nNarrative: {thesis_desc[:250]}...")
+            # Show thesis - use thesis_desc if longer and different, otherwise thesis
+            if thesis_desc and thesis and thesis_desc.strip() != thesis.strip() and len(thesis_desc) > len(thesis):
+                lines.append(f"\nThesis: {thesis_desc[:300]}")
+            elif thesis:
+                lines.append(f"\nThesis: {thesis[:300]}")
         else:
             lines.append(f"Recommendation: {side}")
             lines.append(f"Ticker: {ticker}")
-            lines.append(f"Conviction: {conviction}/100")
             if sig_total is not None:
                 lines.append(f"Signals received: {sig_total}")
+            lines.append(f"Conviction: {conviction}/100")
             if is_actionable:
                 lines.append(f"{bar} {EMOJI_GREEN_CIRCLE}")
             else:
                 lines.append(bar)
 
-            if thesis:
-                lines.append(f"\nThesis: {thesis[:180]}...")
-
-            if thesis_desc:
-                # Keep Telegram readable; show only first ~250 chars
-                lines.append(f"\nNarrative: {thesis_desc[:250]}...")
-
-            if catalyst:
-                lines.append(f"\nCatalyst: {catalyst}")
-
-            # Key signals (top 3)
+            # Key signals (top 3) - show first for context
             if key_signals:
                 lines.append("Key signals:")
                 for ks in key_signals[:3]:
@@ -1404,16 +1395,25 @@ class TelegramBot:
                     src = ks.get("source") or ks.get("signal_type") or ""
                     lines.append(f"  - [{src}] {s[:120]}")
             else:
-                lines.append("Key signals: none provided")
+                # Try signals_considered as fallback
+                considered = proposal.get("signals_considered", []) or []
+                if considered:
+                    lines.append("Key signals:")
+                    for sc in considered[:3]:
+                        src = sc.get("source") or "unknown"
+                        summary = sc.get("summary") or ""
+                        lines.append(f"  - [{src}] {summary[:120]}")
+                else:
+                    lines.append("Key signals: none provided")
 
-            # Signals considered (top 2)
-            considered = proposal.get("signals_considered", []) or []
-            if considered:
-                lines.append("Additional signals:")
-                for sc in considered[:2]:
-                    src = sc.get("source") or "unknown"
-                    summary = sc.get("summary") or ""
-                    lines.append(f"  - [{src}] {summary[:120]}")
+            # Show thesis - use thesis_desc if longer and different, otherwise thesis
+            if thesis_desc and thesis and thesis_desc.strip() != thesis.strip() and len(thesis_desc) > len(thesis):
+                lines.append(f"\nThesis: {thesis_desc[:300]}")
+            elif thesis:
+                lines.append(f"\nThesis: {thesis[:300]}")
+
+            if catalyst:
+                lines.append(f"Catalyst: {catalyst}")
 
             if time_horizon:
                 lines.append(f"Horizon: {time_horizon}")
@@ -1444,7 +1444,7 @@ class TelegramBot:
         lines.append(f"{now.strftime('%Y-%m-%d %H:%M UTC')}")
         lines.append("=" * 40)
 
-        # Signal Inventory header
+        # Signal Inventory header with actual signals
         if signal_inventory:
             by_source = signal_inventory.get("by_source", {})
             total = signal_inventory.get("total", 0)
@@ -1455,8 +1455,41 @@ class TelegramBot:
 
             lines.append("")
             lines.append(f"{EMOJI_CHART} Signals Collected: {total}")
-            lines.append(f"  • FRED: {fred_count} | Polymarket: {poly_count}")
-            lines.append(f"  • Events: {event_count} | Technical: {tech_count}")
+
+            # FRED Signals
+            lines.append(f"\n📈 FRED ({fred_count}):")
+            fred_sigs = signal_inventory.get("fred_signals", [])
+            if fred_sigs:
+                for fs in fred_sigs[:3]:
+                    summary = fs.get("summary", "")[:100]
+                    lines.append(f"  • {summary}")
+            else:
+                lines.append("  • None collected")
+
+            # Polymarket Signals
+            lines.append(f"\n🎲 Polymarket ({poly_count}):")
+            poly_sigs = signal_inventory.get("polymarket_signals", [])
+            if poly_sigs:
+                for ps in poly_sigs[:3]:
+                    summary = ps.get("summary", "")[:100]
+                    lines.append(f"  • {summary}")
+            else:
+                lines.append("  • None collected")
+
+            # Event Signals
+            if event_count > 0:
+                lines.append(f"\n📅 Events ({event_count}):")
+                event_sigs = signal_inventory.get("event_signals", [])
+                if event_sigs:
+                    for es in event_sigs[:2]:
+                        summary = es.get("summary", "")[:100]
+                        lines.append(f"  • {summary}")
+
+            # Technical
+            if tech_count > 0:
+                lines.append(f"\n📊 Technical: {tech_count} chart(s) analyzed")
+
+            lines.append("")
             lines.append("-" * 40)
 
         # Sort proposals by source for consistent ordering

@@ -913,6 +913,14 @@ class MACAOrchestrator:
         """
 
         # Signal inventory for explainability/debuggability.
+        # Include actual signal summaries for Telegram display
+        def _extract_signal_summary(sig: Dict[str, Any]) -> Dict[str, str]:
+            """Extract source and summary from a signal dict."""
+            return {
+                "source": sig.get("source") or sig.get("source_type") or "unknown",
+                "summary": (sig.get("summary") or sig.get("description") or "")[:150],
+            }
+
         signal_inventory: Dict[str, Any] = {
             "by_source": {
                 "FRED": len(fred_signals or []),
@@ -926,6 +934,10 @@ class MACAOrchestrator:
                 + len(event_signals or [])
                 + (1 if technical_analysis else 0)
             ),
+            # Include actual signal details for Telegram display
+            "fred_signals": [_extract_signal_summary(s) for s in (fred_signals or [])[:5]],
+            "polymarket_signals": [_extract_signal_summary(s) for s in (polymarket_signals or [])[:5]],
+            "event_signals": [_extract_signal_summary(s) for s in (event_signals or [])[:3]],
         }
 
         if not Config.DEBATE_ENABLED:
