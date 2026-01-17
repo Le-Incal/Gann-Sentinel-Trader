@@ -1545,50 +1545,83 @@ class TelegramBot:
         # =====================================================================
         # TECHNICAL ANALYSIS SECTION
         # =====================================================================
-        if technical_signals:
-            lines.append("=" * 40)
-            lines.append(f"{EMOJI_CANDLE} CHART ANALYSIS")
-            lines.append("-" * 40)
+        try:
+            if technical_signals:
+                lines.append("=" * 40)
+                lines.append(f"{EMOJI_CANDLE} CHART ANALYSIS")
+                lines.append("-" * 40)
 
-            for tech in technical_signals[:3]:
-                ticker = tech.get("ticker", "???")
-                price = tech.get("current_price", 0)
-                ms = tech.get("market_state", {})
-                state = ms.get("state", "unknown")
-                bias = ms.get("bias", "neutral")
-                confidence = ms.get("confidence", "low")
-                verdict = tech.get("verdict", "unknown")
-                channel = tech.get("trend_channel", {})
-                channel_pos = channel.get("position_in_channel", 0.5) if channel else 0.5
+                for tech in (technical_signals or [])[:3]:
+                    if not isinstance(tech, dict):
+                        continue
+                    ticker = tech.get("ticker") or "???"
+                    price = tech.get("current_price") or 0
+                    ms = tech.get("market_state") or {}
+                    if not isinstance(ms, dict):
+                        ms = {}
+                    state = ms.get("state") or "unknown"
+                    bias = ms.get("bias") or "neutral"
+                    confidence = ms.get("confidence") or "low"
+                    verdict = tech.get("verdict") or "unknown"
+                    channel = tech.get("trend_channel") or {}
+                    if not isinstance(channel, dict):
+                        channel = {}
+                    channel_pos = channel.get("position_in_channel") or 0.5
+                    if channel_pos is None:
+                        channel_pos = 0.5
 
-                # Historical context if available
-                hist = tech.get("historical_context", {})
-                pct_from_ath = hist.get("pct_from_ath")
-                pct_52w = hist.get("pct_52w_change")
+                    state_text = self._format_market_state(state, bias, confidence)
+                    verdict_text = self._format_verdict(verdict)
 
-                state_text = self._format_market_state(state, bias, confidence)
-                verdict_text = self._format_verdict(verdict)
+                    # Safe formatting with fallbacks
+                    try:
+                        price_str = f"${float(price):,.2f}"
+                    except (TypeError, ValueError):
+                        price_str = "$?.??"
+                    
+                    try:
+                        channel_str = f"{float(channel_pos):.0%}"
+                    except (TypeError, ValueError):
+                        channel_str = "?%"
 
-                lines.append(f"\n{EMOJI_BULLET} {ticker} @ ${price:,.2f}")
-                lines.append(f"  State: {state_text}")
-                lines.append(f"  Channel: {channel_pos:.0%} from bottom")
-                lines.append(f"  Verdict: {verdict_text}")
+                    lines.append(f"\n{EMOJI_BULLET} {ticker} @ {price_str}")
+                    lines.append(f"  State: {state_text}")
+                    lines.append(f"  Channel: {channel_str} from bottom")
+                    lines.append(f"  Verdict: {verdict_text}")
 
-                # Add historical context if available
-                if pct_from_ath is not None or pct_52w is not None:
-                    context_parts = []
-                    if pct_from_ath is not None:
-                        context_parts.append(f"{pct_from_ath:+.1f}% from ATH")
-                    if pct_52w is not None:
-                        context_parts.append(f"{pct_52w:+.1f}% 52wk")
-                    lines.append(f"  5yr: {', '.join(context_parts)}")
+                    # Historical context if available
+                    hist = tech.get("historical_context") or {}
+                    if isinstance(hist, dict):
+                        pct_from_ath = hist.get("pct_from_ath")
+                        pct_52w = hist.get("pct_52w_change")
 
-                # Trade setup if allowed
-                hypo = tech.get("trade_hypothesis", {})
-                if hypo.get("allow_trade"):
-                    side = hypo.get("side", "").upper()
-                    r_mult = hypo.get("expected_r", 0)
-                    lines.append(f"  Setup: {side} (R={r_mult:.1f})")
+                        if pct_from_ath is not None or pct_52w is not None:
+                            context_parts = []
+                            if pct_from_ath is not None:
+                                try:
+                                    context_parts.append(f"{float(pct_from_ath):+.1f}% from ATH")
+                                except (TypeError, ValueError):
+                                    pass
+                            if pct_52w is not None:
+                                try:
+                                    context_parts.append(f"{float(pct_52w):+.1f}% 52wk")
+                                except (TypeError, ValueError):
+                                    pass
+                            if context_parts:
+                                lines.append(f"  5yr: {', '.join(context_parts)}")
+
+                    # Trade setup if allowed
+                    hypo = tech.get("trade_hypothesis") or {}
+                    if isinstance(hypo, dict) and hypo.get("allow_trade"):
+                        side = (hypo.get("side") or "").upper()
+                        r_mult = hypo.get("expected_r") or 0
+                        try:
+                            lines.append(f"  Setup: {side} (R={float(r_mult):.1f})")
+                        except (TypeError, ValueError):
+                            lines.append(f"  Setup: {side}")
+        except Exception as tech_error:
+            logger.error(f"Error formatting technical section: {tech_error}")
+            lines.append("[Technical analysis formatting error]")
 
         # =====================================================================
         # CLAUDE'S SYNTHESIS
@@ -1726,18 +1759,28 @@ class TelegramBot:
         # =====================================================================
         # PORTFOLIO SNAPSHOT
         # =====================================================================
-        if portfolio:
-            lines.append("")
-            lines.append("-" * 40)
-            lines.append(f"{EMOJI_MONEY} PORTFOLIO")
+        try:
+            if portfolio and isinstance(portfolio, dict):
+                lines.append("")
+                lines.append("-" * 40)
+                lines.append(f"{EMOJI_MONEY} PORTFOLIO")
 
-            equity = portfolio.get("equity", 0)
-            cash = portfolio.get("cash", 0)
-            position_count = portfolio.get("position_count", 0)
+                equity = portfolio.get("equity") or 0
+                cash = portfolio.get("cash") or 0
+                position_count = portfolio.get("position_count") or 0
 
-            lines.append(f"  Equity: ${equity:,.2f}")
-            lines.append(f"  Cash: ${cash:,.2f}")
-            lines.append(f"  Positions: {position_count}")
+                try:
+                    lines.append(f"  Equity: ${float(equity):,.2f}")
+                except (TypeError, ValueError):
+                    lines.append(f"  Equity: $?.??")
+                try:
+                    lines.append(f"  Cash: ${float(cash):,.2f}")
+                except (TypeError, ValueError):
+                    lines.append(f"  Cash: $?.??")
+                lines.append(f"  Positions: {position_count}")
+        except Exception as portfolio_error:
+            logger.error(f"Error formatting portfolio section: {portfolio_error}")
+            lines.append("[Portfolio formatting error]")
 
         message = "\n".join(lines)
         
@@ -1952,25 +1995,44 @@ class TelegramBot:
             logger.error(f"Failed to send Decision message with buttons: {e}")
             import traceback
             traceback.print_exc()
-            # Fallback: send simple message without buttons
+            # Fallback: send simple message WITH buttons
             try:
                 if msg2:
-                    return await self.send_message(msg2[:3950], parse_mode=None, message_type="maca_decision")
+                    fallback_text = msg2[:3800]
                 else:
                     # msg2 wasn't created - send minimal fallback
-                    fallback = (
+                    rec = synthesis.get('recommendation') or {} if isinstance(synthesis, dict) else {}
+                    conv = rec.get('conviction_score') or 0 if isinstance(rec, dict) else 0
+                    rationale = synthesis.get('rationale', '') if isinstance(synthesis, dict) else ''
+                    decision = synthesis.get('decision_type', 'NO_TRADE') if isinstance(synthesis, dict) else 'NO_TRADE'
+                    
+                    fallback_text = (
                         f"========================================\n"
                         f"{EMOJI_BRAIN} CLAUDE'S SYNTHESIS\n"
                         f"========================================\n\n"
-                        f"Decision: {synthesis.get('decision_type', 'NO_TRADE')}\n"
-                        f"Conviction: {synthesis.get('recommendation', {}).get('conviction_score', 0)}/100\n\n"
-                        f"Rationale: {synthesis.get('rationale', 'See logs for details')[:300]}\n\n"
-                        f"[Error formatting full message - check logs]"
+                        f"Decision: {decision}\n"
+                        f"Conviction: {conv}/100\n"
+                        f"{self._build_conviction_bar(conv)}\n\n"
+                        f"Rationale: {str(rationale)[:400]}\n\n"
+                        f"----------------------------------------\n"
+                        f"{EMOJI_ZZZ} NO TRADE\n"
                     )
-                    return await self.send_message(fallback, parse_mode=None, message_type="maca_decision")
+                
+                # Still send with command buttons
+                keyboard = self.build_command_keyboard()
+                return await self.send_message_with_buttons(
+                    text=fallback_text,
+                    reply_markup=keyboard,
+                    message_type="maca_decision"
+                )
             except Exception as fallback_error:
                 logger.error(f"Fallback message also failed: {fallback_error}")
-                return False
+                # Last resort - plain text
+                return await self.send_message(
+                    f"{EMOJI_BRAIN} Decision: NO_TRADE\n\nSee logs for details.",
+                    parse_mode=None,
+                    message_type="maca_decision"
+                )
 
     async def send_maca_debate_summary(
         self,
