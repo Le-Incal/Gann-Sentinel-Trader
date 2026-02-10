@@ -51,14 +51,17 @@ except ImportError as e:
     MACA_AVAILABLE = False
     logging.warning(f"MACA components not available: {e}")
 
-# Configure logging
+# Configure logging (resilient: do not crash if log file cannot be opened)
+_log_handlers: list = [logging.StreamHandler(sys.stdout)]
+try:
+    Config.LOG_PATH.mkdir(parents=True, exist_ok=True)
+    _log_handlers.append(logging.FileHandler(Config.LOG_PATH / "agent.log"))
+except Exception as e:
+    print(f"Warning: Could not create log file ({e}), logging to stdout only.", file=sys.stderr)
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(Config.LOG_PATH / "agent.log")
-    ]
+    handlers=_log_handlers
 )
 logger = logging.getLogger(__name__)
 

@@ -12,6 +12,7 @@ Based on LLM Chart Trading Training principles:
 Version: 2.0.0
 Last Updated: January 2026
 """
+from __future__ import annotations  # Defer evaluation of type hints (pd may be missing)
 
 import os
 import uuid
