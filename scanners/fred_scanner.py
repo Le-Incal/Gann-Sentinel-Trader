@@ -460,12 +460,15 @@ class FREDScanner:
                 
                 if response.status_code == 200:
                     data = response.json()
+                    observations = data.get("observations", [])
+                    if not observations:
+                        logger.warning(f"FRED series {series_id}: API 200 but observations empty (check series or date)")
                     return {
                         "series_id": series_id,
-                        "observations": data.get("observations", []),
+                        "observations": observations,
                     }
                 else:
-                    logger.error(f"FRED API error for {series_id}: {response.status_code}")
+                    logger.error(f"FRED API error for {series_id}: status={response.status_code} (check FRED_API_KEY and rate limits)")
                     return None
                     
         except httpx.TimeoutException:
@@ -757,7 +760,10 @@ class FREDScanner:
                 logger.error(f"Error scanning {series.series_id}: {e}")
                 continue
         
-        logger.info(f"FRED scan complete: {len(signals)} signals generated")
+        if not signals:
+            logger.warning("FRED scan complete: 0 signals (check FRED_API_KEY, network, and series availability)")
+        else:
+            logger.info(f"FRED scan complete: {len(signals)} signals generated")
         return signals
     
     async def scan_yields(self) -> List[FREDSignal]:

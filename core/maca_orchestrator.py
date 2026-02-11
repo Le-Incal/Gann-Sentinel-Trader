@@ -268,6 +268,7 @@ class MACAOrchestrator:
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
                 event_signals=event_signals or [],
+                technical_analysis=technical_analysis,
             )
 
             phase1_complete = datetime.now(timezone.utc)
@@ -806,6 +807,7 @@ class MACAOrchestrator:
         fred_signals: Optional[List[Dict[str, Any]]] = None,
         polymarket_signals: Optional[List[Dict[str, Any]]] = None,
         event_signals: Optional[List[Dict[str, Any]]] = None,
+        technical_analysis: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Phase 1: Generate thesis proposals from all AI sources in parallel.
@@ -815,6 +817,7 @@ class MACAOrchestrator:
             portfolio: Current portfolio state
             available_cash: Available cash for trading
             market_context: Additional market context
+            technical_analysis: Optional technical chart summary (for Grok fallback)
 
         Returns:
             List of thesis proposals from Grok, Perplexity, and ChatGPT
@@ -857,7 +860,8 @@ class MACAOrchestrator:
                 cycle_id=cycle_id,
                 portfolio_summary=portfolio_summary,
                 available_cash=available_cash,
-                market_context=combined_context
+                market_context=combined_context,
+                technical_analysis=technical_analysis,
             ))
 
         # Perplexity thesis
@@ -1237,12 +1241,54 @@ class MACAOrchestrator:
             logger.error(f"{source} thesis generation error: {e}")
             return self._empty_proposal(kwargs.get("scan_cycle_id", ""), source, str(e))
 
+    def _grok_hold_fallback_from_context(
+        self,
+        cycle_id: str,
+        market_context: Optional[str],
+        technical_analysis: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Build a HOLD proposal when Grok returns no signals but we have technical/context."""
+        parts = []
+        if technical_analysis:
+            ticker = technical_analysis.get("ticker") or technical_analysis.get("symbol")
+            state = technical_analysis.get("market_state") or technical_analysis.get("state") or {}
+            state_val = (state.get("state", state.get("value", "unknown")) if isinstance(state, dict) else str(state)
+            verdict = technical_analysis.get("verdict", "WATCH ONLY")
+            parts.append(f"Technical only: {ticker or 'N/A'} {state_val}, verdict {verdict}.")
+        if market_context and market_context.strip():
+            parts.append("Committee context had no FRED/Polymarket/Event signals.")
+        thesis = " ".join(parts) if parts else "No narrative signals from Grok; no fundamental signals in this cycle."
+        thesis = (thesis or "HOLD — insufficient signals.")[:500]
+        return {
+            "schema_version": "1.0.0",
+            "proposal_id": str(uuid.uuid4()),
+            "ai_source": "grok",
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "scan_cycle_id": cycle_id,
+            "proposal_type": "NO_OPPORTUNITY",
+            "recommendation": {
+                "ticker": None,
+                "side": None,
+                "conviction_score": 0,
+                "thesis": thesis,
+                "time_horizon": None,
+                "catalyst": None,
+                "catalyst_deadline": None
+            },
+            "rotation_details": {},
+            "supporting_evidence": {"signal_source": "grok", "signals_count": 0},
+            "raw_data": {"fallback": True, "reason": "scan_market_overview returned empty"},
+            "time_sensitive": False,
+            "metadata": {"adapter": "grok_fallback_from_context"}
+        }
+
     async def _grok_thesis_adapter(
         self,
         cycle_id: str,
         portfolio_summary: Dict[str, Any],
         available_cash: float,
-        market_context: Optional[str] = None
+        market_context: Optional[str] = None,
+        technical_analysis: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Adapter for Grok scanner to match thesis generation interface.
@@ -1254,6 +1300,7 @@ class MACAOrchestrator:
         - GrokSignal.confidence (0-1) -> conviction_score (0-100)
         - GrokSignal.to_dict() for serialization
         - Extracts key signals from market_context for display
+        When scan_market_overview returns [], builds a HOLD proposal from technical/context if available.
         """
         try:
             # Parse key signals from the market_context (FRED, Polymarket, Event signals)
@@ -1270,10 +1317,14 @@ class MACAOrchestrator:
                 timeout=30.0
             )
 
-            # Handle empty signals
+            # Handle empty signals: fallback to HOLD from technical/context instead of "Generation failed"
             if not signals:
-                logger.warning("Grok returned no signals")
-                return self._empty_proposal(cycle_id, "grok", "No signals returned")
+                logger.warning("Grok returned no signals; using fallback from technical/context")
+                return self._grok_hold_fallback_from_context(
+                    cycle_id=cycle_id,
+                    market_context=market_context,
+                    technical_analysis=technical_analysis,
+                )
 
             # Convert GrokSignal objects to dicts
             signals_dicts = []

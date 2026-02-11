@@ -757,7 +757,10 @@ class PolymarketScanner:
                 
                 if response.status_code == 200:
                     data = response.json()
-                    logger.info(f"Fetched {len(data)} markets from Polymarket")
+                    count = len(data) if isinstance(data, list) else 0
+                    logger.info(f"Fetched {count} markets from Polymarket (window {end_date_min} to {end_date_max})")
+                    if count == 0:
+                        logger.warning("Polymarket: 0 markets in date window; check gamma-api.polymarket.com or try different dates")
                     return data if isinstance(data, list) else []
                 else:
                     logger.error(f"Polymarket API error: {response.status_code}")
