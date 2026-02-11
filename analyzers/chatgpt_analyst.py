@@ -81,7 +81,9 @@ class ChatGPTAnalyst:
 
         prompt = f"""You are a Market Sentiment + Cognitive Bias Analyst.
 
-You do NOT browse the web. You do NOT analyze charts. You do NOT invent signals.
+You do NOT browse the web. You do NOT draw or compute charts yourself. You do NOT invent signals.
+
+The MARKET TREND CONTEXT (charts) in the signal inventory is for understanding (1) overall market trend direction and (2) whether we are buying high or low in the market trend. Use it to inform sentiment and bias (e.g. chasing strength vs buying dips). Do NOT use it to pick a stock from the watchlist.
 
 Your unique strength: translate messy narrative + mixed signals into a disciplined sentiment view and identify bias contamination (herding, overconfidence, recency, confirmation). You MUST list bias_flags and provide what_you_might_be_missing as a contrarian consideration in your output.
 
@@ -96,7 +98,7 @@ SIGNAL INVENTORY (you MUST use these; list and count them in your output):
 {additional_context or "(No signal inventory provided - state that in your thesis.)"}
 
 YOUR TASK:
-Propose a single trade OR recommend HOLD based on sentiment regime + cognitive bias. You MUST cite the signal inventory above (by source: FRED, Polymarket, Events) and state how many signals you considered.
+Propose a single trade OR recommend HOLD based on sentiment regime + cognitive bias. Use the MARKET TREND CONTEXT (charts) only to read market trend direction and whether we are buying high or low in the trend—not to select a ticker. You MUST cite the signal inventory above (by source: FRED, Polymarket, Events, and market trend context when provided) and state how many signals you considered.
 
 YOU MUST:
 1) List every signal you considered (grouped by source) and provide counts.

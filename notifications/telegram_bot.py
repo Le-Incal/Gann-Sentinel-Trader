@@ -640,42 +640,14 @@ class TelegramBot:
         lines.append(f"\nTotal: {total_signals} signals")
 
         # =====================================================================
-        # TECHNICAL ANALYSIS SECTION
+        # TECHNICAL ANALYSIS SECTION (summary only)
         # =====================================================================
         tech_signals = technical_signals or self._technical_signals
         if tech_signals:
             lines.append("\n" + "-" * 40)
             lines.append(f"{EMOJI_CANDLE} CHART ANALYSIS")
-
-            for tech in tech_signals[:3]:
-                ticker = tech.get("ticker", "???")
-                ms = tech.get("market_state", {})
-                state = ms.get("state", "unknown")
-                bias = ms.get("bias", "neutral")
-                confidence = ms.get("confidence", "low")
-                verdict = tech.get("verdict", "unknown")
-                channel = tech.get("trend_channel", {})
-                channel_pos = channel.get("position_in_channel", 0.5) if channel else 0.5
-                channel_pos_pct = f"{channel_pos:.0%}"
-                price = tech.get("current_price", 0)
-
-                state_text = self._format_market_state(state, bias, confidence)
-                verdict_text = self._format_verdict(verdict)
-
-                lines.append(f"\n{EMOJI_BULLET} {ticker} @ ${price:.2f}")
-                lines.append(f"  State: {state_text}")
-                lines.append(f"  Channel: {channel_pos_pct} from bottom")
-                lines.append(f"  Verdict: {verdict_text}")
-
-                hypo = tech.get("trade_hypothesis")
-                if hypo and hypo.get("allow_trade"):
-                    side = hypo.get("side", "").upper()
-                    r_mult = hypo.get("expected_r", 0)
-                    lines.append(f"  Setup: {side} (R={r_mult:.1f})")
-
-                primary = tech.get("primary_scenario")
-                if primary:
-                    lines.append(f"  Scenario: {primary.get('name', '')[:40]}")
+            n = len([t for t in tech_signals if isinstance(t, dict) and t.get("ticker")])
+            lines.append(f"  {n} chart(s) analyzed.")
 
         # =====================================================================
         # KEY SIGNALS BY CATEGORY
@@ -1573,82 +1545,15 @@ class TelegramBot:
         lines = []
 
         # =====================================================================
-        # TECHNICAL ANALYSIS SECTION
+        # TECHNICAL ANALYSIS SECTION (summary only)
         # =====================================================================
         try:
             if technical_signals:
                 lines.append("=" * 40)
                 lines.append(f"{EMOJI_CANDLE} CHART ANALYSIS")
                 lines.append("-" * 40)
-
-                for tech in (technical_signals or [])[:3]:
-                    if not isinstance(tech, dict):
-                        continue
-                    ticker = tech.get("ticker") or "???"
-                    price = tech.get("current_price") or 0
-                    ms = tech.get("market_state") or {}
-                    if not isinstance(ms, dict):
-                        ms = {}
-                    state = ms.get("state") or "unknown"
-                    bias = ms.get("bias") or "neutral"
-                    confidence = ms.get("confidence") or "low"
-                    verdict = tech.get("verdict") or "unknown"
-                    channel = tech.get("trend_channel") or {}
-                    if not isinstance(channel, dict):
-                        channel = {}
-                    channel_pos = channel.get("position_in_channel") or 0.5
-                    if channel_pos is None:
-                        channel_pos = 0.5
-
-                    state_text = self._format_market_state(state, bias, confidence)
-                    verdict_text = self._format_verdict(verdict)
-
-                    # Safe formatting with fallbacks
-                    try:
-                        price_str = f"${float(price):,.2f}"
-                    except (TypeError, ValueError):
-                        price_str = "$?.??"
-                    
-                    try:
-                        channel_str = f"{float(channel_pos):.0%}"
-                    except (TypeError, ValueError):
-                        channel_str = "?%"
-
-                    lines.append(f"\n{EMOJI_BULLET} {ticker} @ {price_str}")
-                    lines.append(f"  State: {state_text}")
-                    lines.append(f"  Channel: {channel_str} from bottom")
-                    lines.append(f"  Verdict: {verdict_text}")
-
-                    # Historical context if available
-                    hist = tech.get("historical_context") or {}
-                    if isinstance(hist, dict):
-                        pct_from_ath = hist.get("pct_from_ath")
-                        pct_52w = hist.get("pct_52w_change")
-
-                        if pct_from_ath is not None or pct_52w is not None:
-                            context_parts = []
-                            if pct_from_ath is not None:
-                                try:
-                                    context_parts.append(f"{float(pct_from_ath):+.1f}% from ATH")
-                                except (TypeError, ValueError):
-                                    pass
-                            if pct_52w is not None:
-                                try:
-                                    context_parts.append(f"{float(pct_52w):+.1f}% 52wk")
-                                except (TypeError, ValueError):
-                                    pass
-                            if context_parts:
-                                lines.append(f"  5yr: {', '.join(context_parts)}")
-
-                    # Trade setup if allowed
-                    hypo = tech.get("trade_hypothesis") or {}
-                    if isinstance(hypo, dict) and hypo.get("allow_trade"):
-                        side = (hypo.get("side") or "").upper()
-                        r_mult = hypo.get("expected_r") or 0
-                        try:
-                            lines.append(f"  Setup: {side} (R={float(r_mult):.1f})")
-                        except (TypeError, ValueError):
-                            lines.append(f"  Setup: {side}")
+                n = len([t for t in (technical_signals or []) if isinstance(t, dict) and t.get("ticker")])
+                lines.append(f"{n} chart(s) analyzed.")
         except Exception as tech_error:
             logger.error(f"Error formatting technical section: {tech_error}")
             lines.append("[Technical analysis formatting error]")

@@ -178,6 +178,37 @@ class MACAOrchestrator:
 
         return "\n".join(lines)
 
+    def _format_technical_summary_for_analyst(self, technical_charts: Optional[List[Dict[str, Any]]] = None) -> str:
+        """Build a short summary of pre-computed charts for market-trend context (not stock-picking).
+
+        Purpose: help analyst infer market trend direction and whether we are buying high or low
+        in the trend. Do not use to pick a stock from the watchlist.
+        """
+        if not technical_charts:
+            return ""
+        lines = [
+            "MARKET TREND CONTEXT (pre-computed charts across watchlist):",
+            "Use these to infer (1) overall market trend direction and (2) whether we are buying high or low in the trend. Do NOT use to pick a stock—use for trend and level context only.",
+            "",
+            f"Charts ({len(technical_charts)} symbols):",
+        ]
+        for t in technical_charts[:20]:
+            if not isinstance(t, dict):
+                continue
+            ticker = t.get("ticker") or t.get("symbol") or "?"
+            ms = t.get("market_state") or t.get("state") or {}
+            if isinstance(ms, dict):
+                state = ms.get("state") or ms.get("value") or "unknown"
+                bias = ms.get("bias") or "neutral"
+            else:
+                state, bias = "unknown", "neutral"
+            verdict = t.get("verdict") or "—"
+            ch = t.get("trend_channel") or {}
+            channel_pos = ch.get("position_in_channel") if isinstance(ch, dict) else None
+            pos_note = f", {float(channel_pos):.0%} in channel" if channel_pos is not None else ""
+            lines.append(f"- {ticker}: {state} ({bias}), verdict {verdict}{pos_note}")
+        return "\n".join(lines)
+
     def _get_trading_skills_context(self, max_chars: int = 8000) -> str:
         """Load trading skills reference (long, short, options) for committee context."""
         try:
@@ -308,6 +339,7 @@ class MACAOrchestrator:
                 polymarket_signals=polymarket_signals,
                 event_signals=event_signals,
                 technical_analysis=primary_tech,
+                technical_charts=tech_list,
             )
 
             phase1_complete = datetime.now(timezone.utc)
@@ -335,7 +367,7 @@ class MACAOrchestrator:
                 portfolio=portfolio,
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
-                technical_analysis=primary_tech,
+                technical_analysis=tech_list,
                 debate=debate,
                 vote_summary=vote_summary,
                 signal_inventory=signal_inventory,
@@ -814,6 +846,10 @@ class MACAOrchestrator:
             else:
                 side = None
 
+            # Conviction = strength of trade recommendation only; no side -> HOLD -> 0
+            if not side:
+                conviction_score = 0
+
             logger.info(f"Grok ticker check for {ticker}: conviction={conviction_score}, side={side}")
 
             return {
@@ -866,6 +902,7 @@ class MACAOrchestrator:
         polymarket_signals: Optional[List[Dict[str, Any]]] = None,
         event_signals: Optional[List[Dict[str, Any]]] = None,
         technical_analysis: Optional[Dict[str, Any]] = None,
+        technical_charts: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Phase 1: Generate thesis proposals from all AI sources in parallel.
@@ -875,7 +912,8 @@ class MACAOrchestrator:
             portfolio: Current portfolio state
             available_cash: Available cash for trading
             market_context: Additional market context
-            technical_analysis: Optional technical chart summary (for Grok fallback)
+            technical_analysis: Optional single chart (for Grok fallback)
+            technical_charts: Full list of chart analyses (for ChatGPT context)
 
         Returns:
             List of thesis proposals from Grok, Perplexity, and ChatGPT
@@ -900,7 +938,11 @@ class MACAOrchestrator:
 
         combined_context = "\n\n".join([c for c in [market_context, trading_skills, signal_context] if c])
 
-        # ChatGPT gets signal inventory plus its own "research" from Perplexity (sentiment/bias indicators)
+        # ChatGPT gets signal inventory + pre-computed technical summary (no chart drawing)
+        technical_summary = self._format_technical_summary_for_analyst(technical_charts)
+        chatgpt_additional_context = signal_context + ("\n\n" + technical_summary if technical_summary else "")
+
+        # ChatGPT gets combined context plus its own "research" from Perplexity (sentiment/bias indicators)
         chatgpt_context = combined_context
         if hasattr(self.perplexity, "fetch_research_snippet") and self.perplexity.is_configured:
             try:
@@ -949,7 +991,7 @@ class MACAOrchestrator:
             ,additional_context=signal_context
         ))
 
-        # ChatGPT thesis — receives committee context + Perplexity research snippet so it has its own gathered input
+        # ChatGPT thesis — receives committee context + Perplexity research + technical summary
         tasks.append(self._safe_generate_thesis(
             "chatgpt",
             self.chatgpt.generate_thesis,
@@ -957,7 +999,7 @@ class MACAOrchestrator:
             available_cash=available_cash,
             scan_cycle_id=cycle_id,
             market_context=chatgpt_context,
-            additional_context=signal_context
+            additional_context=chatgpt_additional_context
         ))
 
         # Wait for all with timeout
@@ -1494,6 +1536,10 @@ class MACAOrchestrator:
             else:
                 side = None
 
+            # Conviction = strength of trade recommendation only; no ticker/side -> HOLD -> 0
+            if not ticker or not side:
+                conviction_score = 0
+
             # Build key_signals from Grok's own signals + context signals
             key_signals = []
             # Add Grok's own signal as a key signal
@@ -1590,12 +1636,12 @@ class MACAOrchestrator:
         portfolio: Dict[str, Any],
         fred_signals: List[Dict[str, Any]],
         polymarket_signals: List[Dict[str, Any]],
-        technical_analysis: Optional[Dict[str, Any]],
+        technical_analysis: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         debate: Optional[Dict[str, Any]] = None,
         vote_summary: Optional[Dict[str, Any]] = None,
         signal_inventory: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Phase 2: Chair synthesizes proposals + debate into a final thesis."""
+        """Phase 2: Chair synthesizes proposals + debate into a final thesis. technical_analysis is full list of charts for market-wide view."""
 
         logger.info(f"Phase 2: Chair synthesis for cycle {cycle_id}")
 

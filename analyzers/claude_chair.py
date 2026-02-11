@@ -8,7 +8,7 @@ import os
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 
 import httpx
 
@@ -37,7 +37,7 @@ You may recommend BUY (long), SELL (close long or open short), or options when e
 STRICT RULES:
 1) Do NOT invent signals or facts.
 2) Do NOT browse the web.
-3) You MAY use the provided technical_analysis (no new charting).
+3) You MAY use the provided technical_analysis (full list of chart analyses across symbols; no new charting). Use it to see market-wide structure.
 4) If evidence conflicts materially or is weak, choose HOLD.
 5) If vote_summary indicates HOLD (consensus failure), default to HOLD unless
    you can clearly justify a trade with strong evidence and technical support.
@@ -64,10 +64,10 @@ Return ONLY valid JSON, no markdown."""
         proposals: List[Dict[str, Any]],
         debate: Optional[Dict[str, Any]] = None,
         signal_inventory: Optional[Dict[str, Any]] = None,
-        technical_analysis: Optional[Dict[str, Any]] = None,
+        technical_analysis: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         vote_summary: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Synthesize proposals and debate into a final thesis."""
+        """Synthesize proposals and debate into a final thesis. technical_analysis may be a list of chart analyses (full market view)."""
 
         if not self.is_configured:
             return {
@@ -88,7 +88,7 @@ Return ONLY valid JSON, no markdown."""
             "cycle_id": cycle_id,
             "signal_inventory": signal_inventory or {},
             "proposals": proposals or [],
-            "technical_analysis": technical_analysis or {},
+            "technical_analysis": technical_analysis if technical_analysis is not None else [],
             "debate": debate or {},
             "vote_summary": vote_summary or {},
         }

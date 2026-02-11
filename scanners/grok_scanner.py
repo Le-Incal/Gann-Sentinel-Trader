@@ -445,10 +445,10 @@ Respond ONLY with valid JSON in this exact format:
 Include one entry per ticker. No other text, just the JSON."""
 
     def _build_simple_outlook_prompt(self) -> str:
-        """Build market outlook prompt: X/Twitter is the primary source for narrative momentum."""
-        return """You are a Narrative Momentum analyst. Your primary source is X (Twitter). Search X for current US stock market narrative, sentiment, and attention shifts.
+        """Build market outlook prompt: X/Twitter is the primary source for stock sentiment."""
+        return """You are a Narrative Momentum analyst. Your ONLY source for sentiment is X (Twitter). Use X/search to find stock sentiment on X: what traders and investors are saying about specific stocks, sectors, and the market.
 
-You MUST use X/search to gather: what is trending on X about markets, which tickers or themes are getting attention, and crowd sentiment. Then summarize as the JSON below.
+You MUST use X/search to gather: stock and ticker sentiment on X (mentions, sentiment, and attention for individual names and the market). Do not rely on generic web search for sentiment—focus on what is being said on X/Twitter. Then summarize as the JSON below.
 
 If you see a clear single-ticker trade from X narrative (e.g. one name dominating attention with directional view), add: "recommended_ticker": "SYMBOL", "recommended_side": "BUY" or "SELL", "recommendation_conviction": 1-100. Otherwise omit these or set to null.
 

@@ -248,8 +248,8 @@ class GannSentinelAgent:
     def _initialize_watchlist(self) -> None:
         """Initialize the watchlist from config or defaults."""
         default_watchlist = [
-            "TSLA", "NVDA", "RKLB", "PLTR", "MSTR",
-            "COIN", "HOOD", "SOFI", "AMD", "SMCI"
+            "GOOGL", "TSLA", "WMT", "AAPL", "NASDAQ", "SPY", "TSM", "GLD", "SOFI",
+            "NVDA", "MSFT", "PLTR", "AMD",
         ]
 
         config_watchlist = getattr(Config, 'WATCHLIST', None)
@@ -522,7 +522,7 @@ class GannSentinelAgent:
         try:
             logger.info(f"Technical Scanner configured: {getattr(self.technical, 'is_configured', False)}")
             if getattr(self.technical, 'is_configured', False):
-                tech_tickers = self.watchlist[:5]
+                tech_tickers = self.watchlist[:9]
                 logger.info(f"Running technical analysis on: {tech_tickers}")
 
                 for ticker in tech_tickers:
