@@ -29,7 +29,16 @@ from storage.database import Database
 from scanners.grok_scanner import GrokScanner
 from scanners.fred_scanner import FREDScanner
 from scanners.polymarket_scanner import PolymarketScanner
-from scanners.technical_scanner import TechnicalScanner
+try:
+    from scanners.technical_scanner import TechnicalScanner
+except Exception as e:
+    logging.warning(f"Technical scanner import failed: {e}")
+    # Stub so agent can start without technical scanning
+    class TechnicalScanner:
+        is_configured = False
+        last_error = "Scanner not loaded"
+        async def scan_ticker(self, *args, **kwargs):
+            return None
 from scanners.event_scanner import EventScanner
 from analyzers.claude_analyst import ClaudeAnalyst, ClaudeMACAAnalyst
 from executors.risk_engine import RiskEngine
@@ -186,7 +195,7 @@ class GannSentinelAgent:
         self.digest_hour_utc = 21  # 9 PM UTC = 4 PM ET / 1 PM PT
 
         logger.info("All components initialized successfully")
-        logger.info(f"Technical Scanner: {'CONFIGURED' if self.technical.is_configured else 'NOT CONFIGURED'}")
+        logger.info(f"Technical Scanner: {'CONFIGURED' if getattr(self.technical, 'is_configured', False) else 'NOT CONFIGURED'}")
         logger.info(f"Event Scanner: {'CONFIGURED' if self.event_scanner.is_configured else 'NOT CONFIGURED'}")
         logger.info(f"Learning Engine: ENABLED")
         logger.info(f"Smart Scheduling: Morning (9:35 AM ET) + Midday (12:30 PM ET)")
@@ -459,8 +468,8 @@ class GannSentinelAgent:
         # Run on top watchlist tickers
         # =================================================================
         try:
-            logger.info(f"Technical Scanner configured: {self.technical.is_configured}")
-            if self.technical.is_configured:
+            logger.info(f"Technical Scanner configured: {getattr(self.technical, 'is_configured', False)}")
+            if getattr(self.technical, 'is_configured', False):
                 tech_tickers = self.watchlist[:5]
                 logger.info(f"Running technical analysis on: {tech_tickers}")
 
@@ -1333,7 +1342,7 @@ class GannSentinelAgent:
 
             # Get technical analysis
             technical_data = None
-            if self.technical.is_configured:
+            if getattr(self.technical, 'is_configured', False):
                 try:
                     tech_signal = await self.technical.scan_ticker(ticker, "1W", 5.0)
                     if tech_signal:
@@ -1507,7 +1516,7 @@ class GannSentinelAgent:
         # Use 5-year weekly for comprehensive view
         # =================================================================
         try:
-            if self.technical.is_configured:
+            if getattr(self.technical, 'is_configured', False):
                 logger.info(f"Running technical analysis for {ticker}")
                 tech_signal = await self.technical.scan_ticker(ticker, "1W", 5.0)
 

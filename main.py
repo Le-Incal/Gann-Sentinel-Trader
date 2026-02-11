@@ -16,7 +16,14 @@ from typing import Optional
 
 import uvicorn
 
-from agent import GannSentinelAgent
+try:
+    from agent import GannSentinelAgent
+except Exception as e:
+    import traceback
+    print("FATAL: Failed to import agent", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(1)
+
 from api.logs_api import app as logs_api_app
 
 # Configure logging
@@ -80,4 +87,10 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        import traceback
+        print("FATAL: Startup or runtime crash. Check traceback below.", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
