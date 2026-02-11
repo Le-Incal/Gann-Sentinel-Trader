@@ -1,18 +1,12 @@
 """
 Gann Sentinel Trader - Alpaca Executor
 Executes trades via Alpaca API.
+Uses lazy imports so the app can start even when alpaca-py is not installed.
 """
 
 import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
-
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, StopOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockLatestQuoteRequest, StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
 
 from config import Config
 from models.trades import Trade, Position, PortfolioSnapshot, TradeStatus, OrderType, OrderSide as ModelOrderSide
@@ -27,16 +21,22 @@ class AlpacaExecutor:
     """
     
     def __init__(self):
-        """Initialize Alpaca client."""
+        """Initialize Alpaca client (lazy import so module loads without alpaca-py)."""
         self.api_key = Config.ALPACA_API_KEY
         self.secret_key = Config.ALPACA_SECRET_KEY
         self.base_url = Config.ALPACA_BASE_URL
-        self.is_paper = "paper" in self.base_url.lower()
+        self.is_paper = "paper" in (self.base_url or "").lower()
         
         self.trading_client = None
         self.data_client = None
         
-        if self.api_key and self.secret_key:
+        if not self.api_key or not self.secret_key:
+            logger.warning("Alpaca credentials not configured - executor disabled")
+            return
+        
+        try:
+            from alpaca.trading.client import TradingClient
+            from alpaca.data.historical import StockHistoricalDataClient
             self.trading_client = TradingClient(
                 api_key=self.api_key,
                 secret_key=self.secret_key,
@@ -47,8 +47,10 @@ class AlpacaExecutor:
                 secret_key=self.secret_key
             )
             logger.info(f"Alpaca executor initialized ({'PAPER' if self.is_paper else 'LIVE'} mode)")
-        else:
-            logger.warning("Alpaca credentials not configured - executor disabled")
+        except ImportError as e:
+            logger.warning(f"alpaca-py not available - executor disabled: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Alpaca client: {e}")
     
     async def get_account(self) -> Dict[str, Any]:
         """Get account information."""
@@ -141,6 +143,7 @@ class AlpacaExecutor:
             return {"error": "Data client not configured"}
         
         try:
+            from alpaca.data.requests import StockLatestQuoteRequest
             request = StockLatestQuoteRequest(symbol_or_symbols=ticker)
             quotes = self.data_client.get_stock_latest_quote(request)
             
@@ -175,6 +178,8 @@ class AlpacaExecutor:
             return trade
         
         try:
+            from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, StopOrderRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus
             # Determine order side
             side = OrderSide.BUY if trade.side == ModelOrderSide.BUY else OrderSide.SELL
             
@@ -304,8 +309,12 @@ class AlpacaExecutor:
             logger.error(f"Error closing all positions: {e}")
             return 0
     
-    def _map_order_status(self, alpaca_status: OrderStatus) -> TradeStatus:
+    def _map_order_status(self, alpaca_status: Any) -> TradeStatus:
         """Map Alpaca order status to our TradeStatus."""
+        try:
+            from alpaca.trading.enums import OrderStatus
+        except ImportError:
+            return TradeStatus.SUBMITTED
         mapping = {
             OrderStatus.NEW: TradeStatus.SUBMITTED,
             OrderStatus.ACCEPTED: TradeStatus.SUBMITTED,
