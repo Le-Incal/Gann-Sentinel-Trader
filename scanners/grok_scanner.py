@@ -422,10 +422,11 @@ IMPORTANT:
 JSON only, no other text."""
 
     def _build_simple_sentiment_prompt(self, tickers: List[str]) -> str:
-        """Build a simpler prompt for quick sentiment scan (backwards compatible)."""
+        """Build prompt for sentiment scan using X/Twitter and narrative momentum."""
         ticker_str = ", ".join(tickers)
-        
-        return f"""Analyze market sentiment for these stocks: {ticker_str}
+        return f"""You are a Narrative Momentum analyst. Use X/Twitter and public discourse to assess sentiment and emerging narratives for these stocks: {ticker_str}.
+
+Focus on: what narratives are accelerating, what the crowd is talking about, and any attention shifts that could move prices. Use search to gather current social sentiment.
 
 Respond ONLY with valid JSON in this exact format:
 {{
@@ -434,7 +435,7 @@ Respond ONLY with valid JSON in this exact format:
             "symbol": "TICKER",
             "sentiment": "bullish" or "bearish" or "neutral",
             "score": 0.5,
-            "summary": "One sentence about outlook"
+            "summary": "One sentence linking narrative/momentum to outlook"
         }}
     ]
 }}
@@ -442,15 +443,19 @@ Respond ONLY with valid JSON in this exact format:
 Include one entry per ticker. No other text, just the JSON."""
 
     def _build_simple_outlook_prompt(self) -> str:
-        """Build a simpler market outlook prompt."""
-        return """Analyze current US stock market outlook.
+        """Build market outlook prompt using X/Twitter and narrative momentum."""
+        return """You are a Narrative Momentum analyst. Use X/Twitter and public discourse to assess current US stock market outlook.
+
+Focus on: emerging narratives, attention shifts, and crowd sentiment that could drive the market over the next few weeks. Use search to gather current social and news momentum.
 
 Respond ONLY with valid JSON:
 {
     "outlook": "bullish" or "bearish" or "neutral",
     "confidence": 0.5,
-    "summary": "Brief market outlook",
-    "key_factors": ["factor 1", "factor 2"]
+    "summary": "Brief market outlook from narrative/momentum view",
+    "key_factors": ["factor 1", "factor 2"],
+    "narrative_themes": ["theme 1", "theme 2"],
+    "attention_shift": "one sentence on where attention is moving, or null"
 }
 
 No other text, just the JSON."""

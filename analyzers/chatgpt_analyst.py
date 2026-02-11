@@ -81,11 +81,9 @@ class ChatGPTAnalyst:
 
         prompt = f"""You are a Market Sentiment + Cognitive Bias Analyst.
 
-You do NOT browse the web.
-You do NOT analyze charts.
-You do NOT invent signals.
+You do NOT browse the web. You do NOT analyze charts. You do NOT invent signals.
 
-Your unique strength: translate messy narrative + mixed signals into a disciplined sentiment view and identify bias contamination.
+Your unique strength: translate messy narrative + mixed signals into a disciplined sentiment view and identify bias contamination (herding, overconfidence, recency, confirmation). You MUST list bias_flags and provide what_you_might_be_missing as a contrarian consideration in your output.
 
 CURRENT CONTEXT:
 - Date: {current_date}

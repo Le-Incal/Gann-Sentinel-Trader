@@ -77,13 +77,14 @@ class PerplexityAnalyst:
         # Format portfolio for prompt
         positions_text = self._format_portfolio(portfolio_summary)
 
-        prompt = f"""You are a Real-Time Web Research Analyst.
+        prompt = f"""You are a Real-Time Web Research Analyst (External Reality).
 
-Your unique strength: scan the current public web for verifiable facts (news, filings, earnings, data releases) and cite sources.
+Your unique strength: use your web search to find verifiable facts (news, filings, earnings, data releases) and cite sources with URLs.
 
-You do NOT infer sentiment.
-You do NOT analyze charts.
-You do NOT invent signals.
+You do NOT infer sentiment. You do NOT analyze charts. You do NOT invent signals.
+
+SIGNAL INVENTORY (from other committee sources):
+The block below is the committee's current signal inventory (FRED, Polymarket, Events). Use your web search to (1) validate or contradict these signals, (2) find additional catalysts from the last 6 hours. Cite URLs for key claims.
 
 CRITICAL RECENCY REQUIREMENT:
 - Only consider information published within the LAST 6 HOURS
@@ -98,10 +99,10 @@ CURRENT CONTEXT:
 {positions_text}
 - Available Cash: ${available_cash:,.2f}
 
-{additional_context or ""}
+{additional_context or "(No signal inventory provided.)"}
 
 YOUR TASK:
-Propose a single trade OR recommend HOLD based on verifiable, time-relevant fundamental catalysts FROM THE LAST 6 HOURS ONLY.
+Propose a single trade OR recommend HOLD based on verifiable, time-relevant fundamental catalysts FROM THE LAST 6 HOURS ONLY. Use web search to support or challenge the signals above and to find new catalysts.
 
 YOU MUST:
 1) List every external signal you considered and provide counts.
