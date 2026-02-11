@@ -86,6 +86,14 @@ class Config:
     STOP_LOSS_PCT: float = float(os.getenv("STOP_LOSS_PCT", "0.15"))
     DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "0.05"))
     MIN_MARKET_CAP: int = int(os.getenv("MIN_MARKET_CAP", "500000000"))
+
+    # Trading capabilities (what the system is allowed to recommend and execute)
+    # Used by Chair and analysts so they know they can recommend shorts and options.
+    TRADING_CAPABILITIES: str = (
+        "The system can: buy and sell equities daily (no day-trade limit block); "
+        "take short positions (sell short); trade options. "
+        "You may recommend LONG (BUY), SHORT (SELL to open short), or options when evidence supports it."
+    )
     
     # ==========================================================================
     # STALENESS POLICIES (seconds)

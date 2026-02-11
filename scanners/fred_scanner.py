@@ -707,16 +707,31 @@ class FREDScanner:
         
         logger.debug(f"Scanning FRED series: {series.series_id}")
         
-        data = await self._fetch_series(series.series_id, limit=2)
+        # Fetch enough observations to skip missing (.) values; FRED often has "." for latest
+        data = await self._fetch_series(series.series_id, limit=12)
         
         if not data or not data.get("observations"):
+            logger.debug(f"FRED {series.series_id}: no observations returned")
             return None
         
         observations = data["observations"]
-        current = observations[0] if observations else None
-        prior = observations[1] if len(observations) > 1 else None
-        
+        current = None
+        prior = None
+        for obs in observations:
+            val = obs.get("value", ".")
+            if val in (".", "", None) or not str(val).strip():
+                continue
+            try:
+                float(val)
+            except (ValueError, TypeError):
+                continue
+            if current is None:
+                current = obs
+            elif prior is None:
+                prior = obs
+                break
         if not current:
+            logger.debug(f"FRED {series.series_id}: no valid (non-missing) observation in {len(observations)}")
             return None
         
         return self._observation_to_signal(series, current, prior)

@@ -165,6 +165,7 @@ class MACAOrchestrator:
 
         lines: List[str] = []
         lines.append("SIGNAL INVENTORY (for attribution + counts):")
+        lines.append("ALLOWED RECOMMENDATIONS: LONG (BUY), SHORT (SELL), options. Recommend when evidence supports.")
         lines.append(f"- FRED signals: {len(fred_signals)}")
         for s in fred_signals[:6]:
             lines.append(_sig_line(s))
@@ -176,6 +177,20 @@ class MACAOrchestrator:
             lines.append(_sig_line(s))
 
         return "\n".join(lines)
+
+    def _get_trading_skills_context(self, max_chars: int = 8000) -> str:
+        """Load trading skills reference (long, short, options) for committee context."""
+        try:
+            skills_path = Config.BASE_DIR / "docs" / "TRADING_SKILLS.md"
+            if not skills_path.exists():
+                return ""
+            text = skills_path.read_text(encoding="utf-8")
+            if len(text) > max_chars:
+                text = text[:max_chars] + "\n\n[... truncated for context length ...]"
+            return f"TRADING SKILLS REFERENCE (use when forming long/short/options recommendations):\n\n{text}"
+        except Exception as e:
+            logger.warning(f"Could not load trading skills doc: {e}")
+            return ""
 
     def _parse_signals_from_context(self, context: Optional[str]) -> List[Dict[str, str]]:
         """Parse signal inventory from context string to extract key signals.
@@ -838,8 +853,9 @@ class MACAOrchestrator:
             polymarket_signals=polymarket_signals,
             event_signals=event_signals,
         )
+        trading_skills = self._get_trading_skills_context()
 
-        combined_context = "\n\n".join([c for c in [market_context, signal_context] if c])
+        combined_context = "\n\n".join([c for c in [market_context, trading_skills, signal_context] if c])
 
         # Generate theses in parallel with timeout handling
         tasks = []
@@ -1310,21 +1326,29 @@ class MACAOrchestrator:
 
             # Grok scanner uses scan_market_overview for general market thesis
             if not hasattr(self.grok, 'scan_market_overview'):
-                return self._empty_proposal(cycle_id, "grok", "No compatible method found")
+                logger.warning("Grok has no scan_market_overview; using fallback from technical/context")
+                return self._grok_hold_fallback_from_context(
+                    cycle_id=cycle_id,
+                    market_context=market_context,
+                    technical_analysis=technical_analysis,
+                )
 
             signals = await asyncio.wait_for(
                 self.grok.scan_market_overview(),
                 timeout=30.0
             )
 
-            # Handle empty signals: fallback to HOLD from technical/context instead of "Generation failed"
-            if not signals:
-                logger.warning("Grok returned no signals; using fallback from technical/context")
+            def _grok_fallback():
                 return self._grok_hold_fallback_from_context(
                     cycle_id=cycle_id,
                     market_context=market_context,
                     technical_analysis=technical_analysis,
                 )
+
+            # Handle empty signals: always use HOLD from technical/context, never "Generation failed"
+            if not signals:
+                logger.warning("Grok returned no signals; using fallback from technical/context")
+                return _grok_fallback()
 
             # Convert GrokSignal objects to dicts
             signals_dicts = []
@@ -1337,7 +1361,8 @@ class MACAOrchestrator:
                     logger.warning(f"Unknown signal type: {type(s)}")
 
             if not signals_dicts:
-                return self._empty_proposal(cycle_id, "grok", "No valid signals after conversion")
+                logger.warning("Grok signals empty after conversion; using fallback from technical/context")
+                return _grok_fallback()
 
             # Find highest CONFIDENCE signal (not conviction - GrokSignal uses confidence 0-1)
             best_signal = max(
@@ -1453,13 +1478,21 @@ class MACAOrchestrator:
             }
 
         except asyncio.TimeoutError:
-            logger.warning("Grok thesis generation timed out")
-            return self._empty_proposal(cycle_id, "grok", "Timeout")
+            logger.warning("Grok thesis generation timed out; using fallback from technical/context")
+            return self._grok_hold_fallback_from_context(
+                cycle_id=cycle_id,
+                market_context=market_context,
+                technical_analysis=technical_analysis,
+            )
         except Exception as e:
             logger.error(f"Grok adapter error: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            return self._empty_proposal(cycle_id, "grok", str(e))
+            return self._grok_hold_fallback_from_context(
+                cycle_id=cycle_id,
+                market_context=market_context,
+                technical_analysis=technical_analysis,
+            )
 
     async def _phase2_synthesize(
         self,
@@ -1476,6 +1509,11 @@ class MACAOrchestrator:
         """Phase 2: Chair synthesizes proposals + debate into a final thesis."""
 
         logger.info(f"Phase 2: Chair synthesis for cycle {cycle_id}")
+
+        # Inject trading skills reference so Chair can apply long/short/options reasoning
+        if signal_inventory is not None:
+            signal_inventory = dict(signal_inventory)
+            signal_inventory["trading_skills"] = self._get_trading_skills_context()
 
         try:
             chair_out = await asyncio.wait_for(

@@ -28,7 +28,7 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
-# File in repo for Cursor/Claude to read Telegram message history
+# File written alongside DB (data/) so it persists on Railway and is in "storage" area
 TELEGRAM_FEED_FILENAME = "telegram_feed.md"
 
 
@@ -130,11 +130,12 @@ class TelegramBot:
         content: str,
         command: Optional[str] = None,
     ) -> None:
-        """Append a message to logs/telegram_feed.md so Cursor/Claude can reference it."""
+        """Append every Telegram message to data/telegram_feed.md (same dir as DB, persists on Railway)."""
         try:
-            log_path = Config.LOG_PATH
-            log_path.mkdir(parents=True, exist_ok=True)
-            feed_path = log_path / TELEGRAM_FEED_FILENAME
+            # Use data/ so feed lives with DB and persists on deployed environments
+            data_dir = Config.DATABASE_PATH.parent
+            data_dir.mkdir(parents=True, exist_ok=True)
+            feed_path = data_dir / TELEGRAM_FEED_FILENAME
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             header = f"{ts} | {direction} | {message_type}"
             if command:
@@ -143,7 +144,7 @@ class TelegramBot:
             with open(feed_path, "a", encoding="utf-8") as f:
                 f.write(block)
         except Exception as e:
-            logger.debug(f"Could not append to repo feed: {e}")
+            logger.warning(f"Telegram feed write failed (data/telegram_feed.md): {e}")
 
     def _log_outgoing(
         self,

@@ -487,6 +487,40 @@ async def get_logs(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/telegram-feed")
+async def get_telegram_feed(
+    token: str = Query(..., description="API token"),
+):
+    """
+    Return the contents of data/telegram_feed.md (every message the bot sent/received).
+    Use this to paste into Cursor so Claude can reference Telegram output.
+    """
+    if not verify_token(token):
+        raise HTTPException(status_code=403, detail="Invalid or missing token")
+
+    try:
+        from config import Config
+        feed_path = Config.DATABASE_PATH.parent / "telegram_feed.md"
+        if not feed_path.exists():
+            return {
+                "status": "success",
+                "path": str(feed_path),
+                "exists": False,
+                "content": "",
+                "message": "Feed file not created yet. Run a scan so the bot sends messages.",
+            }
+        content = feed_path.read_text(encoding="utf-8")
+        return {
+            "status": "success",
+            "path": str(feed_path),
+            "exists": True,
+            "content": content,
+        }
+    except Exception as e:
+        logger.error(f"Error reading telegram feed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/status")
 async def get_status(
     token: str = Query(..., description="API token")

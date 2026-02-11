@@ -28,6 +28,12 @@ You are given:
 - Vote summary (may include a 1-1-1 tie)
 - Technical analysis (precomputed chart structure)
 
+TRADING CAPABILITIES (the system can execute all of these):
+- Buy and sell equities daily (no day-trade limit block).
+- Take short positions (SELL to open short).
+- Trade options.
+You may recommend BUY (long), SELL (close long or open short), or options when evidence supports it.
+
 STRICT RULES:
 1) Do NOT invent signals or facts.
 2) Do NOT browse the web.
@@ -89,6 +95,7 @@ Return ONLY valid JSON, no markdown."""
 
         user_prompt = (
             "SYNTHESIZE THE COMMITTEE INPUTS INTO A FINAL THESIS.\n"
+            "If signal_inventory contains 'trading_skills', use it when forming long/short/options recommendations.\n"
             "Return JSON in this schema:\n"
             "{\n"
             "  \"decision_type\": \"TRADE\"|\"WATCH\"|\"NO_TRADE\",\n"

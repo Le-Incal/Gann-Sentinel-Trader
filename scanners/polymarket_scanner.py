@@ -784,13 +784,27 @@ class PolymarketScanner:
                 
                 if response.status_code == 200:
                     data = response.json()
-                    count = len(data) if isinstance(data, list) else 0
+                    # API may return list or dict (e.g. {"data": [...]} or {"markets": [...]})
+                    if isinstance(data, list):
+                        markets_list = data
+                    elif isinstance(data, dict):
+                        markets_list = (
+                            data.get("data")
+                            or data.get("markets")
+                            or data.get("results")
+                            or []
+                        )
+                        if data and not markets_list:
+                            logger.warning(f"Polymarket API returned dict with keys {list(data.keys())}; no list found")
+                    else:
+                        markets_list = []
+                    count = len(markets_list)
                     logger.info(f"Fetched {count} markets from Polymarket (window {end_date_min} to {end_date_max})")
                     if count == 0:
                         logger.warning("Polymarket: 0 markets in date window; check gamma-api.polymarket.com or try different dates")
-                    return data if isinstance(data, list) else []
+                    return markets_list
                 else:
-                    logger.error(f"Polymarket API error: {response.status_code}")
+                    logger.error(f"Polymarket API error: {response.status_code} - {response.text[:200]}")
                     return []
                     
         except httpx.TimeoutException:
@@ -834,8 +848,9 @@ class PolymarketScanner:
                 
                 if response.status_code == 200:
                     data = response.json()
-                    logger.debug(f"Fetched {len(data)} events for tag '{tag}'")
-                    return data if isinstance(data, list) else []
+                    events_list = data if isinstance(data, list) else (data.get("data") or data.get("events") or data.get("results") or []) if isinstance(data, dict) else []
+                    logger.debug(f"Fetched {len(events_list)} events for tag '{tag}'")
+                    return events_list
                 else:
                     logger.warning(f"Events API error for tag '{tag}': {response.status_code}")
                     return []
@@ -864,28 +879,32 @@ class PolymarketScanner:
         
         signals: List[PolymarketSignal] = []
         
-        # Use MEDIUM_TERM (3 months) as the main window
-        start, end = self._get_date_window(TimeHorizon.MEDIUM_TERM)
-        
-        start_str = self._format_date_for_api(start)
-        end_str = self._format_date_for_api(end)
-        
-        logger.info(f"Scanning markets resolving between {start_str} and {end_str}")
-        
-        # Fetch markets
-        markets = await self._fetch_markets(
-            end_date_min=start_str,
-            end_date_max=end_str,
-            limit=100,
-        )
-        
-        # Convert to signals
-        for market in markets:
-            signal = self._market_to_signal(market, TimeHorizon.MEDIUM_TERM.name)
-            if signal:
-                signals.append(signal)
+        # Use MEDIUM_TERM (3 months) then LONG_TERM if needed for more data
+        for horizon in (TimeHorizon.MEDIUM_TERM, TimeHorizon.LONG_TERM):
+            start, end = self._get_date_window(horizon)
+            start_str = self._format_date_for_api(start)
+            end_str = self._format_date_for_api(end)
+            logger.info(f"Scanning markets resolving between {start_str} and {end_str} ({horizon.name})")
+            markets = await self._fetch_markets(
+                end_date_min=start_str,
+                end_date_max=end_str,
+                limit=100,
+            )
+            raw_count = len(markets)
+            for market in markets:
+                signal = self._market_to_signal(market, horizon.name)
+                if signal:
+                    if not any(s.dedup_hash == signal.dedup_hash for s in signals):
+                        signals.append(signal)
+            if raw_count > 0:
+                logger.info(f"Polymarket: {raw_count} raw markets, {len(signals)} after whitelist (so far)")
+            if len(signals) >= 5:
+                break  # Enough signals; no need to try longer window
         
         # Also try fetching by relevant tags
+        start, end = self._get_date_window(TimeHorizon.MEDIUM_TERM)
+        start_str = self._format_date_for_api(start)
+        end_str = self._format_date_for_api(end)
         relevant_tags = ["fed", "economics", "inflation", "tariffs", "ai"]
         
         for tag in relevant_tags:

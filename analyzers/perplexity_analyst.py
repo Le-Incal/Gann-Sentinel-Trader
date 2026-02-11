@@ -84,13 +84,13 @@ Your unique strength: use your web search to find verifiable facts (news, filing
 You do NOT infer sentiment. You do NOT analyze charts. You do NOT invent signals.
 
 SIGNAL INVENTORY (from other committee sources):
-The block below is the committee's current signal inventory (FRED, Polymarket, Events). Use your web search to (1) validate or contradict these signals, (2) find additional catalysts from the last 6 hours. Cite URLs for key claims.
+The block below is the committee's current signal inventory (FRED, Polymarket, Events). Use your web search to (1) validate or contradict these signals, (2) find additional catalysts from the last 24 hours. Cite URLs for key claims.
 
-CRITICAL RECENCY REQUIREMENT:
-- Only consider information published within the LAST 6 HOURS
-- Ignore any news, filings, or data older than today's date
-- If you cannot find recent (last 6 hours) information, state "No recent data found"
-- Historical data points (like past earnings) are only relevant if there's a NEW development TODAY
+RECENCY REQUIREMENT:
+- Prefer information from the LAST 24 HOURS when available
+- If no content from the last 24 hours, use the most recent available (e.g. last 3–7 days) and say so
+- If you cannot find recent information, state "No recent data found" and still summarize any relevant context (e.g. upcoming earnings, known catalysts)
+- Do not refuse to answer solely because nothing is from the last 6 hours
 
 CURRENT CONTEXT:
 - Date: {current_date}
@@ -102,12 +102,12 @@ CURRENT CONTEXT:
 {additional_context or "(No signal inventory provided.)"}
 
 YOUR TASK:
-Propose a single trade OR recommend HOLD based on verifiable, time-relevant fundamental catalysts FROM THE LAST 6 HOURS ONLY. Use web search to support or challenge the signals above and to find new catalysts.
+Propose a single trade OR recommend HOLD based on verifiable fundamental catalysts. Prefer the last 24 hours; if none, use the most recent available and note the time frame. Use web search to support or challenge the signals above and to find catalysts.
 
 YOU MUST:
 1) List every external signal you considered and provide counts.
-2) Rank the top 3 signals by importance - ONLY signals from today.
-3) Cite sources (URLs) for each key claim - verify the publish date is TODAY.
+2) Rank the top 3 signals by importance (prefer today/recent).
+3) Cite sources (URLs) for each key claim and note publish date when relevant.
 4) State conflicting signals and why they matter.
 5) Provide a clear invalidation condition.
 6) If evidence is weak/conflicting/OLD → proposal_type = NO_OPPORTUNITY.
@@ -182,8 +182,8 @@ Return ONLY valid JSON (no markdown) in this exact structure:
                 parsed = self._parse_json_response(content)
 
                 if not parsed:
-                    logger.error(f"Failed to parse Perplexity response. Full content: {content}")
-                    return self._empty_proposal(scan_cycle_id, "Failed to parse response")
+                    logger.warning(f"Perplexity JSON parse failed; building proposal from raw text. Content length: {len(content)}")
+                    return self._fallback_proposal_from_raw(scan_cycle_id, content, latency_ms)
 
                 # Build full proposal
                 proposal = self._build_proposal(
@@ -367,6 +367,47 @@ Be specific about any concerns. Cite sources if you find conflicting information
                 logger.error(f"JSON parse failed. Extracted: {content[start:end][:200]}")
 
         return None
+
+    def _fallback_proposal_from_raw(
+        self, scan_cycle_id: str, content: str, latency_ms: int
+    ) -> Dict[str, Any]:
+        """Build a NO_OPPORTUNITY proposal from raw response when JSON parse fails."""
+        # Extract a thesis-like snippet (first substantial paragraph or 400 chars)
+        thesis = "No parseable JSON; see raw search context."
+        content = (content or "").strip()
+        if content:
+            # Skip leading markdown/JSON artifacts
+            for line in content.split("\n"):
+                line = line.strip()
+                if not line or line.startswith("{") or line.startswith("```"):
+                    continue
+                if len(line) > 50 and not line.startswith("["):
+                    thesis = line[:500].strip()
+                    break
+            if thesis == "No parseable JSON; see raw search context." and len(content) > 100:
+                thesis = content[:400].strip() + ("..." if len(content) > 400 else "")
+        return {
+            "schema_version": "1.0.0",
+            "proposal_id": self._generate_proposal_id(),
+            "ai_source": "perplexity",
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "scan_cycle_id": scan_cycle_id,
+            "proposal_type": "NO_OPPORTUNITY",
+            "recommendation": {
+                "ticker": None,
+                "side": None,
+                "conviction_score": 0,
+                "thesis": thesis,
+                "time_horizon": None,
+                "catalyst": None,
+                "catalyst_deadline": None,
+            },
+            "rotation_details": {},
+            "supporting_evidence": {},
+            "raw_data": {"parse_fallback": True, "raw_preview": content[:1500]},
+            "time_sensitive": False,
+            "metadata": {"model": self.model, "latency_ms": latency_ms},
+        }
 
     def _build_proposal(
         self,

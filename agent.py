@@ -352,11 +352,37 @@ class GannSentinelAgent:
         self.scheduler.record_scan(now, scan_type)
         logger.info(f"Starting {scan_type.upper()} scan cycle")
 
+        def _fallback_signal(source: str, summary: str) -> Dict[str, Any]:
+            """One placeholder signal when a scanner returns 0 so the committee has context."""
+            now_iso = datetime.now(timezone.utc).isoformat()
+            dedup_hash = f"fallback:{source}:{now_iso[:13]}"
+            category = "macro" if source == "fred" else "prediction_market" if source == "polymarket" else "event"
+            return {
+                "signal_id": str(uuid.uuid4()),
+                "dedup_hash": dedup_hash,
+                "source": source,
+                "source_type": source,
+                "category": category,
+                "signal_type": category,
+                "summary": summary,
+                "directional_bias": "mixed",
+                "confidence": 0.5,
+                "asset_scope": {"tickers": []},
+                "timestamp_utc": now_iso,
+                "staleness_seconds": 86400,
+            }
+
         # Generate learning context for Claude
         learning_context = self.learning_engine.generate_claude_context()
         logger.info(f"Learning context generated: {learning_context.get('performance_summary', {}).get('total_trades', 0)} historical trades")
 
         logger.info("Gathering signals...")
+        logger.info(
+            "Scanner config: FRED=%s Polymarket=ok Event=%s Technical=%s",
+            self.fred.is_configured,
+            self.event_scanner.is_configured,
+            getattr(self.technical, "is_configured", False),
+        )
 
         # Grok sentiment scan
         try:
@@ -415,51 +441,73 @@ class GannSentinelAgent:
         # FRED macro data
         try:
             macro_signals = await self.fred.scan_all_series()
-            signals.extend(macro_signals)
+            if not macro_signals:
+                fallback = _fallback_signal("fred", "Macro: FRED data unavailable this run; use technical and other sources.")
+                signals.append(fallback)
+                logger.info("FRED returned 0 signals; added fallback macro context")
+            else:
+                signals.extend(macro_signals)
             logger.info(f"Got {len(macro_signals)} macro signals from FRED")
 
             fred_series = ["DGS10", "DGS2", "UNRATE", "CPIAUCSL", "GDP", "FEDFUNDS", "T10Y2Y"]
             self.telegram.record_source_query(
                 source="FRED",
                 query=", ".join(fred_series),
-                signals_returned=len(macro_signals),
+                signals_returned=len(macro_signals) if macro_signals else 1,
                 error=None
             )
-            for signal in macro_signals:
-                self.telegram.record_signal(signal.to_dict() if hasattr(signal, 'to_dict') else signal)
+            if macro_signals:
+                for signal in macro_signals:
+                    self.telegram.record_signal(signal.to_dict() if hasattr(signal, 'to_dict') else signal)
+            else:
+                self.telegram.record_signal(fallback)
 
         except Exception as e:
             logger.error(f"Error in FRED scan: {e}")
             self.db.log_error("scan_error", "fred", str(e))
+            fallback = _fallback_signal("fred", "Macro: FRED scan failed; use technical and other sources.")
+            signals.append(fallback)
+            self.telegram.record_signal(fallback)
             self.telegram.record_source_query(
                 source="FRED",
                 query="macro series",
-                signals_returned=0,
+                signals_returned=1,
                 error=str(type(e).__name__)
             )
 
         # Polymarket predictions
         try:
             prediction_signals = await self.polymarket.scan_all_markets()
-            signals.extend(prediction_signals)
+            if not prediction_signals:
+                fallback_pm = _fallback_signal("polymarket", "Prediction markets: no whitelisted markets this run; use technical and other sources.")
+                signals.append(fallback_pm)
+                logger.info("Polymarket returned 0 signals; added fallback prediction context")
+            else:
+                signals.extend(prediction_signals)
             logger.info(f"Got {len(prediction_signals)} prediction signals from Polymarket")
 
             self.telegram.record_source_query(
                 source="Polymarket",
                 query="fed rates, economic events",
-                signals_returned=len(prediction_signals),
+                signals_returned=len(prediction_signals) if prediction_signals else 1,
                 error=None
             )
-            for signal in prediction_signals:
-                self.telegram.record_signal(signal.to_dict() if hasattr(signal, 'to_dict') else signal)
+            if prediction_signals:
+                for signal in prediction_signals:
+                    self.telegram.record_signal(signal.to_dict() if hasattr(signal, 'to_dict') else signal)
+            else:
+                self.telegram.record_signal(fallback_pm)
 
         except Exception as e:
             logger.error(f"Error in Polymarket scan: {e}")
             self.db.log_error("scan_error", "polymarket", str(e))
+            fallback_pm = _fallback_signal("polymarket", "Prediction markets: scan failed; use technical and other sources.")
+            signals.append(fallback_pm)
+            self.telegram.record_signal(fallback_pm)
             self.telegram.record_source_query(
                 source="Polymarket",
                 query="fed rates, economic events",
-                signals_returned=0,
+                signals_returned=1,
                 error=str(type(e).__name__)
             )
 
@@ -545,6 +593,13 @@ class GannSentinelAgent:
                         f"({event.directional_bias}, conf={event.confidence:.2f})"
                     )
 
+                if not event_signals:
+                    fallback_ev = _fallback_signal("event_scanner", "Events: no corporate events detected this run; use technical and other sources.")
+                    event_signals.append(fallback_ev)
+                    signals.append(fallback_ev)
+                    self.telegram.record_signal(fallback_ev)
+                    logger.info("Event scanner returned 0 signals; added fallback event context")
+
                 self.telegram.record_source_query(
                     source="Event Scanner",
                     query="market-wide event scan (27 types)",
@@ -555,20 +610,28 @@ class GannSentinelAgent:
                 logger.info(f"Got {len(event_signals)} event signals")
             else:
                 logger.warning("Event Scanner not configured - skipping")
+                fallback_ev = _fallback_signal("event_scanner", "Events: scanner not configured (XAI_API_KEY); use technical and other sources.")
+                event_signals.append(fallback_ev)
+                signals.append(fallback_ev)
+                self.telegram.record_signal(fallback_ev)
                 self.telegram.record_source_query(
                     source="Event Scanner",
                     query="corporate events",
-                    signals_returned=0,
+                    signals_returned=1,
                     error="Not configured (XAI_API_KEY missing)"
                 )
 
         except Exception as e:
             logger.error(f"Error in event scan: {e}")
             self.db.log_error("scan_error", "event_scanner", str(e))
+            fallback_ev = _fallback_signal("event_scanner", "Events: scan failed; use technical and other sources.")
+            event_signals.append(fallback_ev)
+            signals.append(fallback_ev)
+            self.telegram.record_signal(fallback_ev)
             self.telegram.record_source_query(
                 source="Event Scanner",
                 query="corporate events",
-                signals_returned=0,
+                signals_returned=1,
                 error=str(type(e).__name__)
             )
 
