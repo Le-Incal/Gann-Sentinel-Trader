@@ -2,15 +2,15 @@
 Gann Sentinel Trader - Grok Scanner
 Deep Business Intelligence via xAI Grok API.
 
-Version: 3.0.0 (Deep Intelligence Update)
+Version: 3.1.0 (Responses API + x_search / web_search)
 Last Updated: January 2026
 
 Change Log:
-- 3.0.0: Added deep business intelligence prompts
-         - scan_ticker_social(): X/Twitter deep dive on sentiment and narratives
-         - scan_ticker_fundamentals(): Web/news business intelligence
-         - scan_ticker_deep(): Combined comprehensive analysis
-         - Business line mapping, TAM analysis, contrarian signals
+- 3.1.0: Migrated to xAI Responses API with native tools:
+         - x_search: X (Twitter) search for narrative/sentiment
+         - web_search: Web search for news/filings
+         - _call_grok_responses() uses POST /v1/responses with tools; fallback to legacy chat/completions
+- 3.0.0: Deep intelligence prompts, scan_ticker_social/fundamentals/deep
 - 2.2.0: Fixed xAI API - use search_parameters instead of tools for Live Search
 """
 
@@ -47,6 +47,8 @@ class GrokModel(Enum):
     """Available Grok models."""
     GROK_FAST = "grok-3-fast-beta"
     GROK_REASONING = "grok-3-mini-fast-beta"
+    # Responses API with tools (x_search, web_search) - use for search-enabled calls
+    GROK_RESPONSES = "grok-4-1-fast-reasoning"
 
 
 class SignalCategory(Enum):
@@ -443,27 +445,128 @@ Respond ONLY with valid JSON in this exact format:
 Include one entry per ticker. No other text, just the JSON."""
 
     def _build_simple_outlook_prompt(self) -> str:
-        """Build market outlook prompt using X/Twitter and narrative momentum."""
-        return """You are a Narrative Momentum analyst. Use X/Twitter and public discourse to assess current US stock market outlook.
+        """Build market outlook prompt: X/Twitter is the primary source for narrative momentum."""
+        return """You are a Narrative Momentum analyst. Your primary source is X (Twitter). Search X for current US stock market narrative, sentiment, and attention shifts.
 
-Focus on: emerging narratives, attention shifts, and crowd sentiment that could drive the market over the next few weeks. Use search to gather current social and news momentum.
+You MUST use X/search to gather: what is trending on X about markets, which tickers or themes are getting attention, and crowd sentiment. Then summarize as the JSON below.
 
 Respond ONLY with valid JSON:
 {
     "outlook": "bullish" or "bearish" or "neutral",
     "confidence": 0.5,
-    "summary": "Brief market outlook from narrative/momentum view",
+    "summary": "Brief market outlook from X/narrative view (cite what you found on X)",
     "key_factors": ["factor 1", "factor 2"],
     "narrative_themes": ["theme 1", "theme 2"],
-    "attention_shift": "one sentence on where attention is moving, or null"
+    "attention_shift": "one sentence on where attention is moving on X, or null"
 }
 
 No other text, just the JSON."""
 
     # =========================================================================
-    # API CALLS
+    # API CALLS (Responses API with x_search / web_search, fallback to legacy)
     # =========================================================================
-    
+
+    def _tools_for_sources(self, sources: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Build tools array for Responses API from sources preference."""
+        if not sources:
+            return [{"type": "x_search"}, {"type": "web_search"}]
+        tools = []
+        if "x" in sources:
+            tools.append({"type": "x_search"})
+        if "web" in sources or "news" in sources:
+            tools.append({"type": "web_search"})
+        if not tools:
+            tools = [{"type": "x_search"}, {"type": "web_search"}]
+        return tools
+
+    def _extract_content_from_responses_output(self, data: Dict[str, Any]) -> str:
+        """Extract concatenated text from Responses API output array."""
+        output = data.get("output") or []
+        parts = []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "message":
+                continue
+            content = item.get("content") or []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "output_text":
+                    text = block.get("text") or ""
+                    if text:
+                        parts.append(text)
+        return "\n".join(parts)
+
+    async def _call_grok_responses(
+        self,
+        system_prompt: str,
+        user_message: str,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Call xAI Responses API (POST /v1/responses) with x_search and/or web_search tools.
+        Uses model grok-4-1-fast-reasoning for tool support. Returns same shape as _call_grok
+        (parsed JSON or _parse_failed) for compatibility.
+        """
+        self.last_error = None
+        self.last_raw_response = None
+        if not self.is_configured:
+            return None
+        tools = tools or [{"type": "x_search"}, {"type": "web_search"}]
+        # Optional x_search date range (ISO8601)
+        for t in tools:
+            if t.get("type") == "x_search" and (from_date or to_date):
+                if from_date:
+                    t["from_date"] = from_date
+                if to_date:
+                    t["to_date"] = to_date
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": GrokModel.GROK_RESPONSES.value,
+            "input": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "max_output_tokens": 4096,
+            "temperature": 0.3,
+            "tools": tools,
+        }
+        try:
+            logger.info(f"Calling Grok Responses API (tools: {[t.get('type') for t in tools]})...")
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/responses",
+                    headers=headers,
+                    json=body,
+                )
+                if response.status_code != 200:
+                    self.last_error = f"Responses API error {response.status_code}: {response.text[:200]}"
+                    logger.warning(self.last_error)
+                    return None
+                data = response.json()
+                content = self._extract_content_from_responses_output(data)
+                if not content:
+                    self.last_error = "Responses API returned no output text"
+                    logger.warning(self.last_error)
+                    return None
+                self.last_raw_response = content[:500]
+                parsed = self._extract_json_from_response(content)
+                if parsed is None:
+                    return {"_parse_failed": True, "_raw": content}
+                return parsed
+        except httpx.TimeoutException:
+            self.last_error = "Responses API request timed out (90s)"
+            logger.warning(self.last_error)
+            return None
+        except Exception as e:
+            self.last_error = f"Responses API failed: {str(e)}"
+            logger.warning(self.last_error)
+            return None
+
     async def _call_grok(
         self,
         system_prompt: str,
@@ -472,14 +575,8 @@ No other text, just the JSON."""
         sources: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Call the Grok API with enhanced error handling.
-        
-        Args:
-            system_prompt: System instructions
-            user_message: User query
-            use_search: Whether to enable live search
-            sources: Optional list of sources ["x", "web", "news"]
-                    If None, uses all sources
+        Call the Grok API. Prefers Responses API with x_search/web_search when use_search=True;
+        falls back to legacy chat/completions with search_parameters on failure.
         """
         self.last_error = None
         self.last_raw_response = None
@@ -494,6 +591,18 @@ No other text, just the JSON."""
             "Content-Type": "application/json",
         }
         
+        if use_search:
+            tools = self._tools_for_sources(sources)
+            result = await self._call_grok_responses(
+                system_prompt=system_prompt,
+                user_message=user_message,
+                tools=tools,
+            )
+            if result is not None:
+                return result
+            logger.info("Falling back to legacy chat/completions with search_parameters")
+        
+        # Legacy: chat/completions with optional search_parameters
         request_body = {
             "model": self.model,
             "messages": [
@@ -502,68 +611,41 @@ No other text, just the JSON."""
             ],
             "temperature": 0.3,
         }
-        
         if use_search:
-            search_params = {
-                "mode": "on",  # Force search for deep intel
-                "return_citations": True,
-            }
-            # Add source filter if specified
+            search_params = {"mode": "on", "return_citations": True}
             if sources:
                 search_params["sources"] = sources
             request_body["search_parameters"] = search_params
         
         try:
-            source_str = ", ".join(sources) if sources else "all"
-            logger.info(f"Calling Grok API (sources: {source_str})...")
-            
             async with httpx.AsyncClient(timeout=90.0) as client:
                 response = await client.post(
                     f"{self.base_url}/chat/completions",
                     headers=headers,
                     json=request_body,
                 )
-                
-                logger.info(f"Grok API response status: {response.status_code}")
-                
                 if response.status_code != 200:
                     self.last_error = f"API error {response.status_code}: {response.text[:200]}"
                     logger.error(self.last_error)
                     return None
-                
                 data = response.json()
-                
                 if "choices" not in data or not data["choices"]:
                     self.last_error = "No choices in API response"
-                    logger.error(self.last_error)
                     return None
-                
                 content = data["choices"][0].get("message", {}).get("content", "")
-                
                 if not content:
                     self.last_error = "Empty content in API response"
-                    logger.error(self.last_error)
                     return None
-                
                 self.last_raw_response = content[:500]
-                logger.debug(f"Raw response: {content[:200]}...")
-                
-                # Parse JSON from response
                 parsed = self._extract_json_from_response(content)
-                
                 if parsed is None:
-                    logger.warning("Could not parse JSON from response")
                     return {"_parse_failed": True, "_raw": content}
-                
                 return parsed
-                
         except httpx.TimeoutException:
             self.last_error = "API request timed out (90s)"
-            logger.error(self.last_error)
             return None
         except Exception as e:
             self.last_error = f"API call failed: {str(e)}"
-            logger.error(self.last_error)
             return None
 
     # ---------------------------------------------------------------------
@@ -1084,6 +1166,37 @@ Output ONLY JSON in this schema:
         
         return signals
     
+    def _outlook_fallback_signal(self, raw_text: str) -> GrokSignal:
+        """One signal when X/outlook parse fails so Grok never returns zero signals."""
+        now = datetime.now(timezone.utc)
+        summary = (raw_text or "No X/outlook data")[:300].strip() or "X search did not return parseable outlook."
+        signal_id = str(uuid.uuid4())
+        dedup_hash = self._generate_dedup_hash("grok_x_fallback", "MARKET", summary)
+        return GrokSignal(
+            signal_id=signal_id,
+            dedup_hash=dedup_hash,
+            category="sentiment",
+            source_type="grok_x",
+            asset_scope={
+                "tickers": [],
+                "sectors": [],
+                "macro_regions": ["US"],
+                "asset_classes": ["EQUITY"],
+            },
+            summary=f"X/narrative (fallback): {summary}",
+            raw_value={"type": "null", "value": None, "unit": None, "prior_value": None, "change": None, "change_period": None},
+            evidence=[{"source": "grok_x_fallback", "source_tier": "tier2", "excerpt": summary[:150], "timestamp_utc": now.isoformat()}],
+            confidence=0.35,
+            confidence_factors={"source_base": 0.35, "recency_factor": 1.0, "corroboration_factor": 1.0},
+            directional_bias="mixed",
+            time_horizon="weeks",
+            novelty="new",
+            staleness_policy={"max_age_seconds": 14400, "stale_after_utc": (now + timedelta(hours=4)).isoformat()},
+            uncertainties=["Response was not parseable as structured outlook"],
+            timestamp_utc=now.isoformat(),
+            forward_horizon="short-term",
+        )
+
     def _parse_outlook_to_signals(self, response: Dict[str, Any]) -> List[GrokSignal]:
         """Parse market outlook response into signals."""
         signals = []
@@ -1301,29 +1414,44 @@ Output ONLY JSON in this schema:
         logger.info(f"Generated {len(signals)} sentiment signals")
         return signals
     
-    async def scan_market_overview(self) -> List[GrokSignal]:
-        """Scan for overall market outlook."""
+    async def scan_market_overview(
+        self, committee_signal_context: Optional[str] = None
+    ) -> List[GrokSignal]:
+        """Scan for overall market outlook. Optionally include committee signals (FRED, Polymarket, Events) so Grok can use them."""
         if not self.is_configured:
             self.last_error = "XAI_API_KEY not configured"
             logger.warning(self.last_error)
             return []
         
-        logger.info("Scanning market overview")
+        logger.info("Scanning market overview (with committee signals)" if committee_signal_context else "Scanning market overview")
         
         system_prompt = self._build_simple_outlook_prompt()
         user_message = "What is the current US stock market outlook?"
+        if committee_signal_context and committee_signal_context.strip():
+            user_message = (
+                "COMMITTEE SIGNAL INVENTORY (use these in your outlook; cite or contradict them):\n"
+                + committee_signal_context.strip()[:4000]
+                + "\n\nBased on the above signals and your search, what is the current US stock market outlook?"
+            )
         
+        # Prefer X (Twitter) for narrative momentum; add web if needed for context
         response = await self._call_grok(
             system_prompt=system_prompt,
             user_message=user_message,
             use_search=True,
+            sources=["x"],  # X-first: Grok must scan X for signals
         )
         
         if not response:
             logger.warning(f"No response from Grok. Last error: {self.last_error}")
-            return []
+            return self._outlook_fallback_signal("No response from Grok (X search).")
         
         signals = self._parse_outlook_to_signals(response)
+        # Grok is linked to X — never return zero signals; use raw response if parse failed
+        if not signals:
+            raw = response.get("_raw", "") if isinstance(response, dict) else str(response)[:500]
+            logger.warning("Grok outlook parse returned 0 signals; creating fallback from raw response.")
+            signals = [self._outlook_fallback_signal(raw or "X search returned no parseable outlook.")]
         logger.info(f"Generated {len(signals)} market overview signals")
         return signals
     

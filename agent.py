@@ -441,6 +441,8 @@ class GannSentinelAgent:
         # FRED macro data
         try:
             macro_signals = await self.fred.scan_all_series()
+            if macro_signals is None:
+                macro_signals = []
             if not macro_signals:
                 fallback = _fallback_signal("fred", "Macro: FRED data unavailable this run; use technical and other sources.")
                 signals.append(fallback)
@@ -478,6 +480,8 @@ class GannSentinelAgent:
         # Polymarket predictions
         try:
             prediction_signals = await self.polymarket.scan_all_markets()
+            if prediction_signals is None:
+                prediction_signals = []
             if not prediction_signals:
                 fallback_pm = _fallback_signal("polymarket", "Prediction markets: no whitelisted markets this run; use technical and other sources.")
                 signals.append(fallback_pm)
@@ -669,10 +673,19 @@ class GannSentinelAgent:
         portfolio_dict = portfolio.to_dict() if hasattr(portfolio, 'to_dict') else portfolio
         self.db.save_snapshot(portfolio_dict)
 
-        # Separate signal types for MACA
+        # Separate signal types for MACA; ensure at least one per source so committee always has context
         fred_signals_dict = [s for s in signals_dict if s.get("source") == "fred"]
         polymarket_signals_dict = [s for s in signals_dict if s.get("source") == "polymarket"]
-        event_signals_dict = event_signals
+        event_signals_dict = list(event_signals) if event_signals else []
+        if not fred_signals_dict:
+            fred_signals_dict = [_fallback_signal("fred", "Macro: FRED data unavailable this run; use technical and other sources.")]
+            logger.info("MACA: injected FRED fallback so committee has context")
+        if not polymarket_signals_dict:
+            polymarket_signals_dict = [_fallback_signal("polymarket", "Prediction markets: no whitelisted markets this run; use technical and other sources.")]
+            logger.info("MACA: injected Polymarket fallback so committee has context")
+        if not event_signals_dict:
+            event_signals_dict = [_fallback_signal("event_scanner", "Events: no corporate events detected this run; use technical and other sources.")]
+            logger.info("MACA: injected Events fallback so committee has context")
 
         # =================================================================
         # MACA MODE: Full AI Council (Grok + Perplexity + ChatGPT + Claude)

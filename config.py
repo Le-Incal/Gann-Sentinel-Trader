@@ -162,14 +162,12 @@ class Config:
         if cls.MODE not in ["PAPER", "LIVE"]:
             issues.append(f"Invalid MODE: {cls.MODE}. Must be PAPER or LIVE")
         
-        # Warn about LIVE mode
-        if cls.MODE == "LIVE" and cls.APPROVAL_GATE:
-            pass  # This is fine - LIVE with approval gate
-        elif cls.MODE == "LIVE" and not cls.APPROVAL_GATE:
-            issues.append("WARNING: LIVE mode with APPROVAL_GATE=OFF is dangerous!")
+        # LIVE without approval gate is invalid (prevent accidental live trading without human gate)
+        if cls.MODE == "LIVE" and not cls.APPROVAL_GATE:
+            issues.append("LIVE mode requires APPROVAL_GATE=ON (cannot run live trading without human approval)")
         
         return {
-            "valid": len([i for i in issues if not i.startswith("WARNING")]) == 0,
+            "valid": len(issues) == 0,
             "issues": issues
         }
     

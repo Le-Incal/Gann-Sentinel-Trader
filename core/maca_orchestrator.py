@@ -271,6 +271,20 @@ class MACAOrchestrator:
 
         logger.info(f"Starting MACA scan cycle {cycle_id} (2-phase architecture)")
 
+        # Ensure at least one signal per source so Telegram and committee context are never empty
+        fred_signals = list(fred_signals or [])
+        polymarket_signals = list(polymarket_signals or [])
+        event_signals = list(event_signals or [])
+        if not fred_signals:
+            fred_signals = [self._placeholder_signal("fred", "Macro: FRED data unavailable this run; use technical and other sources.")]
+            logger.info("MACA: injected FRED placeholder for display/context")
+        if not polymarket_signals:
+            polymarket_signals = [self._placeholder_signal("polymarket", "Prediction markets: no whitelisted markets this run; use technical and other sources.")]
+            logger.info("MACA: injected Polymarket placeholder for display/context")
+        if not event_signals:
+            event_signals = [self._placeholder_signal("event_scanner", "Events: no corporate events detected this run; use technical and other sources.")]
+            logger.info("MACA: injected Events placeholder for display/context")
+
         try:
             # ================================================================
             # PHASE 1: Parallel thesis generation
@@ -282,7 +296,7 @@ class MACAOrchestrator:
                 market_context=market_context,
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
-                event_signals=event_signals or [],
+                event_signals=event_signals,
                 technical_analysis=technical_analysis,
             )
 
@@ -297,7 +311,7 @@ class MACAOrchestrator:
                 proposals=proposals,
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
-                event_signals=event_signals or [],
+                event_signals=event_signals,
                 technical_analysis=technical_analysis,
             )
 
@@ -448,8 +462,9 @@ class MACAOrchestrator:
         self,
         ticker: str,
         portfolio: Dict[str, Any],
-        fred_signals: List[Dict[str, Any]],
-        polymarket_signals: List[Dict[str, Any]],
+        fred_signals: Optional[List[Dict[str, Any]]] = None,
+        polymarket_signals: Optional[List[Dict[str, Any]]] = None,
+        event_signals: Optional[List[Dict[str, Any]]] = None,
         technical_analysis: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
@@ -460,8 +475,9 @@ class MACAOrchestrator:
         Args:
             ticker: The ticker symbol to analyze
             portfolio: Current portfolio state with positions
-            fred_signals: Macro indicators from FRED
-            polymarket_signals: Prediction market data
+            fred_signals: Macro indicators from FRED (optional; placeholder injected if empty)
+            polymarket_signals: Prediction market data (optional; placeholder injected if empty)
+            event_signals: Corporate event data (optional; placeholder injected if empty)
             technical_analysis: Technical chart analysis for the ticker
 
         Returns:
@@ -478,6 +494,17 @@ class MACAOrchestrator:
         })
 
         logger.info(f"Starting MACA ticker check for {ticker} (cycle {cycle_id})")
+
+        # Ensure at least one per source for display/context (same as run_scan_cycle)
+        fred_signals = list(fred_signals or [])
+        polymarket_signals = list(polymarket_signals or [])
+        event_signals = list(event_signals or [])
+        if not fred_signals:
+            fred_signals = [self._placeholder_signal("fred", "Macro: FRED data unavailable this run; use technical and other sources.")]
+        if not polymarket_signals:
+            polymarket_signals = [self._placeholder_signal("polymarket", "Prediction markets: no whitelisted markets this run; use technical and other sources.")]
+        if not event_signals:
+            event_signals = [self._placeholder_signal("event_scanner", "Events: no corporate events detected this run; use technical and other sources.")]
 
         try:
             # Get available cash from portfolio
@@ -508,6 +535,7 @@ class MACAOrchestrator:
                 proposals=proposals,
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
+                event_signals=event_signals,
                 technical_analysis=technical_analysis,
             )
 
@@ -857,10 +885,26 @@ class MACAOrchestrator:
 
         combined_context = "\n\n".join([c for c in [market_context, trading_skills, signal_context] if c])
 
+        # ChatGPT gets signal inventory plus its own "research" from Perplexity (sentiment/bias indicators)
+        chatgpt_context = combined_context
+        if hasattr(self.perplexity, "fetch_research_snippet") and self.perplexity.is_configured:
+            try:
+                research = await asyncio.wait_for(
+                    self.perplexity.fetch_research_snippet(
+                        "What are the main sentiment and bias indicators (herding, crowding, narrative exhaustion) for US equities in the last 24-48 hours? One short paragraph; cite sources if possible.",
+                        max_tokens=400,
+                    ),
+                    timeout=20.0,
+                )
+                if research:
+                    chatgpt_context = combined_context + "\n\nWeb research for sentiment/bias analyst (use this plus the signal inventory):\n" + research
+            except Exception as e:
+                logger.warning(f"ChatGPT research snippet failed: {e}")
+
         # Generate theses in parallel with timeout handling
         tasks = []
 
-        # Grok thesis (if available)
+        # Grok thesis (if available) — receives committee context; Grok scans X for its own signals
         if hasattr(self.grok, 'generate_thesis'):
             tasks.append(self._safe_generate_thesis(
                 "grok",
@@ -890,14 +934,14 @@ class MACAOrchestrator:
             ,additional_context=signal_context
         ))
 
-        # ChatGPT thesis
+        # ChatGPT thesis — receives committee context + Perplexity research snippet so it has its own gathered input
         tasks.append(self._safe_generate_thesis(
             "chatgpt",
             self.chatgpt.generate_thesis,
             portfolio_summary=portfolio_summary,
             available_cash=available_cash,
             scan_cycle_id=cycle_id,
-            market_context=combined_context,
+            market_context=chatgpt_context,
             additional_context=signal_context
         ))
 
@@ -909,7 +953,14 @@ class MACAOrchestrator:
             source = ["grok", "perplexity", "chatgpt"][i]
             if isinstance(result, Exception):
                 logger.error(f"{source} thesis generation failed: {result}")
-                proposals.append(self._empty_proposal(cycle_id, source, str(result)))
+                if source == "grok":
+                    proposals.append(self._grok_hold_fallback_from_context(
+                        cycle_id=cycle_id,
+                        market_context=combined_context,
+                        technical_analysis=technical_analysis,
+                    ))
+                else:
+                    proposals.append(self._empty_proposal(cycle_id, source, str(result)))
             else:
                 proposals.append(result)
                 # Save to database
@@ -1257,6 +1308,15 @@ class MACAOrchestrator:
             logger.error(f"{source} thesis generation error: {e}")
             return self._empty_proposal(kwargs.get("scan_cycle_id", ""), source, str(e))
 
+    def _placeholder_signal(self, source: str, summary: str) -> Dict[str, Any]:
+        """Single placeholder dict for FRED/Polymarket/Events so inventory and context are never empty."""
+        return {
+            "source": source,
+            "source_type": source,
+            "summary": summary,
+            "description": summary,
+        }
+
     def _grok_hold_fallback_from_context(
         self,
         cycle_id: str,
@@ -1271,7 +1331,11 @@ class MACAOrchestrator:
             state_val = (state.get("state", state.get("value", "unknown"))) if isinstance(state, dict) else str(state)
             verdict = technical_analysis.get("verdict", "WATCH ONLY")
             parts.append(f"Technical only: {ticker or 'N/A'} {state_val}, verdict {verdict}.")
-        if market_context and market_context.strip():
+        # Use parsed signal count so we don't say "no signals" when inventory actually had FRED/Polymarket/Event lines
+        parsed = self._parse_signals_from_context(market_context)
+        if parsed:
+            parts.append("Committee had FRED/Polymarket/Event signals above; Grok returned no additional narrative.")
+        elif market_context and market_context.strip():
             parts.append("Committee context had no FRED/Polymarket/Event signals.")
         thesis = " ".join(parts) if parts else "No narrative signals from Grok; no fundamental signals in this cycle."
         thesis = (thesis or "HOLD - insufficient signals.")[:500]
@@ -1292,7 +1356,7 @@ class MACAOrchestrator:
                 "catalyst_deadline": None
             },
             "rotation_details": {},
-            "supporting_evidence": {"signal_source": "grok", "signals_count": 0},
+            "supporting_evidence": {"signal_source": "grok", "signals_count": len(parsed)},
             "raw_data": {"fallback": True, "reason": "scan_market_overview returned empty"},
             "time_sensitive": False,
             "metadata": {"adapter": "grok_fallback_from_context"}
@@ -1333,8 +1397,9 @@ class MACAOrchestrator:
                     technical_analysis=technical_analysis,
                 )
 
+            # Pass committee signal context so Grok receives FRED, Polymarket, Events and can use them
             signals = await asyncio.wait_for(
-                self.grok.scan_market_overview(),
+                self.grok.scan_market_overview(committee_signal_context=market_context or ""),
                 timeout=30.0
             )
 
@@ -1372,7 +1437,8 @@ class MACAOrchestrator:
             )
 
             if not best_signal:
-                return self._empty_proposal(cycle_id, "grok", "No best signal found")
+                logger.warning("Grok best_signal missing; using fallback from technical/context")
+                return _grok_fallback()
 
             # Debug: Log full signal structure to diagnose issues
             logger.info(f"DEBUG Grok best_signal keys: {list(best_signal.keys())}")

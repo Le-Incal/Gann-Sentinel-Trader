@@ -83,8 +83,8 @@ Your unique strength: use your web search to find verifiable facts (news, filing
 
 You do NOT infer sentiment. You do NOT analyze charts. You do NOT invent signals.
 
-SIGNAL INVENTORY (from other committee sources):
-The block below is the committee's current signal inventory (FRED, Polymarket, Events). Use your web search to (1) validate or contradict these signals, (2) find additional catalysts from the last 24 hours. Cite URLs for key claims.
+SIGNAL INVENTORY (you MUST use these; list and count them in your output):
+The block below is the committee's current signal inventory (FRED, Polymarket, Events). Use your web search to (1) validate or contradict these signals, (2) find additional catalysts from the last 24 hours. You MUST cite the signal inventory above and state how many signals you considered. Cite URLs for key claims.
 
 RECENCY REQUIREMENT:
 - Prefer information from the LAST 24 HOURS when available
@@ -185,13 +185,17 @@ Return ONLY valid JSON (no markdown) in this exact structure:
                     logger.warning(f"Perplexity JSON parse failed; building proposal from raw text. Content length: {len(content)}")
                     return self._fallback_proposal_from_raw(scan_cycle_id, content, latency_ms)
 
-                # Build full proposal
-                proposal = self._build_proposal(
-                    parsed=parsed,
-                    scan_cycle_id=scan_cycle_id,
-                    latency_ms=latency_ms,
-                    raw_response=content
-                )
+                # Build full proposal; on any build error use raw text so analyst still contributes narrative
+                try:
+                    proposal = self._build_proposal(
+                        parsed=parsed,
+                        scan_cycle_id=scan_cycle_id,
+                        latency_ms=latency_ms,
+                        raw_response=content
+                    )
+                except Exception as build_err:
+                    logger.warning(f"Perplexity proposal build failed ({build_err}); using raw text fallback")
+                    return self._fallback_proposal_from_raw(scan_cycle_id, content, latency_ms)
 
                 logger.info(f"Perplexity thesis: {parsed.get('recommendation', {}).get('ticker', 'NO_OPPORTUNITY')} "
                            f"conviction={parsed.get('recommendation', {}).get('conviction_score', 0)}")
@@ -321,6 +325,41 @@ Be specific about any concerns. Cite sources if you find conflicting information
             lines.append(f"  - {ticker}: {qty} shares, P&L: ${pnl:,.2f} ({pnl_pct:+.1f}%)")
 
         return "\n".join(lines)
+
+    async def fetch_research_snippet(
+        self, query: str, max_tokens: int = 500
+    ) -> str:
+        """
+        Fetch a short research snippet from Perplexity (web search). Used to give
+        ChatGPT (or other analysts) "its own" gathered input, e.g. sentiment/bias
+        indicators, without ChatGPT calling the web itself.
+        """
+        if not self.is_configured:
+            return ""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": query}],
+                        "temperature": 0.2,
+                        "max_tokens": max_tokens,
+                    },
+                )
+                if response.status_code != 200:
+                    logger.warning(f"Perplexity research snippet error: {response.status_code}")
+                    return ""
+                data = response.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return (content or "").strip()
+        except Exception as e:
+            logger.warning(f"Perplexity research snippet failed: {e}")
+            return ""
 
     def _parse_json_response(self, content: str) -> Optional[Dict]:
         """Parse JSON from response, handling markdown code blocks and trailing text."""

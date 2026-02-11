@@ -59,7 +59,19 @@ Perplexity is well-suited for this role (web search + citations + recency). Gemi
 **Changes made:**
 - One sentence added: “You MUST list bias_flags (e.g. herding, overconfidence, recency) and provide what_you_might_be_missing as a contrarian consideration.”
 
-**Verdict:** ChatGPT is used correctly. Small prompt tweak to stress bias and contrarian output.
+**Verdict:** ChatGPT is used correctly. Small prompt tweak to stress bias and contrarian output. To maximize impact, ChatGPT receives (1) the committee signal inventory and (2) a short "research snippet" from Perplexity (sentiment/bias indicators) so it has both shared context and its own gathered input.
+
+---
+
+## 3b. Event scanner: who collects events?
+
+**Flow (unchanged):** One API call runs **first** to collect event data (corporate events: filings, FDA, M&A, etc.). That data is then added to the **signal inventory**, and the full inventory (FRED + Polymarket + Events + Technical) is sent to **all** analysts (Grok, Perplexity, ChatGPT) and the Chair.
+
+**Who should run the event scanner?**
+- **Grok:** Strong for X/social and narrative; can find events discussed on X. Current implementation uses Grok with live search. Good when events are "trending" or discussed on X.
+- **Perplexity:** Strong for web/filings/news; can find SEC filings, FDA, press releases, earnings dates. Better when events are document- or news-driven.
+
+**Recommendation:** Keep **Grok** for the event scanner for now (one fewer integration). If event coverage is weak, add an optional **Perplexity-based event scan** (e.g. "Recent corporate events from SEC, FDA, and major news in the last 24–72 hours") and merge results into the same event_signals list before building the inventory.
 
 ---
 

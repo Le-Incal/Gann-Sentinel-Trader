@@ -10,7 +10,7 @@
 | Status | Production (Paper Trading) |
 | Deployment | Railway (auto-deploy from GitHub main) |
 | URL | https://gann-sentinel-trader-production.up.railway.app |
-| Logs API Token | `QzHBtENzt-sYeLXKSUzEN_v6VREwfEnGaqpoQVmOBWE` |
+| Logs API Token | Set via env `LOGS_API_TOKEN` (do not commit real token) |
 
 ---
 

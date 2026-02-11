@@ -92,10 +92,11 @@ CURRENT CONTEXT:
 - Available Cash: ${available_cash:,.2f}
 {f"- Market Context: {market_context}" if market_context else ""}
 
-{additional_context or ""}
+SIGNAL INVENTORY (you MUST use these; list and count them in your output):
+{additional_context or "(No signal inventory provided - state that in your thesis.)"}
 
 YOUR TASK:
-Propose a single trade OR recommend HOLD based on sentiment regime + cognitive bias.
+Propose a single trade OR recommend HOLD based on sentiment regime + cognitive bias. You MUST cite the signal inventory above (by source: FRED, Polymarket, Events) and state how many signals you considered.
 
 YOU MUST:
 1) List every signal you considered (grouped by source) and provide counts.
@@ -173,21 +174,25 @@ Return ONLY valid JSON (no markdown) in this exact structure:
                 data = response.json()
                 content = data["choices"][0]["message"]["content"]
 
-                # Parse JSON from response
+                # Parse JSON from response; on failure use raw text so analyst still contributes
                 parsed = self._parse_json_response(content)
 
                 if not parsed:
-                    logger.error(f"Failed to parse ChatGPT response: {content[:500]}")
-                    return self._empty_proposal(scan_cycle_id, "Failed to parse response")
+                    logger.warning(f"ChatGPT JSON parse failed; building proposal from raw text (len={len(content)})")
+                    return self._fallback_proposal_from_raw(scan_cycle_id, content, latency_ms)
 
-                # Build full proposal
-                proposal = self._build_proposal(
-                    parsed=parsed,
-                    scan_cycle_id=scan_cycle_id,
-                    latency_ms=latency_ms,
-                    raw_response=content,
-                    tokens_used=data.get("usage", {}).get("total_tokens", 0)
-                )
+                # Build full proposal (with fallback if build raises)
+                try:
+                    proposal = self._build_proposal(
+                        parsed=parsed,
+                        scan_cycle_id=scan_cycle_id,
+                        latency_ms=latency_ms,
+                        raw_response=content,
+                        tokens_used=data.get("usage", {}).get("total_tokens", 0)
+                    )
+                except Exception as build_err:
+                    logger.warning(f"ChatGPT proposal build failed ({build_err}); using raw text fallback")
+                    return self._fallback_proposal_from_raw(scan_cycle_id, content, latency_ms)
 
                 logger.info(f"ChatGPT thesis: {parsed.get('recommendation', {}).get('ticker', 'NO_OPPORTUNITY')} "
                            f"conviction={parsed.get('recommendation', {}).get('conviction_score', 0)}")
@@ -501,6 +506,45 @@ Output ONLY JSON in this schema:
                 "changed_mind": False,
                 "status": "error",
             }
+
+    def _fallback_proposal_from_raw(
+        self, scan_cycle_id: str, content: str, latency_ms: int
+    ) -> Dict[str, Any]:
+        """Build NO_OPPORTUNITY proposal from raw response when JSON parse/build fails."""
+        thesis = "No parseable JSON; sentiment/bias summary from raw response."
+        content = (content or "").strip()
+        if content:
+            for line in content.split("\n"):
+                line = line.strip()
+                if not line or line.startswith("{") or line.startswith("```"):
+                    continue
+                if len(line) > 40 and not line.startswith("["):
+                    thesis = line[:500].strip()
+                    break
+            if thesis == "No parseable JSON; sentiment/bias summary from raw response." and len(content) > 80:
+                thesis = content[:400].strip() + ("..." if len(content) > 400 else "")
+        return {
+            "schema_version": "1.0.0",
+            "proposal_id": self._generate_proposal_id(),
+            "ai_source": "chatgpt",
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "scan_cycle_id": scan_cycle_id,
+            "proposal_type": "NO_OPPORTUNITY",
+            "recommendation": {
+                "ticker": None,
+                "side": None,
+                "conviction_score": 0,
+                "thesis": thesis,
+                "time_horizon": None,
+                "catalyst": None,
+                "catalyst_deadline": None
+            },
+            "rotation_details": {},
+            "supporting_evidence": {},
+            "raw_data": {"parse_fallback": True, "raw_preview": content[:1500]},
+            "time_sensitive": False,
+            "metadata": {"model": self.model, "latency_ms": latency_ms}
+        }
 
     def _empty_proposal(self, scan_cycle_id: str, reason: str) -> Dict[str, Any]:
         """Return empty proposal when generation fails."""

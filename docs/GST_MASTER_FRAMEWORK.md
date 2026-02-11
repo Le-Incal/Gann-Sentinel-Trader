@@ -817,7 +817,7 @@ Response:
 
 ```
 Base URL: https://gann-sentinel-trader-production.up.railway.app
-Token: QzHBtENzt-sYeLXKSUzEN_v6VREwfEnGaqpoQVmOBWE
+Token: (use LOGS_API_TOKEN from environment; do not commit)
 ```
 
 ---
