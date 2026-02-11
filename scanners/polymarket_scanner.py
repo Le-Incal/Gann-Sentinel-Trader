@@ -5,9 +5,9 @@ Forward-looking prediction market signal extraction.
 This scanner uses the shared temporal awareness framework to ensure
 we always look projectively (1mo, 3mo, 6mo, 12mo forward).
 
-Version: 2.1.0 (Sports/Entertainment Filter Fix)
-- FIX: Word boundary matching for "ai" to prevent false positives
-- ADD: Exclusion keywords for sports, entertainment, reality TV
+Version: 2.2.0 (Stocks/Government/Business Only)
+- ADD: Broad exclusion list - only allow markets relating to stocks, government, or business
+- EXPAND: Sports, entertainment, celebrity, pop culture, weather, non-financial
 Last Updated: January 2026
 """
 
@@ -192,8 +192,46 @@ CATEGORY_TRADING_ASSETS = {
 # Keywords that need word boundary matching (short words that could cause false positives)
 WORD_BOUNDARY_KEYWORDS = ["ai", "eu", "uk", "us", "fed", "war", "gdp", "cpi", "pmi", "ev", "oil", "gas", "lng"]
 
-# Add AI back to TECH_SECTOR with word boundary matching
-# This will be handled by _keyword_matches using regex
+# =============================================================================
+# EXCLUSION PATTERNS - Remove anything not related to stocks, government, or business
+# If any of these appear in question/description/title, market is NOT_RELEVANT
+# =============================================================================
+EXCLUSION_PATTERNS = [
+    # Sports and betting
+    "spread:", "moneyline", "over/under", "handicap", "point spread",
+    " vs ", " vs.", "match", " game ", "games ", "playoffs", "super bowl",
+    "world cup", "champions league", "premier league", "nfl ", "nba ", "mlb ", "nhl ", "ncaa",
+    "win the ", "will win", "championship", "finals", "semifinal", "quarterfinal",
+    "march madness", "bracket", "heisman", "mvp ", "all-star", "pro bowl",
+    "soccer", "football game", "basketball game", "baseball game", "hockey game",
+    "tennis", "golf tournament", "olympics", "paralympics", "world series",
+    "midshipmen", "army-navy", "rivalry game",
+    # Entertainment, celebrity, pop culture
+    "oscar", "emmy", "grammy", "tony award", "golden globe", "academy award",
+    "movie ", "film ", "box office", "opening weekend", "sequel", "franchise film",
+    "netflix show", "tv show", "reality show", "talent show", "american idol",
+    "celebrity", "actor", "actress", "singer", "band ", "album ", "song ",
+    "music video", "spotify", "streaming record", "youtube view", "viral video",
+    "tiktok", "influencer ", "followers", "instagram", "meme ",
+    "royal family", "prince ", "princess ", "king charles", "queen ",
+    "wedding", "divorce", "baby", "pregnancy", "relationship",
+    # Price guessing / gambling (not fundamental)
+    "finish above $", "finish below $", "stock price", "hit $", "reach $",
+    "price on ", "close above", "close below", "by end of",
+    # Non-US politics / non-investment politics
+    "peruvian", "brazilian", "mexican", "canadian", "french election",
+    "german ", "italian ", "british ", "uk election", "eu parliament",
+    "australian", "indian election", "japanese election",
+    # Weather and natural events (unless energy/commodity - caught by context)
+    "hurricane ", "tornado", "earthquake", "flood ", "wildfire",
+    "temperature", "rainfall", "snowfall", "weather ",
+    # Religion, conspiracy, non-financial
+    "pope ", "vatican", "church ", "conspiracy", "ufo", "alien",
+    # Other non-business (avoid "gaming " so we keep gaming sector / GPU markets)
+    "sports betting", "fantasy football", "fantasy basketball",
+    "video game", "esports", "twitch",
+    "go viral", "trending on", "number one song", "billboard ",
+]
 
 
 # =============================================================================
@@ -365,20 +403,9 @@ class PolymarketScanner:
         
         combined_text = f"{question} {description} {title}"
         
-        # FIRST: Quick sanity check - exclude obvious non-investment patterns
-        # These patterns indicate sports betting or non-financial markets
-        exclusion_patterns = [
-            "spread:", "moneyline", "over/under", "handicap",  # Sports betting
-            "vs.", " vs ", "match", "game",  # Sports events
-            "win the", "will win",  # Generic win predictions (often sports)
-            "finish above $", "finish below $", "stock price",  # Price guessing
-            "peruvian", "brazilian", "mexican", "canadian",  # Non-US politics
-            "french", "german", "italian", "british", "uk ",  # Non-US politics
-            "premier league", "champions league", "world cup",  # Sports leagues
-            "nfl", "nba", "mlb", "nhl", "ncaa",  # Sports leagues
-        ]
-        
-        for pattern in exclusion_patterns:
+        # FIRST: Exclude anything not related to stocks, government, or business
+        # Use the module-level EXCLUSION_PATTERNS (sports, entertainment, celebrity, etc.)
+        for pattern in EXCLUSION_PATTERNS:
             if pattern in combined_text:
                 logger.debug(f"Market excluded by pattern '{pattern}': {question[:40]}...")
                 return MarketCategory.NOT_RELEVANT
