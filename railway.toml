@@ -1,0 +1,6 @@
+# Railway deployment config for Gann Sentinel Trader
+# https://docs.railway.app/reference/config-as-code
+# Procfile also defines: worker: python main.py
+
+[deploy]
+startCommand = "python main.py"
