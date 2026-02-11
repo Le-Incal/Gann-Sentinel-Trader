@@ -398,6 +398,15 @@ Execution → Alpaca paper trading
 3. **Defensive Coding** - Handle None values, type errors gracefully
 4. **Forward-Looking** - ANCHOR in history, ORIENT toward future
 5. **Lean Philosophy** - Complete current phase before adding features
+6. **Auto-commit** - After making code or doc changes, always commit (and push) automatically. Do not ask the user to review or approve commits. Use a clear, descriptive commit message. Either the change is correct or it isn’t; no manual commit step.
+
+### Git (auto-commit)
+
+- When you create or modify files in this repo, **always** run at the end of your response (or after a logical set of changes):
+  - `git add -A && git commit -m "<short descriptive message>"`
+  - Then `git push origin main`
+- Do **not** say "I've made the changes; you can commit when ready" or ask the user to commit. Just commit and push.
+- Commit message should describe what changed (e.g. "fix: Grok fallback syntax" or "docs: add architecture redesign proposal").
 
 ---
 
