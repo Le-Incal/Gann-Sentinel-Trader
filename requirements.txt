@@ -24,6 +24,7 @@ uvicorn>=0.27.0
 
 # Utilities
 python-dateutil>=2.8.0
+pytz>=2024.1
 
 # Development (optional)
 pytest>=7.0.0
