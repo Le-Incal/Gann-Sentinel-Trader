@@ -105,6 +105,10 @@ YOU MUST:
 4) Provide a clear invalidation condition.
 5) If evidence is weak/conflicting → proposal_type = NO_OPPORTUNITY.
 
+RECOMMENDATION RULE (strict):
+- You MUST output exactly one of: (A) A concrete trade: set ticker (symbol), side (BUY or SELL), conviction_score (1-100), and thesis; OR (B) No trade: set ticker null, side null, conviction_score 0, and thesis explaining why.
+- conviction_score means strength of your TRADE recommendation only: 0 = no trade (HOLD); 1-100 = strength of BUY/SELL (e.g. 75 = high conviction, 40 = low).
+
 OUTPUT:
 Return ONLY valid JSON (no markdown) in this exact structure:
 {{

@@ -20,7 +20,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List, TYPE_CHECKING, Tuple
+from typing import Optional, Dict, Any, List, TYPE_CHECKING, Tuple, Union
 
 from config import Config
 
@@ -239,7 +239,7 @@ class MACAOrchestrator:
         fred_signals: List[Dict[str, Any]],
         polymarket_signals: List[Dict[str, Any]],
         event_signals: Optional[List[Dict[str, Any]]] = None,
-        technical_analysis: Optional[Dict[str, Any]] = None,
+        technical_analysis: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         market_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -254,12 +254,22 @@ class MACAOrchestrator:
             fred_signals: Macro indicators from FRED
             polymarket_signals: Prediction market data
             event_signals: Corporate event data
-            technical_analysis: Technical chart analysis
+            technical_analysis: Technical chart analysis (single dict or list of chart dicts; all passed to Chair and Telegram)
             market_context: Additional market context string
 
         Returns:
             Result including synthesis and final_decision with proceed_to_execution flag
         """
+        # Normalize technical to list; primary chart is first for backward compat
+        tech_list: List[Dict[str, Any]] = []
+        if technical_analysis is not None:
+            if isinstance(technical_analysis, list):
+                tech_list = [t for t in technical_analysis if isinstance(t, dict) and t.get("ticker")]
+            elif isinstance(technical_analysis, dict) and technical_analysis.get("ticker"):
+                tech_list = [technical_analysis]
+        primary_tech = tech_list[0] if tech_list else None
+        logger.info(f"MACA: technical charts count={len(tech_list)}")
+
         # Create scan cycle record
         start_time = datetime.now(timezone.utc)
         cycle_id = self.db.create_scan_cycle({
@@ -297,7 +307,7 @@ class MACAOrchestrator:
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
                 event_signals=event_signals,
-                technical_analysis=technical_analysis,
+                technical_analysis=primary_tech,
             )
 
             phase1_complete = datetime.now(timezone.utc)
@@ -312,7 +322,8 @@ class MACAOrchestrator:
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
                 event_signals=event_signals,
-                technical_analysis=technical_analysis,
+                technical_analysis=primary_tech,
+                technical_charts=tech_list,
             )
 
             # ================================================================
@@ -324,7 +335,7 @@ class MACAOrchestrator:
                 portfolio=portfolio,
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
-                technical_analysis=technical_analysis,
+                technical_analysis=primary_tech,
                 debate=debate,
                 vote_summary=vote_summary,
                 signal_inventory=signal_inventory,
@@ -413,7 +424,7 @@ class MACAOrchestrator:
                     final_decision=final_decision,
                     synthesis=synthesis,
                     proposals=proposals_with_tech,
-                    technical_analysis=technical_analysis,
+                    technical_analysis=tech_list,
                     portfolio=portfolio,
                     signal_inventory=signal_inventory,
                 )
@@ -786,15 +797,19 @@ class MACAOrchestrator:
             if not best_signal:
                 return self._empty_proposal(cycle_id, "grok", f"No best signal found for {ticker}")
 
-            # Convert confidence (0-1) to conviction_score (0-100)
-            confidence_raw = best_signal.get("confidence", 0.5)
-            conviction_score = int(confidence_raw * 100)
+            # Conviction: use explicit recommendation_conviction from Grok if present, else confidence
+            raw_val = best_signal.get("raw_value") or {}
+            if raw_val.get("unit") == "recommendation_conviction":
+                conviction_score = int(round(float(raw_val.get("value", 0)) * 100))
+            else:
+                confidence_raw = best_signal.get("confidence", 0.5)
+                conviction_score = int(confidence_raw * 100)
 
-            # Map directional_bias to side
-            bias = best_signal.get("directional_bias", "neutral")
-            if bias == "bullish":
+            # Map directional_bias to side (bullish/positive -> BUY, bearish/negative -> SELL)
+            bias = (best_signal.get("directional_bias") or "neutral").lower()
+            if bias in ("bullish", "positive"):
                 side = "BUY"
-            elif bias == "bearish":
+            elif bias in ("bearish", "negative"):
                 side = "SELL"
             else:
                 side = None
@@ -976,12 +991,15 @@ class MACAOrchestrator:
         fred_signals: List[Dict[str, Any]],
         polymarket_signals: List[Dict[str, Any]],
         event_signals: Optional[List[Dict[str, Any]]] = None,
-        technical_analysis: Optional[Dict[str, Any]],
+        technical_analysis: Optional[Dict[str, Any]] = None,
+        technical_charts: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], Dict[str, Any]]:
         """Optional committee debate.
 
         Returns: (debate_summary, vote_summary, proposals_with_tech, signal_inventory)
         """
+        tech_list = technical_charts if technical_charts is not None else ([technical_analysis] if technical_analysis else [])
+        tech_count = len(tech_list)
 
         # Signal inventory for explainability/debuggability.
         # Include actual signal summaries for Telegram display
@@ -997,18 +1015,19 @@ class MACAOrchestrator:
                 "FRED": len(fred_signals or []),
                 "Polymarket": len(polymarket_signals or []),
                 "Events": len(event_signals or []),
-                "Technical": 1 if technical_analysis else 0,
+                "Technical": tech_count,
             },
             "total": int(
                 len(fred_signals or [])
                 + len(polymarket_signals or [])
                 + len(event_signals or [])
-                + (1 if technical_analysis else 0)
+                + tech_count
             ),
-            # Include actual signal details for Telegram display
+            # Include actual signal details for Telegram display; Chair can use technical_charts
             "fred_signals": [_extract_signal_summary(s) for s in (fred_signals or [])[:5]],
             "polymarket_signals": [_extract_signal_summary(s) for s in (polymarket_signals or [])[:5]],
             "event_signals": [_extract_signal_summary(s) for s in (event_signals or [])[:3]],
+            "technical_charts": tech_list,
         }
 
         if not Config.DEBATE_ENABLED:
@@ -1458,15 +1477,19 @@ class MACAOrchestrator:
                        f"confidence={best_signal.get('confidence', 0)}, "
                        f"bias={best_signal.get('directional_bias', 'N/A')}")
 
-            # Convert confidence (0-1) to conviction_score (0-100)
-            confidence_raw = best_signal.get("confidence", 0.5)
-            conviction_score = int(confidence_raw * 100)
+            # Conviction: use explicit recommendation_conviction from Grok trade rec if present, else confidence
+            raw_val = best_signal.get("raw_value") or {}
+            if raw_val.get("unit") == "recommendation_conviction":
+                conviction_score = int(round(float(raw_val.get("value", 0)) * 100))
+            else:
+                confidence_raw = best_signal.get("confidence", 0.5)
+                conviction_score = int(confidence_raw * 100)
 
-            # Map directional_bias to side
-            bias = best_signal.get("directional_bias", "neutral")
-            if bias == "bullish":
+            # Map directional_bias to side (bullish/positive -> BUY, bearish/negative -> SELL)
+            bias = (best_signal.get("directional_bias") or "neutral").lower()
+            if bias in ("bullish", "positive"):
                 side = "BUY"
-            elif bias == "bearish":
+            elif bias in ("bearish", "negative"):
                 side = "SELL"
             else:
                 side = None
@@ -1605,8 +1628,12 @@ class MACAOrchestrator:
         action = (final_thesis.get("action") or "HOLD").upper()
         ticker = final_thesis.get("ticker")
         side = action if action in ["BUY", "SELL"] else None
-        confidence = final_thesis.get("confidence")
-        conviction_score = int(round(float(confidence) * 100)) if isinstance(confidence, (int, float)) else 0
+        # Prefer explicit conviction_score (0-100) from Chair; else derive from confidence (0-1)
+        if final_thesis.get("conviction_score") is not None:
+            conviction_score = max(0, min(100, int(final_thesis["conviction_score"])))
+        else:
+            confidence = final_thesis.get("confidence")
+            conviction_score = int(round(float(confidence) * 100)) if isinstance(confidence, (int, float)) else 0
 
         decision_type = (chair_out or {}).get("decision_type")
         if not decision_type:
@@ -1615,6 +1642,7 @@ class MACAOrchestrator:
         synthesis = {
             "decision_type": decision_type,
             "rationale": (final_thesis.get("description") or "")[:2000],
+            "synthesis_summary": (chair_out or {}).get("synthesis_summary") or "",
             "recommendation": {
                 "ticker": ticker,
                 "side": side,
@@ -1637,7 +1665,7 @@ class MACAOrchestrator:
         final_decision: Dict[str, Any],
         synthesis: Dict[str, Any],
         proposals: List[Dict[str, Any]],
-        technical_analysis: Optional[Dict[str, Any]] = None,
+        technical_analysis: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         portfolio: Optional[Dict[str, Any]] = None,
         signal_inventory: Optional[Dict[str, Any]] = None
     ) -> None:
@@ -1652,10 +1680,12 @@ class MACAOrchestrator:
         - Inline approve/reject buttons (if actionable)
         """
         try:
-            # Build technical signals list for display
-            technical_signals = []
+            # Build technical signals list for display (single dict or list of charts)
+            technical_signals: List[Dict[str, Any]] = []
             if technical_analysis:
-                if isinstance(technical_analysis, dict):
+                if isinstance(technical_analysis, list):
+                    technical_signals = [t for t in technical_analysis if isinstance(t, dict) and t.get("ticker")]
+                elif isinstance(technical_analysis, dict):
                     if "ticker" in technical_analysis:
                         technical_signals.append(technical_analysis)
                     else:

@@ -450,6 +450,8 @@ Include one entry per ticker. No other text, just the JSON."""
 
 You MUST use X/search to gather: what is trending on X about markets, which tickers or themes are getting attention, and crowd sentiment. Then summarize as the JSON below.
 
+If you see a clear single-ticker trade from X narrative (e.g. one name dominating attention with directional view), add: "recommended_ticker": "SYMBOL", "recommended_side": "BUY" or "SELL", "recommendation_conviction": 1-100. Otherwise omit these or set to null.
+
 Respond ONLY with valid JSON:
 {
     "outlook": "bullish" or "bearish" or "neutral",
@@ -457,7 +459,10 @@ Respond ONLY with valid JSON:
     "summary": "Brief market outlook from X/narrative view (cite what you found on X)",
     "key_factors": ["factor 1", "factor 2"],
     "narrative_themes": ["theme 1", "theme 2"],
-    "attention_shift": "one sentence on where attention is moving on X, or null"
+    "attention_shift": "one sentence on where attention is moving on X, or null",
+    "recommended_ticker": "SYMBOL or null",
+    "recommended_side": "BUY or SELL or null",
+    "recommendation_conviction": 1-100 or 0
 }
 
 No other text, just the JSON."""
@@ -1268,6 +1273,64 @@ Output ONLY JSON in this schema:
             
             signals.append(signal)
             logger.info(f"Created market outlook signal: {outlook}")
+
+            # If Grok provided an explicit trade recommendation, add a second signal so the adapter can pick it
+            rec_ticker = response.get("recommended_ticker")
+            rec_side = (response.get("recommended_side") or "").upper()
+            rec_conv = response.get("recommendation_conviction")
+            if rec_ticker and rec_side in ("BUY", "SELL") and rec_conv is not None:
+                try:
+                    rec_conv_int = max(0, min(100, int(rec_conv)))
+                    rec_bias = "bullish" if rec_side == "BUY" else "bearish"
+                    rec_id = str(uuid.uuid4())
+                    rec_dedup = self._generate_dedup_hash("grok_web", "TRADE", f"{rec_ticker}:{rec_side}:{rec_conv_int}")
+                    trade_signal = GrokSignal(
+                        signal_id=rec_id,
+                        dedup_hash=rec_dedup,
+                        category="sentiment",
+                        source_type="grok_web",
+                        asset_scope={
+                            "tickers": [str(rec_ticker).upper()],
+                            "sectors": [],
+                            "macro_regions": ["US"],
+                            "asset_classes": ["EQUITY"],
+                        },
+                        summary=f"Grok trade recommendation: {rec_side} {rec_ticker} (conviction {rec_conv_int})",
+                        raw_value={
+                            "type": "index",
+                            "value": rec_conv_int / 100.0,
+                            "unit": "recommendation_conviction",
+                            "prior_value": None,
+                            "change": None,
+                            "change_period": None,
+                        },
+                        evidence=[{
+                            "source": "grok_web_search",
+                            "source_tier": "tier2",
+                            "excerpt": f"Explicit trade: {rec_side} {rec_ticker}",
+                            "timestamp_utc": now.isoformat(),
+                        }],
+                        confidence=max(0.81, rec_conv_int / 100.0),
+                        confidence_factors={
+                            "source_base": 0.65,
+                            "recency_factor": 1.0,
+                            "corroboration_factor": 1.0,
+                        },
+                        directional_bias=rec_bias,
+                        time_horizon="weeks",
+                        novelty="new",
+                        staleness_policy={
+                            "max_age_seconds": 14400,
+                            "stale_after_utc": (now + timedelta(hours=4)).isoformat(),
+                        },
+                        uncertainties=[],
+                        timestamp_utc=now.isoformat(),
+                        forward_horizon="short-term",
+                    )
+                    signals.append(trade_signal)
+                    logger.info(f"Created Grok trade recommendation signal: {rec_side} {rec_ticker} @ {rec_conv_int}")
+                except Exception as rec_ex:
+                    logger.warning(f"Could not add Grok trade recommendation signal: {rec_ex}")
             
         except Exception as e:
             logger.error(f"Error parsing market outlook: {e}")

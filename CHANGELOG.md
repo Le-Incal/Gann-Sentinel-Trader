@@ -4,6 +4,29 @@ All notable changes to Gann Sentinel Trader are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### A) Event scan
+- Event scanner was already wired; it runs when `XAI_API_KEY` is set and logs "Event Scanner not configured" when skipped. No code change; confirmed behavior.
+
+### B) Technical scanner – multiple charts
+- **agent.py:** Pass full `technical_signals` list to MACA instead of only `technical_signals[0]`.
+- **maca_orchestrator.py:** `run_scan_cycle()` now accepts `technical_analysis` as either a single dict or a list of chart dicts. All charts are normalized to a list, the first is used as primary for phase1/phase2, and the full list is added to `signal_inventory.technical_charts` and passed to Telegram so up to 3 charts are shown.
+
+### C) Conviction scoring
+- Conviction is defined as strength of the **trade recommendation** (0 = no trade, 1–100 = strength of BUY/SELL). Perplexity and ChatGPT prompts now state this explicitly and require either a concrete trade (ticker, side, conviction_score 1–100) or explicit HOLD (ticker/side null, conviction_score 0). Chair schema now includes `conviction_score` (0–100) in `final_thesis`; orchestrator uses it when present, else derives from `confidence`.
+
+### D) Grok trade recommendation
+- **grok_scanner.py:** Market outlook prompt and JSON schema now include optional `recommended_ticker`, `recommended_side` (BUY/SELL), and `recommendation_conviction` (1–100). When present, `_parse_outlook_to_signals()` creates a second GrokSignal with that ticker/side/conviction so the MACA adapter can pick it. Adapter uses `raw_value.unit == "recommendation_conviction"` to set `conviction_score` from the explicit value. `directional_bias` mapping extended to `positive`/`negative` for BUY/SELL.
+
+### E–F) Perplexity and ChatGPT trade recommendation
+- **perplexity_analyst.py** and **chatgpt_analyst.py:** Added a strict "RECOMMENDATION RULE" to prompts: output exactly one of (A) concrete trade with ticker, side, conviction_score 1–100, or (B) HOLD with ticker/side null, conviction_score 0 and thesis explaining why.
+
+### G) Claude synthesis
+- **claude_chair.py:** Schema now requires `synthesis_summary` (one sentence: "BUY/SELL TICKER at N conviction" or "No trade: &lt;reason&gt;") and `final_thesis.conviction_score` (0–100). Orchestrator passes `synthesis_summary` into synthesis; **telegram_bot.py** displays it at the top of the "CLAUDE'S SYNTHESIS" section.
+
+---
+
 ## [2.4.3] - 2026-01-14
 
 ### Fixed - Trade Execution Pipeline

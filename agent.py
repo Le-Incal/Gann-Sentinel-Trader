@@ -701,7 +701,7 @@ class GannSentinelAgent:
                     fred_signals=fred_signals_dict,
                     polymarket_signals=polymarket_signals_dict,
                     event_signals=event_signals_dict,
-                    technical_analysis=technical_signals[0] if technical_signals else None,
+                    technical_analysis=technical_signals if technical_signals else None,
                     market_context=learning_context.get("learning_summary", "")
                 )
                 

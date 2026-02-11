@@ -1664,6 +1664,11 @@ class TelegramBot:
         # Defensive: ensure synthesis is a dict
         if not isinstance(synthesis, dict):
             synthesis = {}
+
+        # One-line actionable summary from Chair when present
+        synthesis_summary = synthesis.get("synthesis_summary") or ""
+        if synthesis_summary:
+            lines.append(f"\n{synthesis_summary}")
         
         decision_type = synthesis.get("decision_type") or "NO_TRADE"
         rec = synthesis.get("recommendation") or {}
