@@ -24,7 +24,12 @@ import httpx
 if TYPE_CHECKING:
     from storage.database import Database
 
+from config import Config
+
 logger = logging.getLogger(__name__)
+
+# File in repo for Cursor/Claude to read Telegram message history
+TELEGRAM_FEED_FILENAME = "telegram_feed.md"
 
 
 # =============================================================================
@@ -118,6 +123,28 @@ class TelegramBot:
     # ACTIVITY LOGGING
     # =========================================================================
 
+    def _append_to_repo_feed(
+        self,
+        direction: str,
+        message_type: str,
+        content: str,
+        command: Optional[str] = None,
+    ) -> None:
+        """Append a message to logs/telegram_feed.md so Cursor/Claude can reference it."""
+        try:
+            log_path = Config.LOG_PATH
+            log_path.mkdir(parents=True, exist_ok=True)
+            feed_path = log_path / TELEGRAM_FEED_FILENAME
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            header = f"{ts} | {direction} | {message_type}"
+            if command:
+                header += f" | {command}"
+            block = f"\n\n---\n**{header}**\n\n{content}\n\n"
+            with open(feed_path, "a", encoding="utf-8") as f:
+                f.write(block)
+        except Exception as e:
+            logger.debug(f"Could not append to repo feed: {e}")
+
     def _log_outgoing(
         self,
         content: str,
@@ -126,7 +153,8 @@ class TelegramBot:
         related_entity_type: Optional[str] = None,
         metadata: Optional[dict] = None
     ) -> None:
-        """Log an outgoing message to the database."""
+        """Log an outgoing message to the database and to logs/telegram_feed.md in the repo."""
+        self._append_to_repo_feed("outgoing", message_type, content)
         if not self.db:
             return
 
@@ -150,7 +178,8 @@ class TelegramBot:
         related_entity_type: Optional[str] = None,
         metadata: Optional[dict] = None
     ) -> None:
-        """Log an incoming command to the database."""
+        """Log an incoming command to the database and to logs/telegram_feed.md in the repo."""
+        self._append_to_repo_feed("incoming", "command", content, command=command)
         if not self.db:
             return
 
