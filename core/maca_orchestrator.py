@@ -1252,13 +1252,13 @@ class MACAOrchestrator:
         if technical_analysis:
             ticker = technical_analysis.get("ticker") or technical_analysis.get("symbol")
             state = technical_analysis.get("market_state") or technical_analysis.get("state") or {}
-            state_val = (state.get("state", state.get("value", "unknown")) if isinstance(state, dict) else str(state)
+            state_val = (state.get("state", state.get("value", "unknown"))) if isinstance(state, dict) else str(state)
             verdict = technical_analysis.get("verdict", "WATCH ONLY")
             parts.append(f"Technical only: {ticker or 'N/A'} {state_val}, verdict {verdict}.")
         if market_context and market_context.strip():
             parts.append("Committee context had no FRED/Polymarket/Event signals.")
         thesis = " ".join(parts) if parts else "No narrative signals from Grok; no fundamental signals in this cycle."
-        thesis = (thesis or "HOLD — insufficient signals.")[:500]
+        thesis = (thesis or "HOLD - insufficient signals.")[:500]
         return {
             "schema_version": "1.0.0",
             "proposal_id": str(uuid.uuid4()),
