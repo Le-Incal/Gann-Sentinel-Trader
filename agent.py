@@ -614,7 +614,7 @@ class GannSentinelAgent:
                 logger.info(f"Got {len(event_signals)} event signals")
             else:
                 logger.warning("Event Scanner not configured - skipping")
-                fallback_ev = _fallback_signal("event_scanner", "Events: scanner not configured (XAI_API_KEY); use technical and other sources.")
+                fallback_ev = _fallback_signal("event_scanner", "Events: scanner not configured (PERPLEXITY_API_KEY); use technical and other sources.")
                 event_signals.append(fallback_ev)
                 signals.append(fallback_ev)
                 self.telegram.record_signal(fallback_ev)
@@ -622,7 +622,7 @@ class GannSentinelAgent:
                     source="Event Scanner",
                     query="corporate events",
                     signals_returned=1,
-                    error="Not configured (XAI_API_KEY missing)"
+                    error="Not configured (PERPLEXITY_API_KEY missing)"
                 )
 
         except Exception as e:

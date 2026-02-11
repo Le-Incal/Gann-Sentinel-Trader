@@ -81,7 +81,7 @@ Each AI model has a **single epistemic role**. No model may operate outside its 
 |---------|--------|---------|
 | FRED Scanner | Federal Reserve | 7 macroeconomic indicators |
 | Polymarket Scanner | Prediction Markets | 12 investment categories (WHITELIST - no sports) |
-| Event Scanner | Grok API | 27 corporate event types (weekend-aware) |
+| Event Scanner | Perplexity API | 27 corporate event types (weekend-aware) |
 | Technical Scanner | Alpaca (IEX) | Chart analysis, market state, support/resistance |
 
 Scanners **must not** propose trades or opinions.
@@ -245,9 +245,9 @@ gann-sentinel-trader/
 
 ```bash
 # Required
-XAI_API_KEY=           # Grok (sentiment + events)
+XAI_API_KEY=           # Grok (sentiment only)
 ANTHROPIC_API_KEY=     # Claude (synthesis)
-PERPLEXITY_API_KEY=    # Perplexity Sonar Pro
+PERPLEXITY_API_KEY=    # Perplexity Sonar Pro (analyst + Event Scanner)
 OPENAI_API_KEY=        # GPT-4o (sentiment)
 ALPACA_API_KEY=        # Trading + IEX data
 ALPACA_SECRET_KEY=

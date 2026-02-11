@@ -153,13 +153,13 @@ def test_scanner_init_without_api_key():
     """Test scanner handles missing API key gracefully."""
     print("\n[TEST] test_scanner_init_without_api_key")
 
-    original = os.environ.pop('XAI_API_KEY', None)
+    original = os.environ.pop('PERPLEXITY_API_KEY', None)
     try:
         scanner = EventScanner(api_key=None)
         assert scanner.is_configured is False
     finally:
         if original:
-            os.environ['XAI_API_KEY'] = original
+            os.environ['PERPLEXITY_API_KEY'] = original
 
     print(f"  PASSED: Scanner handles missing API key")
     return True
@@ -184,7 +184,7 @@ def test_build_market_wide_prompt():
 
 
 def test_parse_single_event():
-    """Test parsing a single event from Grok response."""
+    """Test parsing a single event from API response."""
     print("\n[TEST] test_parse_single_event")
 
     scanner = EventScanner(api_key='test-key')
@@ -212,7 +212,7 @@ def test_parse_single_event():
 
 
 def test_parse_multiple_events():
-    """Test parsing multiple events from Grok response."""
+    """Test parsing multiple events from API response."""
     print("\n[TEST] test_parse_multiple_events")
 
     scanner = EventScanner(api_key='test-key')
@@ -386,7 +386,7 @@ async def test_scan_market_wide_success():
         }]
     }
 
-    with patch.object(scanner, '_call_grok_api', new_callable=AsyncMock) as mock_api:
+    with patch.object(scanner, '_call_perplexity_api', new_callable=AsyncMock) as mock_api:
         mock_api.return_value = mock_response
         signals = await scanner.scan_market_wide()
 
@@ -403,7 +403,7 @@ async def test_scan_market_wide_api_failure():
 
     scanner = EventScanner(api_key='test-key')
 
-    with patch.object(scanner, '_call_grok_api', new_callable=AsyncMock) as mock_api:
+    with patch.object(scanner, '_call_perplexity_api', new_callable=AsyncMock) as mock_api:
         mock_api.return_value = None
         signals = await scanner.scan_market_wide()
 
@@ -428,7 +428,7 @@ async def test_full_scan_cycle():
         ]
     }
 
-    with patch.object(scanner, '_call_grok_api', new_callable=AsyncMock) as mock_api:
+    with patch.object(scanner, '_call_perplexity_api', new_callable=AsyncMock) as mock_api:
         mock_api.return_value = mock_response
         signals = await scanner.scan_market_wide()
 

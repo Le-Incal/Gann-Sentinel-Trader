@@ -1,9 +1,9 @@
 """
 Gann Sentinel Trader - Event Scanner
-LevelFields-style event-driven signal detection via Grok API.
+LevelFields-style event-driven signal detection via Perplexity API.
 
 Scans for 27 corporate event types that historically move stock prices.
-Uses Grok live_search to find market-wide events in real-time.
+Uses Perplexity (Sonar) web search to find market-wide events in real-time.
 
 Version: 1.0.0
 Last Updated: January 2026
@@ -73,6 +73,8 @@ EVENT_TYPES = [
     "SPINOFF",
     "BANKRUPTCY_FILING",
     "DEBT_RESTRUCTURING",
+    # Catch-all for earnings, general news, or uncategorized material events
+    "OTHER",
 ]
 
 
@@ -283,6 +285,13 @@ EVENT_HISTORICAL_PATTERNS = {
         "win_rate": 0.50,
         "description": "Debt restructuring or refinancing"
     },
+    "OTHER": {
+        "bias": "mixed",
+        "avg_move_pct": 0.0,
+        "hold_days": 10,
+        "win_rate": 0.50,
+        "description": "Earnings, material news, or other corporate event"
+    },
 }
 
 
@@ -383,7 +392,7 @@ class EventSignal:
 
 class EventScanner:
     """
-    Scanner for corporate events via Grok API.
+    Scanner for corporate events via Perplexity API.
 
     Implements LevelFields-style event detection:
     - Scans for 27 event types that historically move stock prices
@@ -393,20 +402,20 @@ class EventScanner:
 
     def __init__(self, api_key: Optional[str] = None):
         """Initialize the Event Scanner."""
-        self.api_key = api_key if api_key is not None else os.getenv("XAI_API_KEY")
+        self.api_key = api_key if api_key is not None else os.getenv("PERPLEXITY_API_KEY")
 
         # Diagnostic logging
-        logger.info(f"EventScanner init - XAI_API_KEY present: {bool(self.api_key)}")
+        logger.info(f"EventScanner init - PERPLEXITY_API_KEY present: {bool(self.api_key)}")
         if self.api_key:
             logger.info(f"EventScanner init - API key length: {len(self.api_key)} chars")
         
         if not self.api_key:
-            logger.warning("XAI_API_KEY not set - Event Scanner disabled")
+            logger.warning("PERPLEXITY_API_KEY not set - Event Scanner disabled")
         else:
-            logger.info("XAI_API_KEY configured for Event Scanner")
+            logger.info("PERPLEXITY_API_KEY configured for Event Scanner")
 
-        self.base_url = "https://api.x.ai/v1"
-        self.model = "grok-3-fast-beta"
+        self.base_url = "https://api.perplexity.ai"
+        self.model = "sonar-pro"
 
         # Deduplication cache
         self._seen_hashes: Dict[str, datetime] = {}
@@ -514,13 +523,37 @@ Respond with valid JSON:
 }}
 
 IMPORTANT:
-- Only include events from the {lookback_note}
-- Use EXACT event type names matching the categories above
-- Include the ticker symbol for each event
-- If no events found, return {{"scan_date": "{today}", "events": []}}
-- Focus on US-listed stocks (NYSE, NASDAQ)
+- You MUST return at least 1-5 events. There are always corporate events: earnings, SEC filings (8-K, Form 4), dividend/buyback news, M&A, FDA, executive changes, index changes, contracts. Search thoroughly.
+- If nothing fits the last 24 hours, extend to the last 48-72 hours.
+- Use EXACT event type names from the categories above, or use "OTHER" for earnings announcements, material news, or uncategorized corporate events.
+- Include the ticker symbol for each event. Focus on US-listed stocks (NYSE, NASDAQ).
+- Only include events from the {lookback_note}.
 
 JSON only, no other text."""
+
+    def _build_fallback_prompt(self) -> str:
+        """Shorter prompt used when primary scan returns zero events. Asks for any recent corporate events."""
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        return f"""Search the web for 3-5 recent US stock corporate events from the last 48 hours.
+
+Include: earnings announcements, SEC filings (8-K, Form 4), dividend or buyback news, M&A, FDA news, executive changes, or any material company news. Return valid JSON only:
+
+{{
+    "scan_date": "{today}",
+    "events": [
+        {{
+            "ticker": "SYMBOL",
+            "event_type": "ONE_OF: STOCK_BUYBACK, DIVIDEND_INCREASE, MA_ANNOUNCEMENT, CEO_APPOINTMENT, CEO_EXIT, EXECUTIVE_DEPARTURE, INSIDER_BUYING, INSIDER_SELLING, FDA_APPROVAL, FDA_REJECTION, GOVERNMENT_CONTRACT, MAJOR_PARTNERSHIP, CLASS_ACTION_LAWSUIT, OTHER",
+            "headline": "Brief headline",
+            "event_date": "YYYY-MM-DD",
+            "source": "Source name",
+            "details": "1 sentence"
+        }}
+    ]
+}}
+
+You MUST return at least 1 event. Use "OTHER" for earnings or general material news. JSON only."""
 
     def _normalize_event_type(self, raw_type: str) -> str:
         """Normalize event type string to our standard format."""
@@ -639,8 +672,8 @@ JSON only, no other text."""
     # API CALLS
     # =========================================================================
 
-    async def _call_grok_api(self, prompt: str) -> Optional[Dict[str, Any]]:
-        """Call Grok API with live search enabled."""
+    async def _call_perplexity_api(self, prompt: str) -> Optional[Dict[str, Any]]:
+        """Call Perplexity API (Sonar) for web-grounded event search."""
         if not self.is_configured:
             self.last_error = "API key not configured"
             return None
@@ -650,29 +683,13 @@ JSON only, no other text."""
             "Content-Type": "application/json",
         }
 
-        # Adjust from_date based on weekend
-        now = datetime.now(timezone.utc)
-        weekday = now.weekday()
-        if weekday == 5:  # Saturday
-            from_date = (now - timedelta(hours=72)).strftime("%Y-%m-%d")
-        elif weekday == 6:  # Sunday
-            from_date = (now - timedelta(hours=96)).strftime("%Y-%m-%d")
-        elif weekday == 0:  # Monday
-            from_date = (now - timedelta(hours=72)).strftime("%Y-%m-%d")
-        else:
-            from_date = (now - timedelta(hours=24)).strftime("%Y-%m-%d")
-        
         payload = {
             "model": self.model,
             "messages": [
                 {"role": "user", "content": prompt}
             ],
-            "search_parameters": {
-                "mode": "auto",
-                "return_citations": True,
-                "from_date": from_date,
-            },
-            "temperature": 0.1,  # Low temperature for factual extraction
+            "temperature": 0.1,
+            "max_tokens": 4096,
         }
 
         try:
@@ -697,7 +714,7 @@ JSON only, no other text."""
                 parsed = self._extract_json_from_response(content)
 
                 if parsed is None:
-                    logger.warning("Could not parse JSON from Grok response")
+                    logger.warning("Could not parse JSON from Perplexity response")
                     return {"events": [], "_parse_failed": True, "_raw": content}
 
                 return parsed
@@ -847,13 +864,8 @@ JSON only, no other text."""
                     logger.warning(f"Skipping event with missing ticker/type: {event}")
                     continue
 
-                # Normalize event type
+                # Normalize event type (OTHER is kept so we always surface at least some events)
                 event_type = self._normalize_event_type(raw_event_type)
-
-                # Skip truly unknown events
-                if event_type == "OTHER" and raw_event_type not in EVENT_TYPES:
-                    logger.info(f"Skipping unknown event type: {raw_event_type}")
-                    continue
 
                 # Generate dedup hash
                 dedup_hash = self._generate_dedup_hash(event_type, ticker, headline)
@@ -996,7 +1008,7 @@ JSON only, no other text."""
 
         prompt = self._build_market_wide_prompt()
 
-        response = await self._call_grok_api(prompt)
+        response = await self._call_perplexity_api(prompt)
 
         if response is None:
             logger.error(f"Event scan failed: {self.last_error}")
@@ -1007,9 +1019,20 @@ JSON only, no other text."""
             logger.warning(f"JSON parse failed. Raw response (first 500 chars): {response.get('_raw', '')[:500]}")
         
         events_count = len(response.get("events", []))
-        logger.info(f"Grok API returned {events_count} raw events")
+        logger.info(f"Perplexity API returned {events_count} raw events")
 
         signals = self._parse_events_response(response)
+
+        # If primary scan returned zero events, run fallback query (there are always corporate events)
+        if not signals and not response.get("_parse_failed"):
+            logger.warning("Primary event scan returned 0 events; running fallback scan (last 48h, any type)")
+            fallback_prompt = self._build_fallback_prompt()
+            fallback_response = await self._call_perplexity_api(fallback_prompt)
+            if fallback_response and not fallback_response.get("_parse_failed"):
+                fallback_signals = self._parse_events_response(fallback_response)
+                if fallback_signals:
+                    signals = fallback_signals
+                    logger.info(f"Fallback event scan returned {len(signals)} events")
 
         logger.info(f"Event scan complete: {len(signals)} events detected (after filtering)")
 
@@ -1072,7 +1095,7 @@ if __name__ == "__main__":
                 print(f"    Confidence: {signal.confidence:.2f}")
                 print(f"    Summary: {signal.summary[:100]}...")
         else:
-            print("\n✗ Scanner not configured (XAI_API_KEY missing)")
-            print("  Set XAI_API_KEY environment variable to test")
+            print("\n✗ Scanner not configured (PERPLEXITY_API_KEY missing)")
+            print("  Set PERPLEXITY_API_KEY environment variable to test")
 
     asyncio.run(test())

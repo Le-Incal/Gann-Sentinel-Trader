@@ -203,18 +203,18 @@ class TestEventScannerInit:
 
     def test_scanner_init_without_api_key(self):
         """Test scanner handles missing API key gracefully."""
-        # Temporarily remove XAI_API_KEY
-        original = os.environ.pop('XAI_API_KEY', None)
+        # Temporarily remove PERPLEXITY_API_KEY
+        original = os.environ.pop('PERPLEXITY_API_KEY', None)
         try:
             scanner = EventScanner(api_key=None)
             assert scanner.is_configured is False
         finally:
             if original:
-                os.environ['XAI_API_KEY'] = original
+                os.environ['PERPLEXITY_API_KEY'] = original
 
 
 class TestEventScannerPromptBuilding:
-    """Test the prompt construction for Grok API."""
+    """Test the prompt construction for Perplexity API."""
 
     def test_build_market_wide_prompt(self):
         """Test market-wide event scan prompt includes all event types."""
@@ -248,10 +248,10 @@ class TestEventScannerPromptBuilding:
 
 
 class TestEventScannerParsing:
-    """Test parsing Grok responses into EventSignals."""
+    """Test parsing Perplexity (API) responses into EventSignals."""
 
     def test_parse_single_event(self):
-        """Test parsing a single event from Grok response."""
+        """Test parsing a single event from API response."""
         scanner = EventScanner(api_key='test-key')
 
         mock_response = {
@@ -275,7 +275,7 @@ class TestEventScannerParsing:
         assert signals[0].directional_bias == "bullish"  # Buybacks are bullish
 
     def test_parse_multiple_events(self):
-        """Test parsing multiple events from Grok response."""
+        """Test parsing multiple events from API response."""
         scanner = EventScanner(api_key='test-key')
 
         mock_response = {
@@ -449,7 +449,7 @@ class TestEventScannerScan:
             ]
         }
 
-        with patch.object(scanner, '_call_grok_api', new_callable=AsyncMock) as mock_api:
+        with patch.object(scanner, '_call_perplexity_api', new_callable=AsyncMock) as mock_api:
             mock_api.return_value = mock_response
 
             signals = await scanner.scan_market_wide()
@@ -462,7 +462,7 @@ class TestEventScannerScan:
         """Test graceful handling of API failure."""
         scanner = EventScanner(api_key='test-key')
 
-        with patch.object(scanner, '_call_grok_api', new_callable=AsyncMock) as mock_api:
+        with patch.object(scanner, '_call_perplexity_api', new_callable=AsyncMock) as mock_api:
             mock_api.return_value = None  # API failure
 
             signals = await scanner.scan_market_wide()
@@ -472,8 +472,8 @@ class TestEventScannerScan:
     @pytest.mark.asyncio
     async def test_scan_not_configured(self):
         """Test scan returns empty when not configured."""
-        # Temporarily remove XAI_API_KEY
-        original = os.environ.pop('XAI_API_KEY', None)
+        # Temporarily remove PERPLEXITY_API_KEY
+        original = os.environ.pop('PERPLEXITY_API_KEY', None)
         try:
             scanner = EventScanner(api_key=None)
 
@@ -482,7 +482,7 @@ class TestEventScannerScan:
             assert signals == []
         finally:
             if original:
-                os.environ['XAI_API_KEY'] = original
+                os.environ['PERPLEXITY_API_KEY'] = original
 
 
 class TestEventScannerDeduplication:
@@ -578,7 +578,7 @@ class TestEventScannerIntegration:
         """Test complete scan cycle produces valid signals."""
         scanner = EventScanner(api_key='test-key')
 
-        # Mock a realistic Grok response
+        # Mock a realistic API response
         mock_response = {
             "events": [
                 {
@@ -600,7 +600,7 @@ class TestEventScannerIntegration:
             ]
         }
 
-        with patch.object(scanner, '_call_grok_api', new_callable=AsyncMock) as mock_api:
+        with patch.object(scanner, '_call_perplexity_api', new_callable=AsyncMock) as mock_api:
             mock_api.return_value = mock_response
 
             signals = await scanner.scan_market_wide()
