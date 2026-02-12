@@ -114,7 +114,7 @@ YOU MUST:
 RECOMMENDATION RULE (strict):
 - You may recommend only BUY or HOLD. Do NOT recommend SELL. If you believe we should exit a position or short a name, state that in your thesis and recommend HOLD; the Senior Trader (Chair) has exclusive authority to recommend SELL.
 - You MUST output exactly one of: (A) A concrete trade: set ticker (symbol), side (BUY only), conviction_score (51-100), and thesis; OR (B) HOLD: set ticker null, side null, and thesis. Do NOT force a ticker if you see no clear opportunity.
-- conviction_score: For BUY use 51-100 (strength of the trade). For HOLD use 0-50: 0 = no view or no opportunity; 1-50 = strength of your view (e.g. 30 = you see some opportunity but not acting yet, 45 = strong view to wait for pullback). In down or volatile markets there are often buying opportunities—recommend a BUY when you identify one; use HOLD only when you truly see none.
+- conviction_score: For BUY use 51-100 (strength of the trade). For HOLD you MUST use 1-50 (never 0): 1-20 = weak hold, 21-40 = mixed signals/no edge, 41-50 = strong view to wait (e.g. wait for pullback). Always output a number 1-50 for HOLD so the committee sees your conviction strength. In down or volatile markets there are often buying opportunities—recommend a BUY when you identify one; use HOLD only when you truly see none.
 
 OUTPUT:
 Return ONLY valid JSON (no markdown) in this exact structure:
@@ -390,6 +390,21 @@ Be specific about risk concerns. Quantify where possible."""
         if total_signals is None:
             total_signals = len(considered) if considered else len(key_sigs)
 
+        recommendation = dict(parsed.get("recommendation", {}))
+        # Normalize HOLD conviction: model often returns 0; use 1-50 so UI and debate show strength of hold
+        side = (recommendation.get("side") or "").strip().upper()
+        proposal_type = (parsed.get("proposal_type") or "").strip().upper()
+        is_hold = side != "BUY" or proposal_type == "NO_OPPORTUNITY"
+        conv = recommendation.get("conviction_score", 0)
+        try:
+            conv = int(round(float(conv)))
+        except (TypeError, ValueError):
+            conv = 0
+        if is_hold and conv == 0:
+            recommendation["conviction_score"] = 25  # default: mixed/no edge (applies to /check and /scan)
+        else:
+            recommendation["conviction_score"] = max(0, min(100, conv))
+
         return {
             "schema_version": "1.0.0",
             "proposal_id": proposal_id,
@@ -399,7 +414,7 @@ Be specific about risk concerns. Quantify where possible."""
             "proposal_type": parsed.get("proposal_type", "NO_OPPORTUNITY"),
             "signal_inventory": {**sig_inv, "total_signals": total_signals or 0},
             "signals_considered": considered,
-            "recommendation": parsed.get("recommendation", {}),
+            "recommendation": recommendation,
             "rotation_details": parsed.get("rotation_details", {}),
             "supporting_evidence": evidence,
             "raw_data": {
