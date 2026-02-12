@@ -1313,7 +1313,15 @@ class TelegramBot:
 
         return None
 
-    def format_ai_proposal(self, proposal: Dict[str, Any]) -> str:
+    @staticmethod
+    def _md_escape(text: str) -> str:
+        """Escape * and _ for Telegram Markdown so user content doesn't break bold."""
+        if not text:
+            return ""
+        s = str(text)
+        return s.replace("\\", "\\\\").replace("*", "\\*").replace("_", "\\_")
+
+    def format_ai_proposal(self, proposal: Dict[str, Any], use_md: bool = True) -> str:
         """
         Format a single AI proposal section for Telegram.
 
@@ -1383,56 +1391,69 @@ class TelegramBot:
         key_signals = evidence.get("key_signals", [])
         considered = proposal.get("signals_considered", []) or []
 
+        def b(s: str) -> str:
+            return f"*{s}*" if use_md else s
+
+        def esc(s: str) -> str:
+            return self._md_escape(s) if use_md else (s or "")
+
         lines = []
-        lines.append(f"{emoji} {source}")
+        lines.append(f"{emoji} *{source}*" if use_md else f"{emoji} {source}")
         lines.append("-" * 30)
+        lines.append("")
 
         if proposal_type == "NO_OPPORTUNITY" or not ticker:
-            lines.append("Recommendation: HOLD")
+            lines.append(f"{b('Recommendation:')} HOLD")
         else:
-            lines.append(f"Recommendation: {side}")
-            lines.append(f"Ticker: {ticker}")
+            lines.append(f"{b('Recommendation:')} {side}")
+            lines.append(f"{b('Ticker:')} {ticker}")
 
-        # Same order for all: signal count, summary, why it matters
         if sig_total is not None:
-            lines.append(f"Signals: {sig_total}")
-        lines.append(f"Conviction: {conviction}/100")
+            lines.append(f"{b('Signals:')} {sig_total}")
+        lines.append(f"{b('Conviction:')} {conviction}/100")
         if is_actionable:
             lines.append(f"{bar} {EMOJI_GREEN_CIRCLE}")
         else:
             lines.append(bar)
+        lines.append("")
 
         if signals_summary:
-            lines.append(f"Summary: {signals_summary}")
+            lines.append(f"{b('Summary:')}")
+            lines.append(esc(signals_summary))
+            lines.append("")
         if why_matters:
-            lines.append(f"Why it matters for trading: {why_matters}")
+            lines.append(f"{b('Why it matters for trading:')}")
+            lines.append(esc(why_matters))
+            lines.append("")
 
-        # Key signals list (top 3)
         if key_signals:
-            lines.append("Key signals:")
+            lines.append(f"{b('Key signals:')}")
             for ks in key_signals[:3]:
-                s = ks.get("summary") or ""
+                s = (ks.get("summary") or "")[:120]
                 src = ks.get("source") or ks.get("signal_type") or ""
-                lines.append(f"  - [{src}] {s[:120]}")
+                lines.append(f"  • [{esc(src)}] {esc(s)}")
         elif considered:
-            lines.append("Key signals:")
+            lines.append(f"{b('Key signals:')}")
             for sc in considered[:3]:
                 src = sc.get("source") or "unknown"
-                summary = sc.get("summary") or ""
-                lines.append(f"  - [{src}] {summary[:120]}")
+                summary = (sc.get("summary") or "")[:120]
+                lines.append(f"  • [{esc(src)}] {esc(summary)}")
         else:
-            lines.append("Key signals: (see summary above)")
+            lines.append(f"{b('Key signals:')} (see summary above)")
+        lines.append("")
 
-        # Thesis
         if thesis_desc and thesis and thesis_desc.strip() != thesis.strip() and len(thesis_desc) > len(thesis):
-            lines.append(f"Thesis: {thesis_desc[:300]}")
+            lines.append(f"{b('Thesis:')}")
+            lines.append(esc(thesis_desc[:300]))
         elif thesis:
-            lines.append(f"Thesis: {thesis[:300]}")
+            lines.append(f"{b('Thesis:')}")
+            lines.append(esc(thesis[:300]))
 
         if catalyst:
-            lines.append(f"Catalyst: {catalyst}")
+            lines.append("")
+            lines.append(f"{b('Catalyst:')} {esc(catalyst)}")
         if time_horizon:
-            lines.append(f"Horizon: {time_horizon}")
+            lines.append(f"{b('Horizon:')} {esc(time_horizon)}")
 
         return "\n".join(lines)
 
@@ -1453,12 +1474,21 @@ class TelegramBot:
         from datetime import datetime, timezone
 
         now = datetime.now(timezone.utc)
+        use_md = True
+
+        def b(s: str) -> str:
+            return f"*{s}*" if use_md else s
+
+        def esc(s: str) -> str:
+            return self._md_escape(s) if use_md else (s or "")
 
         lines = []
+        lines.append("")
         lines.append("=" * 40)
-        lines.append(f"{EMOJI_SEARCH} MACA SCAN - AI COUNCIL")
+        lines.append(f"{EMOJI_SEARCH} *MACA SCAN – AI COUNCIL*")
         lines.append(f"{now.strftime('%Y-%m-%d %H:%M UTC')}")
         lines.append("=" * 40)
+        lines.append("")
 
         # Signal Inventory header with actual signals
         if signal_inventory:
@@ -1469,49 +1499,48 @@ class TelegramBot:
             event_count = by_source.get("Events", 0)
             tech_count = by_source.get("Technical", 0)
 
+            lines.append(f"{EMOJI_CHART} *Signals Collected:* {total}")
             lines.append("")
-            lines.append(f"{EMOJI_CHART} Signals Collected: {total}")
 
-            # FRED Signals
-            lines.append(f"\n📈 FRED ({fred_count}):")
+            lines.append(f"*📈 FRED ({fred_count})*")
             fred_sigs = signal_inventory.get("fred_signals", [])
             if fred_sigs:
                 for fs in fred_sigs[:3]:
-                    summary = fs.get("summary", "")[:100]
+                    summary = esc(fs.get("summary", "")[:100])
                     lines.append(f"  • {summary}")
             else:
                 lines.append("  • None collected")
+            lines.append("")
 
-            # Polymarket Signals
-            lines.append(f"\n🎲 Polymarket ({poly_count}):")
+            lines.append(f"*🎲 Polymarket ({poly_count})*")
             poly_sigs = signal_inventory.get("polymarket_signals", [])
             if poly_sigs:
                 for ps in poly_sigs[:3]:
-                    summary = ps.get("summary", "")[:100]
+                    summary = esc(ps.get("summary", "")[:100])
                     lines.append(f"  • {summary}")
             else:
                 lines.append("  • None collected")
+            lines.append("")
 
-            # Event Signals
-            lines.append(f"\n📅 Events ({event_count}):")
+            lines.append(f"*📅 Events ({event_count})*")
             if event_count > 0:
                 event_sigs = signal_inventory.get("event_signals", [])
                 if event_sigs:
                     for es in event_sigs[:2]:
-                        summary = es.get("summary", "")[:100]
+                        summary = esc(es.get("summary", "")[:100])
                         lines.append(f"  • {summary}")
             else:
                 lines.append("  • No events detected (check logs)")
+            lines.append("")
 
-            # Technical
-            lines.append(f"\n📊 Technical ({tech_count}):")
+            lines.append(f"*📊 Technical ({tech_count})*")
             if tech_count > 0:
                 lines.append(f"  • {tech_count} chart(s) analyzed")
             else:
                 lines.append("  • No charts analyzed (check Alpaca config)")
-
             lines.append("")
             lines.append("-" * 40)
+            lines.append("")
 
         # Sort proposals by source for consistent ordering
         source_order = {"grok": 0, "perplexity": 1, "chatgpt": 2}
@@ -1521,12 +1550,12 @@ class TelegramBot:
         )
 
         for proposal in sorted_proposals:
+            lines.append(self.format_ai_proposal(proposal, use_md=use_md))
             lines.append("")
-            lines.append(self.format_ai_proposal(proposal))
 
+        lines.append("-" * 40)
         lines.append("")
-        lines.append("=" * 40)
-        lines.append(f"{EMOJI_BRAIN} Claude's synthesis follows...")
+        lines.append(f"{EMOJI_BRAIN} *Claude's synthesis follows...*")
 
         message = "\n".join(lines)
         
@@ -1541,46 +1570,49 @@ class TelegramBot:
         synthesis: Dict[str, Any],
         technical_signals: List[Dict[str, Any]],
         portfolio: Dict[str, Any],
-        trade_id: Optional[str] = None
+        trade_id: Optional[str] = None,
+        use_md: bool = True,
     ) -> str:
         """
-        Format Message 2: Claude's Decision + Technical Analysis.
+        Format Message 3: Chart Analysis + Claude's Synthesis + Trade Status + Portfolio.
 
         Shows chart analysis, Claude's synthesis, and trade status.
         """
+        def b(s: str) -> str:
+            return f"*{s}*" if use_md else s
+
+        def esc(s: str) -> str:
+            return self._md_escape(s) if use_md else (s or "")
+
         lines = []
 
-        # =====================================================================
-        # TECHNICAL ANALYSIS SECTION (summary only)
-        # =====================================================================
+        # TECHNICAL ANALYSIS
         try:
             if technical_signals:
                 lines.append("=" * 40)
-                lines.append(f"{EMOJI_CANDLE} CHART ANALYSIS")
+                lines.append(f"{EMOJI_CANDLE} *CHART ANALYSIS*")
                 lines.append("-" * 40)
                 n = len([t for t in (technical_signals or []) if isinstance(t, dict) and t.get("ticker")])
                 lines.append(f"{n} chart(s) analyzed.")
+                lines.append("")
         except Exception as tech_error:
             logger.error(f"Error formatting technical section: {tech_error}")
             lines.append("[Technical analysis formatting error]")
 
-        # =====================================================================
         # CLAUDE'S SYNTHESIS
-        # =====================================================================
+        lines.append("=" * 40)
+        lines.append(f"{EMOJI_BRAIN} *CLAUDE'S SYNTHESIS (Senior Trader)*")
+        lines.append("=" * 40)
         lines.append("")
-        lines.append("=" * 40)
-        lines.append(f"{EMOJI_BRAIN} CLAUDE'S SYNTHESIS (Senior Trader)")
-        lines.append("=" * 40)
 
-        # Defensive: ensure synthesis is a dict
         if not isinstance(synthesis, dict):
             synthesis = {}
 
-        # One-line actionable summary from Chair when present
         synthesis_summary = synthesis.get("synthesis_summary") or ""
         if synthesis_summary:
-            lines.append(f"\n{synthesis_summary}")
-        
+            lines.append(esc(synthesis_summary))
+            lines.append("")
+
         decision_type = synthesis.get("decision_type") or "NO_TRADE"
         rec = synthesis.get("recommendation") or {}
         if not isinstance(rec, dict):
@@ -1610,120 +1642,119 @@ class TelegramBot:
         bar = self._build_conviction_bar(conviction)
         is_actionable = decision_type == "TRADE" and conviction >= 80
 
-        lines.append(f"\nDecision: {decision_type}")
-
+        lines.append(f"{b('Decision:')} {decision_type}")
         if selected.get("ai_source"):
-            lines.append(f"Selected: {selected['ai_source'].upper()} proposal")
-
+            lines.append(f"{b('Selected:')} {selected['ai_source'].upper()} proposal")
         if ticker and side:
-            lines.append(f"\nRecommendation: {side} {ticker}")
-
-        lines.append(f"Conviction: {conviction}/100")
+            lines.append("")
+            lines.append(f"{b('Recommendation:')} {side} {ticker}")
+        lines.append(f"{b('Conviction:')} {conviction}/100")
         if is_actionable:
-            lines.append(f"{bar} {EMOJI_GREEN_CIRCLE} ACTIONABLE")
+            lines.append(f"{bar} {EMOJI_GREEN_CIRCLE}")
         else:
             lines.append(f"{bar} {EMOJI_WHITE_CIRCLE}")
+        lines.append("")
 
-        # Final thesis (preferred)
         if final_thesis.get("summary"):
-            lines.append(f"\nFinal thesis: {final_thesis.get('summary')[:260]}")
+            lines.append(f"{b('Final thesis:')}")
+            lines.append(esc(final_thesis.get("summary", "")[:260]))
             desc = final_thesis.get("description") or ""
             if desc:
-                lines.append(f"\nWhy now (detail): {desc[:600]}...")
+                lines.append("")
+                lines.append(f"{b('Why now (detail):')}")
+                lines.append(esc(desc[:600]) + ("..." if len(desc) > 600 else ""))
             inv = final_thesis.get("invalidation")
             if inv:
-                lines.append(f"\nInvalidation: {inv[:220]}")
+                lines.append("")
+                lines.append(f"{b('Invalidation:')} {esc(inv[:220])}")
         elif thesis:
-            lines.append(f"\nThesis: {thesis[:250]}...")
+            lines.append(f"{b('Thesis:')}")
+            lines.append(esc(thesis[:250]) + ("..." if len(thesis) > 250 else ""))
+        lines.append("")
 
-        # Explain the cross-reference sources in plain English
         fred_ex = ctx_explain.get("fred")
         poly_ex = ctx_explain.get("polymarket")
         if fred_ex or poly_ex:
-            lines.append("\nContext: why these sources matter")
+            lines.append(f"{b('Context:')} why these sources matter")
             if fred_ex:
-                lines.append(f"  FRED: {fred_ex[:260]}")
+                lines.append(f"  FRED: {esc(fred_ex[:260])}")
             if poly_ex:
-                lines.append(f"  Polymarket: {poly_ex[:260]}")
+                lines.append(f"  Polymarket: {esc(poly_ex[:260])}")
+            lines.append("")
 
-        # Cross-validation
         if cross_val:
-            lines.append(f"\nCross-Validation:")
+            lines.append(f"{b('Cross-Validation:')}")
             fred = cross_val.get("fred_alignment", "N/A")
             poly = cross_val.get("polymarket_alignment", "N/A")
             tech = cross_val.get("technical_alignment", "N/A")
             lines.append(f"  FRED: {fred}")
             lines.append(f"  Polymarket: {poly}")
             lines.append(f"  Technical: {tech}")
+            lines.append("")
 
-        # Trade parameters
         if is_actionable and (position_size or stop_loss):
-            lines.append(f"\nTrade Parameters:")
+            lines.append(f"{b('Trade Parameters:')}")
             if stop_loss:
                 lines.append(f"  Stop Loss: {stop_loss}%")
             if position_size:
                 lines.append(f"  Position Size: {position_size}%")
             if time_horizon:
                 lines.append(f"  Horizon: {time_horizon}")
+            lines.append("")
 
-        # =====================================================================
         # TRADE STATUS
-        # =====================================================================
-        lines.append("")
         lines.append("-" * 40)
+        lines.append("")
 
         if trade_id and is_actionable:
-            lines.append(f"{EMOJI_BELL} TRADE PENDING APPROVAL")
+            lines.append(f"*{EMOJI_BELL} TRADE PENDING APPROVAL*")
             lines.append(f"Trade ID: {trade_id}")
             if not self._risk_rejections:
                 lines.append(f"{EMOJI_CHECK} Risk Engine: PASS")
             lines.append("")
             lines.append("Use buttons below to approve or reject")
         elif self._risk_rejections:
-            # Show risk rejections if any
-            lines.append(f"{EMOJI_RED_CIRCLE} BLOCKED BY RISK ENGINE")
+            lines.append(f"*{EMOJI_RED_CIRCLE} BLOCKED BY RISK ENGINE*")
             for rejection in self._risk_rejections[:2]:
                 check = rejection.get("check_name", "Unknown")
                 msg = rejection.get("message", rejection.get("reason", ""))
-                lines.append(f"  {check}: {msg[:80]}")
+                lines.append(f"  {check}: {esc(msg[:80])}")
         elif self._trade_blockers:
-            # Show trade blockers if any
-            lines.append(f"{EMOJI_RED_CIRCLE} TRADE NOT CREATED")
+            lines.append(f"*{EMOJI_RED_CIRCLE} TRADE NOT CREATED*")
             for blocker in self._trade_blockers[:3]:
-                lines.append(f"  {blocker.get('type', 'ERROR')}: {blocker.get('details', '')[:80]}")
+                lines.append(f"  {blocker.get('type', 'ERROR')}: {esc(blocker.get('details', '')[:80])}")
         elif is_actionable:
-            # High conviction but no trade created - unknown reason
-            lines.append(f"{EMOJI_WARNING} ACTIONABLE BUT NO TRADE")
+            lines.append(f"*{EMOJI_WARNING} ACTIONABLE BUT NO TRADE*")
             lines.append("Check logs - possible quote/risk issue")
         elif decision_type == "NO_TRADE":
-            lines.append(f"{EMOJI_ZZZ} NO TRADE")
+            lines.append(f"*{EMOJI_ZZZ} NO TRADE*")
             if rationale:
-                lines.append(f"Reason: {rationale[:150]}")
+                lines.append(f"Reason: {esc(rationale[:150])}")
         else:
-            lines.append(f"{EMOJI_WHITE_CIRCLE} Watching - conviction below threshold")
+            lines.append(f"{EMOJI_WHITE_CIRCLE} *Watching* – conviction below threshold")
 
-        # =====================================================================
-        # PORTFOLIO SNAPSHOT
-        # =====================================================================
+        # PORTFOLIO
         try:
             if portfolio and isinstance(portfolio, dict):
                 lines.append("")
                 lines.append("-" * 40)
-                lines.append(f"{EMOJI_MONEY} PORTFOLIO")
+                lines.append("")
+                lines.append(f"{EMOJI_MONEY} *PORTFOLIO*")
+                lines.append("")
 
                 equity = portfolio.get("equity") or 0
                 cash = portfolio.get("cash") or 0
                 position_count = portfolio.get("position_count") or 0
 
                 try:
-                    lines.append(f"  Equity: ${float(equity):,.2f}")
+                    lines.append(f"  *Equity:* ${float(equity):,.2f}")
                 except (TypeError, ValueError):
-                    lines.append(f"  Equity: $?.??")
+                    lines.append("  *Equity:* $?.??")
                 try:
-                    lines.append(f"  Cash: ${float(cash):,.2f}")
+                    lines.append(f"  *Cash:* ${float(cash):,.2f}")
                 except (TypeError, ValueError):
-                    lines.append(f"  Cash: $?.??")
-                lines.append(f"  Positions: {position_count}")
+                    lines.append("  *Cash:* $?.??")
+                lines.append(f"  *Positions:* {position_count}")
         except Exception as portfolio_error:
             logger.error(f"Error formatting portfolio section: {portfolio_error}")
             lines.append("[Portfolio formatting error]")
@@ -1869,7 +1900,7 @@ class TelegramBot:
             if len(msg1) > 4000:
                 msg1 = msg1[:3950] + "\n\n[Truncated]"
                 
-            await self.send_message(msg1, parse_mode=None, message_type="maca_ai_council")
+            await self.send_message(msg1, parse_mode="Markdown", message_type="maca_ai_council")
         except Exception as e:
             logger.error(f"Failed to send AI Council message: {e}")
             import traceback
@@ -1894,15 +1925,16 @@ class TelegramBot:
                 hold = vs.get("hold") is True
                 if hold and reason:
                     lines = [
-                        "\U0001F5E3\uFE0F MACA Debate (IC Minutes)",
+                        "",
+                        "*🗣️ MACA Debate (IC Minutes)*",
                         f"Cycle: {cycle_id or 'N/A'}",
                         "",
-                        "\u2705 Unanimous Agreement: HOLD",
-                        f"Reason: {reason[:220]}",
+                        "*✅ Unanimous Agreement:* HOLD",
+                        f"*Reason:* {self._md_escape(reason[:220])}",
                     ]
                     await self.send_message(
                         "\n".join(lines),
-                        parse_mode=None,
+                        parse_mode="Markdown",
                         message_type="maca_debate",
                     )
                     await asyncio.sleep(0.5)
@@ -1926,6 +1958,7 @@ class TelegramBot:
                 return await self.send_message_with_buttons(
                     text=msg2,
                     reply_markup=keyboard,
+                    parse_mode="Markdown",
                     message_type="maca_decision",
                     related_entity_id=trade_id
                 )
@@ -1935,6 +1968,7 @@ class TelegramBot:
                 return await self.send_message_with_buttons(
                     text=msg2,
                     reply_markup=keyboard,
+                    parse_mode="Markdown",
                     message_type="maca_decision"
                 )
         except Exception as e:
@@ -1995,8 +2029,10 @@ class TelegramBot:
                 return False
 
             lines: List[str] = []
-            lines.append("🗣️ MACA Debate (IC Minutes)")
+            lines.append("")
+            lines.append("*🗣️ MACA Debate (IC Minutes)*")
             lines.append(f"Cycle: {cycle_id}")
+            lines.append("")
 
             top = (vote_summary or {}).get("top") or {}
             reason = (vote_summary or {}).get("reason") or ""
@@ -2004,19 +2040,19 @@ class TelegramBot:
             early_exit = (debate or {}).get("early_exit_reason")
 
             if top:
-                lines.append(f"Majority: {top.get('action')} {top.get('ticker') or ''} ({top.get('count')})")
+                lines.append(f"*Majority:* {top.get('action')} {top.get('ticker') or ''} ({top.get('count')})")
             if isinstance(avg_conf, (int, float)):
-                lines.append(f"Avg confidence: {avg_conf:.2f}")
+                lines.append(f"*Avg confidence:* {avg_conf:.2f}")
             if reason:
-                lines.append(f"Blocker: {reason}")
+                lines.append(f"*Blocker:* {self._md_escape(reason)}")
             if early_exit:
-                lines.append(f"Rounds: {len(rounds)} (note: {early_exit})")
+                lines.append(f"*Rounds:* {len(rounds)} (note: {early_exit})")
+            lines.append("")
 
             # Vote table snapshot (last known votes)
             vs_votes = (vote_summary or {}).get("votes") or []
             if vs_votes:
-                lines.append("")
-                lines.append("Votes:")
+                lines.append("*Votes:*")
                 for v in vs_votes:
                     sp = v.get("speaker")
                     act = v.get("action")
@@ -2024,12 +2060,12 @@ class TelegramBot:
                     cf = v.get("confidence")
                     cf_s = f" ({float(cf):.2f})" if isinstance(cf, (int, float)) else ""
                     lines.append(f"• {sp}: {act} {tk}{cf_s}")
-
-            lines.append("")
+                lines.append("")
 
             # Round-by-round deltas (one-liners)
             for r in rounds:
-                lines.append(f"--- Round {r.get('round')} ---")
+                rnum = r.get("round", 0)
+                lines.append(f"*--- Round {rnum} ---*")
                 for t in (r.get("turns") or []):
                     sp = (t.get("speaker") or "unknown")
                     status = (t.get("status") or "ok")
@@ -2042,7 +2078,7 @@ class TelegramBot:
                     if status == "error":
                         err = (t.get("message") or "error").strip().replace("\n", " ")
                         err = err[:180] + ("…" if len(err) > 180 else "")
-                        lines.append(f"• {sp}: ERROR — {err}")
+                        lines.append(f"• {sp}: ERROR — {self._md_escape(err)}")
                         continue
 
                     claim = (t.get("claim") or t.get("message") or "").strip().replace("\n", " ")
@@ -2050,6 +2086,8 @@ class TelegramBot:
                     changed = bool(t.get("changed_mind"))
                     claim = claim[:140] + ("…" if len(claim) > 140 else "")
                     change = change[:90] + ("…" if len(change) > 90 else "")
+                    claim = self._md_escape(claim)
+                    change = self._md_escape(change)
 
                     if change:
                         change_tag = "changed" if changed else "change"
@@ -2060,7 +2098,7 @@ class TelegramBot:
                 lines.append("")
 
             text = "\n".join(lines).strip()
-            return await self.send_message(text, parse_mode=None, message_type="maca_debate")
+            return await self.send_message(text, parse_mode="Markdown", message_type="maca_debate")
         except Exception as e:
             logger.error(f"Failed to send debate summary: {e}")
             return False
