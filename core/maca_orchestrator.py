@@ -750,10 +750,12 @@ class MACAOrchestrator:
             ticker_context = f"{ticker_context}\n\n{signal_context}"
         ticker_context = f"{ticker_context}\n\nFocus ONLY on {ticker}. Recommend BUY, SELL, or HOLD for {ticker} with conviction 0-100."
 
-        # ChatGPT: key signals and thesis must be about this ticker only (how each signal affects the ticker)
+        # ChatGPT: key signals and thesis must be about this ticker only; require specific wording, not vague
         chatgpt_ticker_instruction = (
             f"In your key_signals and signals_considered, cite only how each signal relates to or affects {ticker} "
-            f"(e.g. 'CPI headwind for {ticker} as growth stock'). Do not list generic macro without linking to {ticker}."
+            f"(e.g. 'CPI headwind for {ticker} as growth stock'). Do not list generic macro without linking to {ticker}. "
+            f"BE SPECIFIC: In summary, thesis, and why_signals_matter, name {ticker} and cite concrete events (e.g. '{ticker}: insider selling, CEO transition'). "
+            f"Avoid vague phrases like 'company-specific news', 'mixed signals', 'potential future performance', or 'broader economic conditions' without naming the actual events."
         )
         chatgpt_context = f"{ticker_context}\n\n{chatgpt_ticker_instruction}"
 

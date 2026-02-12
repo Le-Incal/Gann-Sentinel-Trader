@@ -103,6 +103,7 @@ SIGNAL INVENTORY (you MUST use these; list and count them in your output):
 
 YOUR TASK:
 Propose a single trade OR recommend HOLD based on sentiment regime + cognitive bias. Use the MARKET TREND CONTEXT only for trend direction and level (buying high vs low). You may recommend any US-listed ticker. You MUST cite the signal inventory above (by source: FRED, Polymarket, Events, and market trend context when provided) and state how many signals you considered.
+When the context asks you to focus on ONE ticker (ticker check): In summary, thesis, why_signals_matter, and key_signals be SPECIFIC—name the ticker and the actual events (e.g. "WMT: insider selling, CEO transition, Fed restrictive"). Do NOT use vague wording like "company-specific news", "mixed signals", "potential future performance", or "broader economic conditions" without naming what they are.
 
 YOU MUST:
 1) List every signal you considered (grouped by source) and provide counts.
