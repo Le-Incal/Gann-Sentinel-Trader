@@ -22,7 +22,7 @@ import sys
 import traceback
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from config import Config
 from storage.database import Database
@@ -1384,6 +1384,75 @@ class GannSentinelAgent:
         else:
             await self._handle_standard_check(ticker)
 
+    def _make_fallback_signal(self, source: str, summary: str) -> Dict[str, Any]:
+        """One placeholder signal when a scanner returns 0 so the committee has context."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        dedup_hash = f"fallback:{source}:{now_iso[:13]}"
+        category = "macro" if source == "fred" else "prediction_market" if source == "polymarket" else "event"
+        return {
+            "signal_id": str(uuid.uuid4()),
+            "dedup_hash": dedup_hash,
+            "source": source,
+            "source_type": source,
+            "category": category,
+            "signal_type": category,
+            "summary": summary,
+            "directional_bias": "mixed",
+            "confidence": 0.5,
+            "asset_scope": {"tickers": []},
+            "timestamp_utc": now_iso,
+            "staleness_seconds": 86400,
+        }
+
+    async def _gather_signals_for_check(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Gather FRED, Polymarket, and event signals for /check so agents have real context."""
+        fred_list: List[Dict[str, Any]] = []
+        polymarket_list: List[Dict[str, Any]] = []
+        event_list: List[Dict[str, Any]] = []
+
+        def to_dict_list(raw: Any) -> List[Dict[str, Any]]:
+            if not raw:
+                return []
+            out = []
+            for x in raw:
+                out.append(x.to_dict() if hasattr(x, "to_dict") else x)
+            return out
+
+        # FRED
+        try:
+            if getattr(self.fred, "is_configured", False):
+                macro = await self.fred.scan_all_series()
+                fred_list = to_dict_list(macro)
+            if not fred_list:
+                fred_list = [self._make_fallback_signal("fred", "Macro: FRED data unavailable this run; use technical and other sources.")]
+        except Exception as e:
+            logger.warning(f"FRED gather for check failed: {e}")
+            fred_list = [self._make_fallback_signal("fred", "Macro: FRED scan failed; use technical and other sources.")]
+
+        # Polymarket
+        try:
+            if getattr(self.polymarket, "is_configured", False):
+                pred = await self.polymarket.scan_all_markets()
+                polymarket_list = to_dict_list(pred)
+            if not polymarket_list:
+                polymarket_list = [self._make_fallback_signal("polymarket", "Prediction markets: no whitelisted markets this run; use technical and other sources.")]
+        except Exception as e:
+            logger.warning(f"Polymarket gather for check failed: {e}")
+            polymarket_list = [self._make_fallback_signal("polymarket", "Prediction markets: scan failed; use technical and other sources.")]
+
+        # Events
+        try:
+            if getattr(self.event_scanner, "is_configured", False):
+                raw_events = await self.event_scanner.scan_market_wide()
+                event_list = to_dict_list(raw_events)
+            if not event_list:
+                event_list = [self._make_fallback_signal("event_scanner", "Events: no corporate events detected this run; use technical and other sources.")]
+        except Exception as e:
+            logger.warning(f"Event gather for check failed: {e}")
+            event_list = [self._make_fallback_signal("event_scanner", "Events: scan failed; use technical and other sources.")]
+
+        return fred_list, polymarket_list, event_list
+
     async def _handle_maca_check(self, ticker: str) -> None:
         """
         Handle /check using MACA - all 4 AIs analyze the ticker.
@@ -1419,7 +1488,7 @@ class GannSentinelAgent:
                     "positions": []
                 }
 
-            # Get technical analysis
+            # Get technical analysis for the ticker
             technical_data = None
             if getattr(self.technical, 'is_configured', False):
                 try:
@@ -1429,12 +1498,16 @@ class GannSentinelAgent:
                 except Exception as e:
                     logger.warning(f"Technical analysis failed for {ticker}: {e}")
 
+            # Gather FRED, Polymarket, and event signals so agents have real context (not placeholders only)
+            fred_signals, polymarket_signals, event_signals = await self._gather_signals_for_check()
+
             # Run MACA ticker check (orchestrator does not send Telegram; we send the 3-message summary only)
             result = await self.maca.run_ticker_check(
                 ticker=ticker,
                 portfolio=portfolio,
-                fred_signals=[],
-                polymarket_signals=[],
+                fred_signals=fred_signals,
+                polymarket_signals=polymarket_signals,
+                event_signals=event_signals,
                 technical_analysis=technical_data
             )
 
