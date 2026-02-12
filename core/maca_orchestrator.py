@@ -793,14 +793,15 @@ class MACAOrchestrator:
             additional_context=perplexity_context
         ))
 
-        # ChatGPT: ticker-only focus; key signals must describe how each signal affects this ticker
+        # ChatGPT: ticker-only focus; pass signal_context as additional_context so SIGNAL INVENTORY is populated (not just FRED)
         tasks.append(self._safe_generate_thesis(
             "chatgpt",
             self.chatgpt.generate_thesis,
             portfolio_summary=portfolio_summary,
             available_cash=available_cash,
             scan_cycle_id=cycle_id,
-            market_context=chatgpt_context
+            market_context=chatgpt_context,
+            additional_context=signal_context or "",
         ))
 
         # Wait for all with timeout

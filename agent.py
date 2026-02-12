@@ -1404,8 +1404,18 @@ class GannSentinelAgent:
             "staleness_seconds": 86400,
         }
 
-    async def _gather_signals_for_check(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Gather FRED, Polymarket, and event signals for /check so agents have real context."""
+    def _polymarket_relevant_to_ticker(self, s: Dict[str, Any], ticker: str) -> bool:
+        """True if Polymarket signal is relevant to ticker (asset_scope.tickers or question)."""
+        t = (ticker or "").upper()
+        scope = s.get("asset_scope") or {}
+        tickers = [str(x).upper() for x in (scope.get("tickers") or [])]
+        question = (s.get("question") or s.get("summary") or "").upper()
+        return t in tickers or t in question
+
+    async def _gather_signals_for_check(
+        self, ticker: Optional[str] = None
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Gather FRED, Polymarket, and event signals for /check. When ticker is set, events and Polymarket are ticker-scoped."""
         fred_list: List[Dict[str, Any]] = []
         polymarket_list: List[Dict[str, Any]] = []
         event_list: List[Dict[str, Any]] = []
@@ -1418,7 +1428,7 @@ class GannSentinelAgent:
                 out.append(x.to_dict() if hasattr(x, "to_dict") else x)
             return out
 
-        # FRED
+        # FRED (macro applies to all; no ticker filter)
         try:
             if getattr(self.fred, "is_configured", False):
                 macro = await self.fred.scan_all_series()
@@ -1429,28 +1439,45 @@ class GannSentinelAgent:
             logger.warning(f"FRED gather for check failed: {e}")
             fred_list = [self._make_fallback_signal("fred", "Macro: FRED scan failed; use technical and other sources.")]
 
-        # Polymarket
+        # Polymarket: for /check filter to ticker-relevant only
         try:
             if getattr(self.polymarket, "is_configured", False):
                 pred = await self.polymarket.scan_all_markets()
                 polymarket_list = to_dict_list(pred)
-                if not polymarket_list:
+                if ticker and polymarket_list:
+                    polymarket_list = [s for s in polymarket_list if self._polymarket_relevant_to_ticker(s, ticker)]
+                    if not polymarket_list:
+                        logger.info(f"Polymarket: no markets specific to {ticker}; using placeholder")
+                elif not polymarket_list:
                     logger.info("Polymarket scan returned 0 markets (whitelist or API); using placeholder for /check")
             if not polymarket_list:
-                polymarket_list = [self._make_fallback_signal("polymarket", "Prediction markets: no whitelisted markets this run; use technical and other sources.")]
+                msg = (
+                    f"No Polymarket markets specific to {ticker}; consider sector/macro context."
+                    if ticker
+                    else "Prediction markets: no whitelisted markets this run; use technical and other sources."
+                )
+                polymarket_list = [self._make_fallback_signal("polymarket", msg)]
         except Exception as e:
             logger.warning(f"Polymarket gather for check failed: {e}")
             polymarket_list = [self._make_fallback_signal("polymarket", "Prediction markets: scan failed; use technical and other sources.")]
 
-        # Events
+        # Events: for /check use ticker-specific scan so only that stock's events are returned
         try:
             if getattr(self.event_scanner, "is_configured", False):
-                raw_events = await self.event_scanner.scan_market_wide()
+                if ticker:
+                    raw_events = await self.event_scanner.scan_ticker(ticker)
+                else:
+                    raw_events = await self.event_scanner.scan_market_wide()
                 event_list = to_dict_list(raw_events)
                 if not event_list:
-                    logger.info("Event scanner returned 0 events for /check; using placeholder")
+                    logger.info(f"Event scanner returned 0 events for /check" + (f" for {ticker}" if ticker else "") + "; using placeholder")
             if not event_list:
-                event_list = [self._make_fallback_signal("event_scanner", "Events: no corporate events detected this run; use technical and other sources.")]
+                msg = (
+                    f"No {ticker}-specific corporate events; use technical and other sources."
+                    if ticker
+                    else "Events: no corporate events detected this run; use technical and other sources."
+                )
+                event_list = [self._make_fallback_signal("event_scanner", msg)]
         except Exception as e:
             logger.warning(f"Event gather for check failed: {e}")
             event_list = [self._make_fallback_signal("event_scanner", "Events: scan failed; use technical and other sources.")]
@@ -1502,8 +1529,8 @@ class GannSentinelAgent:
                 except Exception as e:
                     logger.warning(f"Technical analysis failed for {ticker}: {e}")
 
-            # Gather FRED, Polymarket, and event signals so agents have real context (not placeholders only)
-            fred_signals, polymarket_signals, event_signals = await self._gather_signals_for_check()
+            # Gather FRED, Polymarket, and event signals (ticker-scoped for /check)
+            fred_signals, polymarket_signals, event_signals = await self._gather_signals_for_check(ticker=ticker)
 
             # Run MACA ticker check (orchestrator does not send Telegram; we send the 3-message summary only)
             result = await self.maca.run_ticker_check(
