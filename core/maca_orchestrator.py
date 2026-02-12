@@ -1107,6 +1107,7 @@ class MACAOrchestrator:
 
         rounds: List[Dict[str, Any]] = []
         early_exit_reason: Optional[str] = None
+        had_debate_errors = False
 
         # Debate rounds: each speaker speaks once per round.
         for r in range(1, max(1, Config.DEBATE_ROUNDS) + 1):
@@ -1150,6 +1151,9 @@ class MACAOrchestrator:
                     except Exception:
                         pass
 
+                if turn.get("status") == "error":
+                    had_debate_errors = True
+
                 if session_id:
                     try:
                         self.db.save_debate_turn(session_id, cycle_id, turn)
@@ -1163,10 +1167,8 @@ class MACAOrchestrator:
             # -----------------------------
             # Early exit rules (make debate non-boring)
             # -----------------------------
-            # If any debate turn errored, stop and HOLD (debate incomplete).
-            if any((t.get("status") == "error") for t in round_turns):
-                early_exit_reason = "Debate halted due to API/parse errors"
-                break
+            # Do NOT break on error: complete all DEBATE_ROUNDS so user sees both rounds (errored turns show as ERROR).
+            # If any debate turn errored, we'll set hold/reason after the loop.
 
             # If Round 1 is unanimous HOLD, stop (no need for Round 2).
             round_actions = [((t.get("vote") or {}).get("action") or "HOLD").upper() for t in round_turns]
@@ -1182,13 +1184,20 @@ class MACAOrchestrator:
                     early_exit_reason = "Consensus reached in Round 1 — Round 2 skipped"
                     break
 
-        # If we exited early, trim rounds.
+        # If we had any errors, note for Telegram (e.g. "Debate had API/parse error(s); 2 rounds still completed").
+        if had_debate_errors:
+            early_exit_reason = early_exit_reason or "Debate had API/parse error(s); 2 rounds completed"
+
         if early_exit_reason:
             debate_summary = {"session_id": session_id, "rounds": rounds, "early_exit_reason": early_exit_reason}
         else:
             debate_summary = {"session_id": session_id, "rounds": rounds}
         vote_summary = self._summarize_votes(last_turns)
-        if early_exit_reason and ("error" in early_exit_reason.lower()):
+        # Gate on any debate error (even if only in Round 1; Round 2 may have no errors in last_turns).
+        if had_debate_errors:
+            vote_summary["hold"] = True
+            vote_summary["reason"] = vote_summary.get("reason") or "Debate incomplete due to API/parse error(s)"
+        elif early_exit_reason and ("error" in (early_exit_reason or "").lower()):
             vote_summary["hold"] = True
             vote_summary["reason"] = early_exit_reason
 
