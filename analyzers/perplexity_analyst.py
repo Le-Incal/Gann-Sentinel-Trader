@@ -77,7 +77,12 @@ class PerplexityAnalyst:
         # Format portfolio for prompt
         positions_text = self._format_portfolio(portfolio_summary)
 
-        prompt = f"""You are a Real-Time Web Research Analyst (External Reality).
+        # When context is a ticker check, lead with an explicit search instruction so the model runs web search
+        ticker_check_lead = ""
+        if additional_context and ("TICKER CHECK" in additional_context or "Analyze ONLY" in additional_context or "SEARCH THE WEB" in additional_context):
+            ticker_check_lead = "First, search the web for the stock symbol and company name given in the context below (news, earnings, filings, catalysts). Use the search results in your answer. Then return valid JSON.\n\n"
+
+        prompt = f"""{ticker_check_lead}You are a Real-Time Web Research Analyst (External Reality).
 
 Your unique strength: use your web search to find verifiable facts (news, filings, earnings, data releases) and cite sources with URLs.
 

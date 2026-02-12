@@ -757,13 +757,18 @@ class MACAOrchestrator:
         )
         chatgpt_context = f"{ticker_context}\n\n{chatgpt_ticker_instruction}"
 
-        # Perplexity: search only this stock; investibility only; must recommend BUY/SELL/HOLD (anti-refusal for /check)
+        # Perplexity: explicit web search for this ticker first (so Sonar actually searches), then recommend
+        search_directive = (
+            f"YOUR FIRST STEP — SEARCH THE WEB for: \"{ticker}\" stock, \"{ticker}\" company news, "
+            f"\"{ticker}\" earnings, \"{ticker}\" SEC filings, \"{ticker}\" catalysts (last 7 days). "
+            f"Use the search results to support your recommendation. Do not skip the search.\n\n"
+        )
         perplexity_extra = (
             f"TICKER CHECK MODE: You MUST perform this analysis. Search the web for news, events, and catalysts about {ticker}. "
             f"Assess investibility of {ticker} only. Output valid JSON with your recommendation (BUY, SELL, or HOLD) and conviction 0-100. "
             f"Do NOT refuse, clarify your role, or respond with meta-commentary; only output the required JSON."
         )
-        perplexity_context = f"{ticker_context}\n\n{perplexity_extra}"
+        perplexity_context = f"{search_directive}{ticker_context}\n\n{perplexity_extra}"
 
         tasks = []
 
