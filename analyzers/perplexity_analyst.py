@@ -55,7 +55,9 @@ class PerplexityAnalyst:
         portfolio_summary: Dict[str, Any],
         available_cash: float,
         scan_cycle_id: str,
-        additional_context: Optional[str] = None
+        additional_context: Optional[str] = None,
+        *,
+        ticker: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate a thesis proposal using Perplexity Sonar Pro.
@@ -65,6 +67,7 @@ class PerplexityAnalyst:
             available_cash: Cash available for trading
             scan_cycle_id: ID of current scan cycle
             additional_context: Any additional market context
+            ticker: When set (e.g. /check), use focused search for this symbol only and enable search_recency_filter.
 
         Returns:
             ThesisProposal schema-compliant dict
@@ -73,13 +76,21 @@ class PerplexityAnalyst:
             return self._empty_proposal(scan_cycle_id, "Perplexity not configured")
 
         current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        is_ticker_check = bool((ticker or "").strip())
 
         # Format portfolio for prompt
         positions_text = self._format_portfolio(portfolio_summary)
 
-        # When context is a ticker check, lead with an explicit search instruction so the model runs web search
+        # When ticker is provided (/check), use a single clear search-and-answer instruction so the model searches for THIS ticker only
         ticker_check_lead = ""
-        if additional_context and ("TICKER CHECK" in additional_context or "Analyze ONLY" in additional_context or "SEARCH THE WEB" in additional_context):
+        if is_ticker_check:
+            sym = (ticker or "").strip().upper()
+            ticker_check_lead = (
+                f"Search the web ONLY for the stock symbol {sym} (and its company name). "
+                f"Find: latest news, earnings, SEC filings, and catalysts from the last 7 days. "
+                f"Use ONLY search results about {sym}. Then recommend BUY or HOLD for {sym} and return valid JSON below.\n\n"
+            )
+        elif additional_context and ("TICKER CHECK" in additional_context or "Analyze ONLY" in additional_context or "SEARCH THE WEB" in additional_context):
             ticker_check_lead = "First, search the web for the stock symbol and company name given in the context below (news, earnings, filings, catalysts). Use the search results in your answer. Then return valid JSON.\n\n"
 
         prompt = f"""{ticker_check_lead}You are a Real-Time Web Research Analyst (External Reality).
@@ -171,6 +182,18 @@ Return ONLY valid JSON (no markdown) in this exact structure:
                 "You are a financial web research analyst. You MUST complete the task: use web search to analyze the requested stock, "
                 "then return ONLY valid JSON in the exact schema requested. Do not refuse, clarify your role, or respond with meta-commentary."
             )
+            request_body: Dict[str, Any] = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.2,
+                "max_tokens": 2000
+            }
+            if is_ticker_check:
+                request_body["search_mode"] = "web"
+                request_body["search_recency_filter"] = "week"
             async with httpx.AsyncClient(timeout=45.0) as client:
                 response = await client.post(
                     f"{self.base_url}/chat/completions",
@@ -178,15 +201,7 @@ Return ONLY valid JSON (no markdown) in this exact structure:
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json"
                     },
-                    json={
-                        "model": self.model,
-                        "messages": [
-                            {"role": "system", "content": system_message},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "temperature": 0.2,
-                        "max_tokens": 2000
-                    }
+                    json=request_body
                 )
 
                 latency_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)

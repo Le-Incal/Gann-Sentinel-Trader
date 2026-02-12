@@ -757,11 +757,11 @@ class MACAOrchestrator:
         )
         chatgpt_context = f"{ticker_context}\n\n{chatgpt_ticker_instruction}"
 
-        # Perplexity: explicit web search for this ticker first (so Sonar actually searches), then recommend
+        # Perplexity: explicit web search for this ticker only (avoids wrong-symbol results e.g. VFS when checking WMT)
         search_directive = (
-            f"YOUR FIRST STEP — SEARCH THE WEB for: \"{ticker}\" stock, \"{ticker}\" company news, "
+            f"ONLY SEARCH FOR THIS TICKER: {ticker}. Search the web for: \"{ticker}\" stock, \"{ticker}\" company news, "
             f"\"{ticker}\" earnings, \"{ticker}\" SEC filings, \"{ticker}\" catalysts (last 7 days). "
-            f"Use the search results to support your recommendation. Do not skip the search.\n\n"
+            f"Use only search results about {ticker}. Ignore results about any other symbol. Do not skip the search.\n\n"
         )
         perplexity_extra = (
             f"TICKER CHECK MODE: You MUST perform this analysis. Search the web for news, events, and catalysts about {ticker}. "
@@ -790,14 +790,15 @@ class MACAOrchestrator:
                 market_context=ticker_context
             ))
 
-        # Perplexity: ticker-only search + signal context
+        # Perplexity: ticker-only search + signal context (pass ticker so analyst can set search params and focused query)
         tasks.append(self._safe_generate_thesis(
             "perplexity",
             self.perplexity.generate_thesis,
             portfolio_summary=portfolio_summary,
             available_cash=available_cash,
             scan_cycle_id=cycle_id,
-            additional_context=perplexity_context
+            additional_context=perplexity_context,
+            ticker=ticker,
         ))
 
         # ChatGPT: ticker-only focus; pass signal_context as additional_context so SIGNAL INVENTORY is populated (not just FRED)
