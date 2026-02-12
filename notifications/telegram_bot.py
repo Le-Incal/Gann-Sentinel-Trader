@@ -1315,10 +1315,12 @@ class TelegramBot:
 
     @staticmethod
     def _md_escape(text: str) -> str:
-        """Escape * and _ for Telegram Markdown so user content doesn't break bold."""
+        """Escape * and _ for Telegram Markdown so user content doesn't break bold.
+        Replaces NO_TRADE/NO_OPPORTUNITY with space version so they display correctly (no \\_)."""
         if not text:
             return ""
         s = str(text)
+        s = s.replace("NO_TRADE", "NO TRADE").replace("NO_OPPORTUNITY", "NO OPPORTUNITY")
         return s.replace("\\", "\\\\").replace("*", "\\*").replace("_", "\\_")
 
     def format_ai_proposal(self, proposal: Dict[str, Any], use_md: bool = True) -> str:
@@ -1730,8 +1732,11 @@ class TelegramBot:
                 lines.append(f"  {check}: {esc(msg[:80])}")
         elif self._trade_blockers:
             lines.append(f"*{EMOJI_RED_CIRCLE} TRADE NOT CREATED*")
+            blocker_labels = {"PROCEED_FALSE": "Proceed: False", "NO_TICKER": "No ticker", "NO_RECOMMENDATION": "No recommendation", "QUOTE_FETCH_FAILED": "Quote fetch failed", "INVALID_PRICE": "Invalid price", "POSITION_TOO_SMALL": "Position too small", "EXCEPTION": "Error"}
             for blocker in self._trade_blockers[:3]:
-                lines.append(f"  {blocker.get('type', 'ERROR')}: {esc(blocker.get('details', '')[:80])}")
+                btype = blocker.get("type", "ERROR")
+                label = blocker_labels.get(btype, btype.replace("_", " "))
+                lines.append(f"  {label}: {esc(blocker.get('details', '')[:80])}")
         elif is_actionable:
             lines.append(f"*{EMOJI_WARNING} ACTIONABLE BUT NO TRADE*")
             lines.append("Check logs - possible quote/risk issue")
@@ -2353,9 +2358,10 @@ class TelegramBot:
 
         synth_rec = synthesis.get("recommendation", {})
         decision_type = synthesis.get("decision_type", "NO_TRADE")
+        decision_display = (decision_type or "NO_TRADE").replace("_", " ")
         final_conviction = synth_rec.get("conviction_score", 0)
         final_thesis = synth_rec.get("thesis", "No synthesis available")[:150]
-        final_side = synth_rec.get("side", "HOLD")
+        final_side = synth_rec.get("side") or "HOLD"
 
         # Decision indicator
         if decision_type == "TRADE" and final_conviction >= 80:
@@ -2365,7 +2371,7 @@ class TelegramBot:
             decision_emoji = EMOJI_WHITE_CIRCLE
             decision_text = "WATCH ONLY"
 
-        lines.append(f"Decision: {decision_type}")
+        lines.append(f"Decision: {decision_display}")
         lines.append(f"Side: {final_side}")
         lines.append(f"Conviction: {final_conviction}/100 {decision_emoji} {decision_text}")
         lines.append(f"{self._build_conviction_bar(final_conviction)}")
