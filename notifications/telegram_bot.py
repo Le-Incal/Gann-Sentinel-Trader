@@ -1317,6 +1317,15 @@ class TelegramBot:
         """
         Format a single AI proposal section for Telegram.
 
+        Unified format for Grok, Perplexity, ChatGPT:
+        - Recommendation (and Ticker if actionable)
+        - Signals: N
+        - Conviction + bar
+        - Summary: what the signals are saying
+        - Why it matters for trading
+        - Key signals (list)
+        - Thesis
+
         Args:
             proposal: Thesis proposal from Grok/Perplexity/ChatGPT
 
@@ -1344,89 +1353,86 @@ class TelegramBot:
         }
         emoji = emoji_map.get(source, EMOJI_CHART)
 
-        # Signal inventory (preferred)
+        # Signal count: signal_inventory.total_signals or supporting_evidence.signals_count
         sig_inv = proposal.get("signal_inventory", {})
         sig_total = sig_inv.get("total_signals")
         if sig_total is None:
-            # Backwards compat: some proposals store signals_count under supporting_evidence
-            sig_total = proposal.get("supporting_evidence", {}).get("signals_count")
+            sig_total = evidence.get("signals_count")
+
+        # Summary of what the signals say (explicit field or derived)
+        signals_summary = evidence.get("signals_summary", "").strip()
+        if not signals_summary:
+            key_signals = evidence.get("key_signals", [])
+            considered = proposal.get("signals_considered", []) or []
+            parts = []
+            for ks in (key_signals or considered)[:2]:
+                s = (ks.get("summary") or "").strip()
+                if s:
+                    parts.append(s[:100])
+            signals_summary = " ".join(parts)[:200] if parts else ""
+
+        # Why the information matters for trading
+        why_matters = evidence.get("why_signals_matter", "").strip()
+        if not why_matters and thesis:
+            why_matters = (thesis if isinstance(thesis, str) else str(thesis))[:200]
 
         # Build conviction bar
         bar = self._build_conviction_bar(conviction)
         is_actionable = conviction >= 80
 
+        key_signals = evidence.get("key_signals", [])
+        considered = proposal.get("signals_considered", []) or []
+
         lines = []
         lines.append(f"{emoji} {source}")
         lines.append("-" * 30)
 
-        key_signals = proposal.get("supporting_evidence", {}).get("key_signals", [])
         if proposal_type == "NO_OPPORTUNITY" or not ticker:
             lines.append("Recommendation: HOLD")
-            if sig_total is not None:
-                lines.append(f"Signals received: {sig_total}")
-            lines.append(f"Conviction: {conviction}/100")
-            lines.append(bar)
-            considered = proposal.get("signals_considered", []) or []
-            if considered:
-                lines.append("Key signals:")
-                for sc in considered[:2]:
-                    src = sc.get("source") or "unknown"
-                    summary = sc.get("summary") or ""
-                    lines.append(f"  - [{src}] {summary[:120]}")
-            elif key_signals:
-                lines.append("Key signals:")
-                for ks in key_signals[:2]:
-                    s = ks.get("summary") or ""
-                    src = ks.get("source") or ks.get("signal_type") or ""
-                    lines.append(f"  - [{src}] {s[:120]}")
-            else:
-                lines.append("Key signals: none provided")
-            # Show thesis - use thesis_desc if longer and different, otherwise thesis
-            if thesis_desc and thesis and thesis_desc.strip() != thesis.strip() and len(thesis_desc) > len(thesis):
-                lines.append(f"\nThesis: {thesis_desc[:300]}")
-            elif thesis:
-                lines.append(f"\nThesis: {thesis[:300]}")
         else:
             lines.append(f"Recommendation: {side}")
             lines.append(f"Ticker: {ticker}")
-            if sig_total is not None:
-                lines.append(f"Signals received: {sig_total}")
-            lines.append(f"Conviction: {conviction}/100")
-            if is_actionable:
-                lines.append(f"{bar} {EMOJI_GREEN_CIRCLE}")
-            else:
-                lines.append(bar)
 
-            # Key signals (top 3) - show first for context
-            if key_signals:
-                lines.append("Key signals:")
-                for ks in key_signals[:3]:
-                    s = ks.get("summary") or ""
-                    src = ks.get("source") or ks.get("signal_type") or ""
-                    lines.append(f"  - [{src}] {s[:120]}")
-            else:
-                # Try signals_considered as fallback
-                considered = proposal.get("signals_considered", []) or []
-                if considered:
-                    lines.append("Key signals:")
-                    for sc in considered[:3]:
-                        src = sc.get("source") or "unknown"
-                        summary = sc.get("summary") or ""
-                        lines.append(f"  - [{src}] {summary[:120]}")
-                else:
-                    lines.append("Key signals: none provided")
+        # Same order for all: signal count, summary, why it matters
+        if sig_total is not None:
+            lines.append(f"Signals: {sig_total}")
+        lines.append(f"Conviction: {conviction}/100")
+        if is_actionable:
+            lines.append(f"{bar} {EMOJI_GREEN_CIRCLE}")
+        else:
+            lines.append(bar)
 
-            # Show thesis - use thesis_desc if longer and different, otherwise thesis
-            if thesis_desc and thesis and thesis_desc.strip() != thesis.strip() and len(thesis_desc) > len(thesis):
-                lines.append(f"\nThesis: {thesis_desc[:300]}")
-            elif thesis:
-                lines.append(f"\nThesis: {thesis[:300]}")
+        if signals_summary:
+            lines.append(f"Summary: {signals_summary}")
+        if why_matters:
+            lines.append(f"Why it matters for trading: {why_matters}")
 
-            if catalyst:
-                lines.append(f"Catalyst: {catalyst}")
+        # Key signals list (top 3)
+        if key_signals:
+            lines.append("Key signals:")
+            for ks in key_signals[:3]:
+                s = ks.get("summary") or ""
+                src = ks.get("source") or ks.get("signal_type") or ""
+                lines.append(f"  - [{src}] {s[:120]}")
+        elif considered:
+            lines.append("Key signals:")
+            for sc in considered[:3]:
+                src = sc.get("source") or "unknown"
+                summary = sc.get("summary") or ""
+                lines.append(f"  - [{src}] {summary[:120]}")
+        else:
+            lines.append("Key signals: (see summary above)")
 
-            if time_horizon:
-                lines.append(f"Horizon: {time_horizon}")
+        # Thesis
+        if thesis_desc and thesis and thesis_desc.strip() != thesis.strip() and len(thesis_desc) > len(thesis):
+            lines.append(f"Thesis: {thesis_desc[:300]}")
+        elif thesis:
+            lines.append(f"Thesis: {thesis[:300]}")
+
+        if catalyst:
+            lines.append(f"Catalyst: {catalyst}")
+        if time_horizon:
+            lines.append(f"Horizon: {time_horizon}")
 
         return "\n".join(lines)
 

@@ -146,6 +146,8 @@ Return ONLY valid JSON (no markdown) in this exact structure:
     "invalidation": "what would prove this wrong"
   }},
   "supporting_evidence": {{
+    "signals_summary": "1-2 sentences: what the signals you considered are saying overall",
+    "why_signals_matter": "1 sentence: why this information matters for trading decisions",
     "key_signals": [
       {{"signal_type": "fundamental"|"event"|"macro", "summary": "brief", "source": "URL or source name", "confidence": "high"|"medium"|"low"}}
     ],
@@ -468,6 +470,15 @@ Be specific about any concerns. Cite sources if you find conflicting information
         """Build full proposal from parsed response."""
         proposal_id = self._generate_proposal_id()
 
+        evidence = parsed.get("supporting_evidence", {})
+        sig_inv = parsed.get("signal_inventory", {})
+        # Ensure total_signals for display: use explicit or count from signals_considered/key_signals
+        total_signals = sig_inv.get("total_signals")
+        if total_signals is None:
+            considered = parsed.get("signals_considered", [])
+            key_sigs = evidence.get("key_signals", [])
+            total_signals = len(considered) if considered else len(key_sigs)
+
         return {
             "schema_version": "1.0.0",
             "proposal_id": proposal_id,
@@ -475,9 +486,11 @@ Be specific about any concerns. Cite sources if you find conflicting information
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "scan_cycle_id": scan_cycle_id,
             "proposal_type": parsed.get("proposal_type", "NO_OPPORTUNITY"),
+            "signal_inventory": {**sig_inv, "total_signals": total_signals or 0},
+            "signals_considered": parsed.get("signals_considered", []),
             "recommendation": parsed.get("recommendation", {}),
             "rotation_details": parsed.get("rotation_details", {}),
-            "supporting_evidence": parsed.get("supporting_evidence", {}),
+            "supporting_evidence": evidence,
             "raw_data": {
                 "search_queries_used": [],
                 "sources_consulted": self._extract_sources(parsed),

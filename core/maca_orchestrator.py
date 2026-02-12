@@ -1398,6 +1398,17 @@ class MACAOrchestrator:
             parts.append("Committee context had no FRED/Polymarket/Event signals.")
         thesis = " ".join(parts) if parts else "No narrative signals from Grok; no fundamental signals in this cycle."
         thesis = (thesis or "HOLD - insufficient signals.")[:500]
+        # One-line summary of what signals we had (so Telegram never shows "none provided" without context)
+        signals_summary = (
+            "Committee FRED/Polymarket/Event signals only; Grok returned no additional X narrative."
+            if parsed
+            else "No FRED/Polymarket/Event signals in context; Grok returned no narrative."
+        )
+        # Build signals_considered from parsed so Key signals list is populated when possible
+        signals_considered = [
+            {"source": s.get("source", "context"), "summary": (s.get("summary") or s.get("description") or "")[:120]}
+            for s in parsed[:4]
+        ] if parsed else []
         return {
             "schema_version": "1.0.0",
             "proposal_id": str(uuid.uuid4()),
@@ -1415,7 +1426,14 @@ class MACAOrchestrator:
                 "catalyst_deadline": None
             },
             "rotation_details": {},
-            "supporting_evidence": {"signal_source": "grok", "signals_count": len(parsed)},
+            "supporting_evidence": {
+                "signal_source": "grok",
+                "signals_count": len(parsed),
+                "signals_summary": signals_summary,
+                "why_signals_matter": thesis[:200],
+                "key_signals": [],
+            },
+            "signals_considered": signals_considered,
             "raw_data": {"fallback": True, "reason": "scan_market_overview returned empty"},
             "time_sensitive": False,
             "metadata": {"adapter": "grok_fallback_from_context"}
@@ -1574,6 +1592,12 @@ class MACAOrchestrator:
                 if cs.get("underappreciated_catalyst"):
                     thesis_description += f" | Underappreciated: {cs['underappreciated_catalyst'][:100]}"
 
+            # Summary of what X/signals are saying (for unified display)
+            signals_summary = grok_summary[:200] if grok_summary else " ".join(
+                (s.get("summary", "")[:80] for s in key_signals[:2])
+            ).strip() or "X/social narrative and context signals considered."
+            why_signals_matter = (best_signal.get("narrative") or best_signal.get("summary") or thesis_description or "")[:200]
+
             # Build thesis proposal from Grok signal
             return {
                 "schema_version": "1.0.0",
@@ -1597,6 +1621,8 @@ class MACAOrchestrator:
                     "event_type": best_signal.get("event_type"),
                     "raw_confidence": confidence_raw,
                     "signals_count": total_signals,
+                    "signals_summary": signals_summary,
+                    "why_signals_matter": why_signals_matter,
                     "key_signals": key_signals,
                 },
                 "signals_considered": signals_considered,
