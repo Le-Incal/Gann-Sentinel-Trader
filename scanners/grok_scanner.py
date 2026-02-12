@@ -1453,14 +1453,17 @@ Output ONLY JSON in this schema:
             return []
         logger.info(f"check_ticker: scanning X sentiment and catalysts for {ticker}")
         signals: List[GrokSignal] = []
-        # X/Twitter sentiment for this ticker only
+        # X/Twitter sentiment for this ticker only (primary)
         social = await self.scan_ticker_social(ticker)
         if social:
             signals.append(social)
-        # Optional: catalysts for context (keep list small for speed)
+        # Optional: catalysts with short timeout so total check stays under orchestrator limit
         try:
-            catalysts = await self.scan_catalysts(ticker)
+            import asyncio
+            catalysts = await asyncio.wait_for(self.scan_catalysts(ticker), timeout=12.0)
             signals.extend(catalysts[:3])
+        except asyncio.TimeoutError:
+            logger.debug(f"check_ticker: catalysts for {ticker} timed out (skipping)")
         except Exception as e:
             logger.debug(f"check_ticker catalysts for {ticker}: {e}")
         if not signals:

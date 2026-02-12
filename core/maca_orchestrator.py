@@ -761,7 +761,9 @@ class MACAOrchestrator:
                 cycle_id=cycle_id,
                 ticker=ticker,
                 portfolio_summary=portfolio_summary,
-                available_cash=available_cash
+                available_cash=available_cash,
+                market_context=ticker_context,
+                technical_analysis=technical_analysis,
             ))
         else:
             tasks.append(self._grok_thesis_adapter(
@@ -811,33 +813,43 @@ class MACAOrchestrator:
         cycle_id: str,
         ticker: str,
         portfolio_summary: Dict[str, Any],
-        available_cash: float
+        available_cash: float,
+        market_context: Optional[str] = None,
+        technical_analysis: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     ) -> Dict[str, Any]:
         """
         Adapter for Grok scanner to check a specific ticker.
 
-        Uses check_ticker() if available, otherwise falls back to market overview.
+        Uses check_ticker(); on timeout or empty, falls back to thesis adapter with ticker context.
         """
+        fallback_context = market_context or f"TICKER CHECK: Analyze only {ticker}. Focus on this stock."
+
         try:
-            # Try ticker-specific check
-            if hasattr(self.grok, 'check_ticker'):
-                signals = await asyncio.wait_for(
-                    self.grok.check_ticker(ticker),
-                    timeout=30.0
-                )
-            else:
-                # Fallback to market overview
+            if not hasattr(self.grok, 'check_ticker'):
                 return await self._grok_thesis_adapter(
                     cycle_id=cycle_id,
                     portfolio_summary=portfolio_summary,
                     available_cash=available_cash,
-                    market_context=f"Focus on {ticker}"
+                    market_context=fallback_context,
+                    technical_analysis=technical_analysis,
                 )
 
-            # Handle empty signals
+            # Try ticker-specific X/catalyst check with longer timeout (API can be slow)
+            signals = await asyncio.wait_for(
+                self.grok.check_ticker(ticker),
+                timeout=50.0
+            )
+
+            # Handle empty signals: fall back to thesis adapter so user gets Grok output, not "Generation failed"
             if not signals:
-                logger.warning(f"Grok returned no signals for {ticker}")
-                return self._empty_proposal(cycle_id, "grok", f"No signals for {ticker}")
+                logger.warning(f"Grok check_ticker returned no signals for {ticker}; using thesis adapter fallback")
+                return await self._grok_thesis_adapter(
+                    cycle_id=cycle_id,
+                    portfolio_summary=portfolio_summary,
+                    available_cash=available_cash,
+                    market_context=fallback_context,
+                    technical_analysis=technical_analysis,
+                )
 
             # Convert GrokSignal objects to dicts
             signals_dicts = []
@@ -926,13 +938,25 @@ class MACAOrchestrator:
             }
 
         except asyncio.TimeoutError:
-            logger.warning(f"Grok ticker check for {ticker} timed out")
-            return self._empty_proposal(cycle_id, "grok", f"Timeout checking {ticker}")
+            logger.warning(f"Grok ticker check for {ticker} timed out; using thesis adapter fallback")
+            return await self._grok_thesis_adapter(
+                cycle_id=cycle_id,
+                portfolio_summary=portfolio_summary,
+                available_cash=available_cash,
+                market_context=fallback_context,
+                technical_analysis=technical_analysis,
+            )
         except Exception as e:
             logger.error(f"Grok ticker check adapter error for {ticker}: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            return self._empty_proposal(cycle_id, "grok", str(e))
+            return await self._grok_thesis_adapter(
+                cycle_id=cycle_id,
+                portfolio_summary=portfolio_summary,
+                available_cash=available_cash,
+                market_context=fallback_context,
+                technical_analysis=technical_analysis,
+            )
 
     async def _phase1_generate_theses(
         self,

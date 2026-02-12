@@ -1539,7 +1539,10 @@ class TelegramBot:
                         summary = esc(es.get("summary", "")[:100])
                         lines.append(f"  • {summary}")
             else:
-                lines.append("  • No events detected (check logs)")
+                if ticker_checked:
+                    lines.append(f"  • No {ticker_checked.upper()}-specific events")
+                else:
+                    lines.append("  • No events detected (check logs)")
             lines.append("")
 
             lines.append(f"*📊 Technical ({tech_count})*")
