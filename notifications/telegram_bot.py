@@ -2043,35 +2043,7 @@ class TelegramBot:
             lines.append(f"Cycle: {cycle_id}")
             lines.append("")
 
-            top = (vote_summary or {}).get("top") or {}
-            reason = (vote_summary or {}).get("reason") or ""
-            avg_conf = (vote_summary or {}).get("avg_confidence")
-            early_exit = (debate or {}).get("early_exit_reason")
-
-            if top:
-                lines.append(f"*Majority:* {top.get('action')} {top.get('ticker') or ''} ({top.get('count')})")
-            if isinstance(avg_conf, (int, float)):
-                lines.append(f"*Avg confidence:* {avg_conf:.2f}")
-            if reason:
-                lines.append(f"*Blocker:* {self._md_escape(reason)}")
-            if early_exit:
-                lines.append(f"*Rounds:* {len(rounds)} (note: {early_exit})")
-            lines.append("")
-
-            # Vote table snapshot (last known votes)
-            vs_votes = (vote_summary or {}).get("votes") or []
-            if vs_votes:
-                lines.append("*Votes:*")
-                for v in vs_votes:
-                    sp = v.get("speaker")
-                    act = v.get("action")
-                    tk = v.get("ticker") or ""
-                    cf = v.get("confidence")
-                    cf_s = f" ({float(cf):.2f})" if isinstance(cf, (int, float)) else ""
-                    lines.append(f"• {sp}: {act} {tk}{cf_s}")
-                lines.append("")
-
-            # Round-by-round deltas (one-liners)
+            # Round-by-round first
             for r in rounds:
                 rnum = r.get("round", 0)
                 lines.append(f"*--- Round {rnum} ---*")
@@ -2105,6 +2077,33 @@ class TelegramBot:
                         changed_tag = " (changed mind)" if changed else ""
                         lines.append(f"• {sp}: {act} {tk}{cf_s} — {claim}{changed_tag}")
                 lines.append("")
+
+            # Votes and summary at bottom
+            top = (vote_summary or {}).get("top") or {}
+            reason = (vote_summary or {}).get("reason") or ""
+            avg_conf = (vote_summary or {}).get("avg_confidence")
+            early_exit = (debate or {}).get("early_exit_reason")
+
+            vs_votes = (vote_summary or {}).get("votes") or []
+            if vs_votes:
+                lines.append("*Votes:*")
+                for v in vs_votes:
+                    sp = v.get("speaker")
+                    act = v.get("action")
+                    tk = v.get("ticker") or ""
+                    cf = v.get("confidence")
+                    cf_s = f" ({float(cf):.2f})" if isinstance(cf, (int, float)) else ""
+                    lines.append(f"• {sp}: {act} {tk}{cf_s}")
+                lines.append("")
+
+            if top:
+                lines.append(f"*Majority:* {top.get('action')} {top.get('ticker') or ''} ({top.get('count')})")
+            if isinstance(avg_conf, (int, float)):
+                lines.append(f"*Avg confidence:* {avg_conf:.2f}")
+            if reason:
+                lines.append(f"*Blocker:* {self._md_escape(reason)}")
+            if early_exit:
+                lines.append(f"*Rounds:* {len(rounds)} (note: {early_exit})")
 
             text = "\n".join(lines).strip()
             return await self.send_message(text, parse_mode="Markdown", message_type="maca_debate")
