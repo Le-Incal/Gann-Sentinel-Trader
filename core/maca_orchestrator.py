@@ -593,14 +593,15 @@ class MACAOrchestrator:
             logger.info(f"Phase 1 complete for {ticker}: {len(proposals)} proposals generated")
 
             # ================================================================
-            # PHASE 1B: Debate (optional) — use ticker-filtered events so "Signals Collected" is relevant
+            # PHASE 1B: Debate — use full event_signals for display so "Events" section shows all events
+            # (Analysts already got ticker-relevant events via signal_context in Phase 1.)
             # ================================================================
             debate, vote_summary, proposals_with_tech, signal_inventory = await self._phase1b_debate(
                 cycle_id=cycle_id,
                 proposals=proposals,
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
-                event_signals=event_for_ticker,
+                event_signals=event_signals,
                 technical_analysis=technical_analysis,
             )
 
@@ -748,6 +749,13 @@ class MACAOrchestrator:
             ticker_context = f"{ticker_context}\n\n{signal_context}"
         ticker_context = f"{ticker_context}\n\nFocus ONLY on {ticker}. Recommend BUY, SELL, or HOLD for {ticker} with conviction 0-100."
 
+        # ChatGPT: key signals and thesis must be about this ticker only (how each signal affects the ticker)
+        chatgpt_ticker_instruction = (
+            f"In your key_signals and signals_considered, cite only how each signal relates to or affects {ticker} "
+            f"(e.g. 'CPI headwind for {ticker} as growth stock'). Do not list generic macro without linking to {ticker}."
+        )
+        chatgpt_context = f"{ticker_context}\n\n{chatgpt_ticker_instruction}"
+
         # Perplexity: search only this stock; investibility only; must recommend BUY/SELL/HOLD
         perplexity_extra = (
             f"Search the web ONLY for news, events, and catalysts about {ticker}. "
@@ -785,14 +793,14 @@ class MACAOrchestrator:
             additional_context=perplexity_context
         ))
 
-        # ChatGPT: same ticker-only focus and BUY/SELL/HOLD recommendation
+        # ChatGPT: ticker-only focus; key signals must describe how each signal affects this ticker
         tasks.append(self._safe_generate_thesis(
             "chatgpt",
             self.chatgpt.generate_thesis,
             portfolio_summary=portfolio_summary,
             available_cash=available_cash,
             scan_cycle_id=cycle_id,
-            market_context=ticker_context
+            market_context=chatgpt_context
         ))
 
         # Wait for all with timeout
@@ -824,7 +832,10 @@ class MACAOrchestrator:
 
         Uses check_ticker(); on timeout or empty, falls back to thesis adapter with ticker context.
         """
-        fallback_context = market_context or f"TICKER CHECK: Analyze only {ticker}. Focus on this stock."
+        fallback_context = (
+            market_context
+            or f"TICKER CHECK: User asked about {ticker} only. What is the current X/Twitter sentiment and narrative specifically for {ticker}? Recommend BUY, SELL, or HOLD for {ticker} with conviction 0-100."
+        )
 
         try:
             if not hasattr(self.grok, 'check_ticker'):

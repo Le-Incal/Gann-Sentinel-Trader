@@ -1434,6 +1434,8 @@ class GannSentinelAgent:
             if getattr(self.polymarket, "is_configured", False):
                 pred = await self.polymarket.scan_all_markets()
                 polymarket_list = to_dict_list(pred)
+                if not polymarket_list:
+                    logger.info("Polymarket scan returned 0 markets (whitelist or API); using placeholder for /check")
             if not polymarket_list:
                 polymarket_list = [self._make_fallback_signal("polymarket", "Prediction markets: no whitelisted markets this run; use technical and other sources.")]
         except Exception as e:
@@ -1445,6 +1447,8 @@ class GannSentinelAgent:
             if getattr(self.event_scanner, "is_configured", False):
                 raw_events = await self.event_scanner.scan_market_wide()
                 event_list = to_dict_list(raw_events)
+                if not event_list:
+                    logger.info("Event scanner returned 0 events for /check; using placeholder")
             if not event_list:
                 event_list = [self._make_fallback_signal("event_scanner", "Events: no corporate events detected this run; use technical and other sources.")]
         except Exception as e:
