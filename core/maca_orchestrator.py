@@ -886,24 +886,41 @@ class MACAOrchestrator:
             if not best_signal:
                 return self._empty_proposal(cycle_id, "grok", f"No best signal found for {ticker}")
 
-            # Conviction: use explicit recommendation_conviction from Grok if present, else confidence
+            # Conviction: prefer sentiment_score (0-1) from deep social, else confidence, else recommendation_conviction
             confidence_raw = best_signal.get("confidence", 0.5)
+            try:
+                confidence_raw = float(confidence_raw) if confidence_raw is not None else 0.5
+            except (TypeError, ValueError):
+                confidence_raw = 0.5
             raw_val = best_signal.get("raw_value") or {}
-            if raw_val.get("unit") == "recommendation_conviction":
-                conviction_score = int(round(float(raw_val.get("value", 0)) * 100))
+            unit = (raw_val.get("unit") or "").strip().lower()
+            raw_value_val = raw_val.get("value")
+            if unit == "recommendation_conviction" and raw_value_val is not None:
+                conviction_score = max(0, min(100, int(round(float(raw_value_val) * 100))))
+            elif unit == "sentiment_score" and raw_value_val is not None:
+                # Deep social: sentiment 0-1 -> BUY conviction 51-100 when bullish, else 0-50 for HOLD
+                try:
+                    sent = max(0.0, min(1.0, float(raw_value_val)))
+                except (TypeError, ValueError):
+                    sent = confidence_raw
+                conviction_score = int(round(sent * 100))
             else:
-                conviction_score = int(confidence_raw * 100)
+                conviction_score = max(0, min(100, int(round(confidence_raw * 100))))
 
             # Analysts may only recommend BUY or HOLD; Chair has exclusive authority for SELL.
             bias = (best_signal.get("directional_bias") or "neutral").lower()
             if bias in ("bullish", "positive"):
                 side = "BUY"
+                # BUY: ensure conviction is in actionable range 51-100 if we have sentiment
+                if unit == "sentiment_score" and conviction_score < 51 and conviction_score > 0:
+                    conviction_score = max(51, conviction_score)
             else:
                 side = "HOLD"
-
-            # Conviction = strength of trade recommendation only; HOLD -> 0
-            if side == "HOLD":
-                conviction_score = 0
+                # HOLD: show strength of hold (0-50) so bar is visible; never leave at 0
+                if conviction_score == 0:
+                    conviction_score = max(25, int(round(confidence_raw * 50)))
+                else:
+                    conviction_score = min(50, conviction_score)
 
             # Build key_signals and signals_considered as list-of-dicts (Telegram format_ai_proposal expects .get("summary"))
             key_signals = []
