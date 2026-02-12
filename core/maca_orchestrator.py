@@ -899,19 +899,20 @@ class MACAOrchestrator:
             if bias in ("bullish", "positive"):
                 side = "BUY"
             else:
-                side = None
+                side = "HOLD"
 
-            # Conviction = strength of trade recommendation only; no side -> HOLD -> 0
-            if not side:
+            # Conviction = strength of trade recommendation only; HOLD -> 0
+            if side == "HOLD":
                 conviction_score = 0
 
-            # Build key_signals and signals_considered from ticker-specific X/catalyst signals for display
+            # Build key_signals and signals_considered as list-of-dicts (Telegram format_ai_proposal expects .get("summary"))
             key_signals = []
             signals_considered = []
             for s in signals_dicts[:5]:
                 summary = (s.get("summary") or s.get("narrative") or s.get("description") or "")[:120]
-                key_signals.append(summary)
-                signals_considered.append({"source": s.get("source") or s.get("source_type") or "grok", "summary": summary})
+                src = s.get("source") or s.get("source_type") or "grok"
+                key_signals.append({"source": src, "summary": summary})
+                signals_considered.append({"source": src, "summary": summary})
             narrative = best_signal.get("narrative") or best_signal.get("summary") or f"Grok X/catalyst analysis of {ticker}"
 
             logger.info(f"Grok ticker check for {ticker}: conviction={conviction_score}, side={side}, signals={len(signals_dicts)}")
@@ -922,7 +923,7 @@ class MACAOrchestrator:
                 "ai_source": "grok",
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "scan_cycle_id": cycle_id,
-                "proposal_type": "NEW_POSITION" if side else "NO_OPPORTUNITY",
+                "proposal_type": "NEW_POSITION" if side == "BUY" else "NO_OPPORTUNITY",
                 "recommendation": {
                     "ticker": ticker,
                     "side": side,

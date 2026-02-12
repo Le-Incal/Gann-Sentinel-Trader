@@ -1404,13 +1404,29 @@ class GannSentinelAgent:
             "staleness_seconds": 86400,
         }
 
+    # Ticker -> extra keywords for Polymarket relevance (company name, key people, etc.)
+    TICKER_POLYMARKET_KEYWORDS: Dict[str, List[str]] = {
+        "TSLA": ["tesla", "elon musk"],
+        "AAPL": ["apple"],
+        "MSFT": ["microsoft"],
+        "GOOGL": ["google", "alphabet"],
+        "AMZN": ["amazon"],
+        "META": ["meta", "facebook"],
+        "NVDA": ["nvidia"],
+    }
+
     def _polymarket_relevant_to_ticker(self, s: Dict[str, Any], ticker: str) -> bool:
-        """True if Polymarket signal is relevant to ticker (asset_scope.tickers or question)."""
+        """True if Polymarket signal is relevant to ticker (symbol, company name, or key-person keywords)."""
         t = (ticker or "").upper()
         scope = s.get("asset_scope") or {}
         tickers = [str(x).upper() for x in (scope.get("tickers") or [])]
-        question = (s.get("question") or s.get("summary") or "").upper()
-        return t in tickers or t in question
+        if t in tickers:
+            return True
+        text = (s.get("question") or s.get("summary") or s.get("slug") or "").lower()
+        if t.lower() in text:
+            return True
+        keywords = self.TICKER_POLYMARKET_KEYWORDS.get(t, [])
+        return any(kw in text for kw in keywords)
 
     async def _gather_signals_for_check(
         self, ticker: Optional[str] = None

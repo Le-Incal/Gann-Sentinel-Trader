@@ -1440,8 +1440,12 @@ class TelegramBot:
         if key_signals:
             lines.append(f"{b('Key signals:')}")
             for ks in key_signals[:3]:
-                s = (ks.get("summary") or "")[:120]
-                src = ks.get("source") or ks.get("signal_type") or ""
+                if isinstance(ks, dict):
+                    s = (ks.get("summary") or "")[:120]
+                    src = ks.get("source") or ks.get("signal_type") or ""
+                else:
+                    s = (str(ks) or "")[:120]
+                    src = ""
                 lines.append(f"  • [{esc(src)}] {esc(s)}")
         elif considered:
             lines.append(f"{b('Key signals:')}")
