@@ -162,6 +162,10 @@ Return ONLY valid JSON (no markdown) in this exact structure:
         try:
             start_time = datetime.now(timezone.utc)
 
+            system_message = (
+                "You are a financial web research analyst. You MUST complete the task: use web search to analyze the requested stock, "
+                "then return ONLY valid JSON in the exact schema requested. Do not refuse, clarify your role, or respond with meta-commentary."
+            )
             async with httpx.AsyncClient(timeout=45.0) as client:
                 response = await client.post(
                     f"{self.base_url}/chat/completions",
@@ -172,6 +176,7 @@ Return ONLY valid JSON (no markdown) in this exact structure:
                     json={
                         "model": self.model,
                         "messages": [
+                            {"role": "system", "content": system_message},
                             {"role": "user", "content": prompt}
                         ],
                         "temperature": 0.2,
@@ -427,6 +432,14 @@ Be specific about any concerns. Cite sources if you find conflicting information
         # Extract a thesis-like snippet (first substantial paragraph or 400 chars)
         thesis = "No parseable JSON; see raw search context."
         content = (content or "").strip()
+        content_lower = content.lower()
+        is_refusal = (
+            "clarify" in content_lower
+            or "my role" in content_lower
+            or "my capabilities" in content_lower
+            or "i cannot" in content_lower
+            or ("i need to" in content_lower and "clarify" in content_lower)
+        )
         if content:
             # Skip leading markdown/JSON artifacts
             for line in content.split("\n"):
@@ -438,6 +451,8 @@ Be specific about any concerns. Cite sources if you find conflicting information
                     break
             if thesis == "No parseable JSON; see raw search context." and len(content) > 100:
                 thesis = content[:400].strip() + ("..." if len(content) > 400 else "")
+        if is_refusal:
+            thesis = "Perplexity did not return analysis (refusal/meta-response). Defaulting to HOLD; use other analysts and Chair for view."
         return {
             "schema_version": "1.0.0",
             "proposal_id": self._generate_proposal_id(),
@@ -448,7 +463,7 @@ Be specific about any concerns. Cite sources if you find conflicting information
             "recommendation": {
                 "ticker": None,
                 "side": None,
-                "conviction_score": 0,
+                "conviction_score": 25,
                 "thesis": thesis,
                 "time_horizon": None,
                 "catalyst": None,
@@ -494,6 +509,12 @@ Be specific about any concerns. Cite sources if you find conflicting information
             recommendation["conviction_score"] = 25
         else:
             recommendation["conviction_score"] = max(0, min(100, conv))
+
+        # If thesis looks like a refusal/meta-response, replace so UI shows neutral message
+        thesis_text = (recommendation.get("thesis") or "").lower()
+        if any(x in thesis_text for x in ("clarify my", "clarify your", "my role", "my capabilities", "i cannot", "i need to clarify")):
+            recommendation["thesis"] = "Perplexity did not return analysis (refusal/meta-response). Defaulting to HOLD; use other analysts and Chair for view."
+            recommendation["conviction_score"] = 25
 
         return {
             "schema_version": "1.0.0",
