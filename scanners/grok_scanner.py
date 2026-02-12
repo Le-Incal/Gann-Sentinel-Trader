@@ -1438,7 +1438,35 @@ Output ONLY JSON in this schema:
         
         logger.info(f"Deep scan complete for {ticker}: {len(signals)} signals")
         return signals
-    
+
+    async def check_ticker(self, ticker: str) -> List[GrokSignal]:
+        """
+        Ticker check for /check command: X (Twitter) sentiment and optional catalysts for this stock only.
+        Returns a list of GrokSignal so the MACA adapter can build a thesis from real X narrative.
+        """
+        if not self.is_configured:
+            self.last_error = "XAI_API_KEY not configured"
+            logger.warning(self.last_error)
+            return []
+        ticker = (ticker or "").strip().upper()
+        if not ticker:
+            return []
+        logger.info(f"check_ticker: scanning X sentiment and catalysts for {ticker}")
+        signals: List[GrokSignal] = []
+        # X/Twitter sentiment for this ticker only
+        social = await self.scan_ticker_social(ticker)
+        if social:
+            signals.append(social)
+        # Optional: catalysts for context (keep list small for speed)
+        try:
+            catalysts = await self.scan_catalysts(ticker)
+            signals.extend(catalysts[:3])
+        except Exception as e:
+            logger.debug(f"check_ticker catalysts for {ticker}: {e}")
+        if not signals:
+            logger.warning(f"check_ticker: no signals for {ticker}; X/catalysts returned empty")
+        return signals
+
     # =========================================================================
     # PUBLIC INTERFACE - BACKWARDS COMPATIBLE METHODS
     # =========================================================================

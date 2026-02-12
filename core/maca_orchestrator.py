@@ -561,8 +561,7 @@ class MACAOrchestrator:
                 ev_tickers = [str(t).upper() for t in (scope.get("tickers") or [])]
                 if ticker_upper in ev_tickers or not ev_tickers:
                     event_for_ticker.append(ev)
-            if not event_for_ticker and event_signals:
-                event_for_ticker = event_signals[:5]  # fallback: use first 5 if none match
+            # No fallback: for /check we show only ticker-relevant events (0 when none match)
 
             # Market context and signal context for ticker-only analysis
             market_context = (
@@ -594,14 +593,14 @@ class MACAOrchestrator:
             logger.info(f"Phase 1 complete for {ticker}: {len(proposals)} proposals generated")
 
             # ================================================================
-            # PHASE 1B: Debate (optional)
+            # PHASE 1B: Debate (optional) — use ticker-filtered events so "Signals Collected" is relevant
             # ================================================================
             debate, vote_summary, proposals_with_tech, signal_inventory = await self._phase1b_debate(
                 cycle_id=cycle_id,
                 proposals=proposals,
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
-                event_signals=event_signals,
+                event_signals=event_for_ticker,
                 technical_analysis=technical_analysis,
             )
 
@@ -862,11 +861,11 @@ class MACAOrchestrator:
                 return self._empty_proposal(cycle_id, "grok", f"No best signal found for {ticker}")
 
             # Conviction: use explicit recommendation_conviction from Grok if present, else confidence
+            confidence_raw = best_signal.get("confidence", 0.5)
             raw_val = best_signal.get("raw_value") or {}
             if raw_val.get("unit") == "recommendation_conviction":
                 conviction_score = int(round(float(raw_val.get("value", 0)) * 100))
             else:
-                confidence_raw = best_signal.get("confidence", 0.5)
                 conviction_score = int(confidence_raw * 100)
 
             # Analysts may only recommend BUY or HOLD; Chair has exclusive authority for SELL.
@@ -880,7 +879,16 @@ class MACAOrchestrator:
             if not side:
                 conviction_score = 0
 
-            logger.info(f"Grok ticker check for {ticker}: conviction={conviction_score}, side={side}")
+            # Build key_signals and signals_considered from ticker-specific X/catalyst signals for display
+            key_signals = []
+            signals_considered = []
+            for s in signals_dicts[:5]:
+                summary = (s.get("summary") or s.get("narrative") or s.get("description") or "")[:120]
+                key_signals.append(summary)
+                signals_considered.append({"source": s.get("source") or s.get("source_type") or "grok", "summary": summary})
+            narrative = best_signal.get("narrative") or best_signal.get("summary") or f"Grok X/catalyst analysis of {ticker}"
+
+            logger.info(f"Grok ticker check for {ticker}: conviction={conviction_score}, side={side}, signals={len(signals_dicts)}")
 
             return {
                 "schema_version": "1.0.0",
@@ -893,7 +901,7 @@ class MACAOrchestrator:
                     "ticker": ticker,
                     "side": side,
                     "conviction_score": conviction_score,
-                    "thesis": best_signal.get("narrative", f"Grok analysis of {ticker}"),
+                    "thesis": narrative,
                     "time_horizon": best_signal.get("time_horizon"),
                     "catalyst": best_signal.get("event_type"),
                     "catalyst_deadline": best_signal.get("validity", {}).get("expires_at")
@@ -902,8 +910,12 @@ class MACAOrchestrator:
                     "signal_source": best_signal.get("source", "grok"),
                     "event_type": best_signal.get("event_type"),
                     "raw_confidence": confidence_raw,
-                    "signals_count": len(signals_dicts)
+                    "signals_count": len(signals_dicts),
+                    "signals_summary": f"X sentiment and catalysts for {ticker} ({len(signals_dicts)} signals)",
+                    "why_signals_matter": narrative[:200] if narrative else "",
+                    "key_signals": key_signals,
                 },
+                "signals_considered": signals_considered,
                 "raw_data": best_signal,
                 "time_sensitive": best_signal.get("validity", {}).get("requires_immediate_action", False),
                 "metadata": {
@@ -1951,6 +1963,7 @@ class MACAOrchestrator:
 
             debate = maca_result.get("debate") or synthesis.get("debate")
             vote_summary = maca_result.get("vote_summary") or synthesis.get("vote_summary")
+            ticker_checked = maca_result.get("ticker")  # /check TSLA → show "MACA CHECK – TSLA" and ticker-relevant signals
             await self.telegram.send_maca_scan_summary(
                 proposals=proposals,
                 synthesis=synthesis,
@@ -1961,6 +1974,7 @@ class MACAOrchestrator:
                 vote_summary=vote_summary,
                 cycle_id=maca_result.get("cycle_id"),
                 signal_inventory=signal_inventory,
+                ticker_checked=ticker_checked,
             )
         except Exception as e:
             logger.error(f"Failed to send MACA summary: {e}")

@@ -1462,16 +1462,19 @@ class TelegramBot:
     def format_ai_council_message(
         self,
         proposals: List[Dict[str, Any]],
-        signal_inventory: Optional[Dict[str, Any]] = None
+        signal_inventory: Optional[Dict[str, Any]] = None,
+        ticker_checked: Optional[str] = None,
     ) -> str:
         """
         Format Message 1: AI Council Views.
 
         Shows signal inventory and thesis proposals from all AI analysts.
+        When ticker_checked is set (e.g. /check TSLA), header and events are for that ticker only.
 
         Args:
             proposals: List of analyst proposals
             signal_inventory: Dict with by_source counts (FRED, Polymarket, Events, Technical)
+            ticker_checked: If set, show "MACA CHECK – TICKER" and that signals are for this ticker
         """
         from datetime import datetime, timezone
 
@@ -1487,7 +1490,11 @@ class TelegramBot:
         lines = []
         lines.append("")
         lines.append("=" * 40)
-        lines.append(f"{EMOJI_SEARCH} *MACA SCAN – AI COUNCIL*")
+        if ticker_checked:
+            lines.append(f"{EMOJI_SEARCH} *MACA CHECK – {ticker_checked.upper()}*")
+            lines.append("Signals below are relevant to this ticker.")
+        else:
+            lines.append(f"{EMOJI_SEARCH} *MACA SCAN – AI COUNCIL*")
         lines.append(f"{now.strftime('%Y-%m-%d %H:%M UTC')}")
         lines.append("=" * 40)
         lines.append("")
@@ -1898,6 +1905,7 @@ class TelegramBot:
         vote_summary: Optional[Dict[str, Any]] = None,
         cycle_id: Optional[str] = None,
         signal_inventory: Optional[Dict[str, Any]] = None,
+        ticker_checked: Optional[str] = None,
     ) -> bool:
         """
         Send full MACA scan summary as three messages.
@@ -1905,10 +1913,13 @@ class TelegramBot:
         Message 1: AI Council views (Grok, Perplexity, ChatGPT) + signal inventory
         Message 2: Debate transcript (who changed mind and why)
         Message 3: Chart analysis + Claude's decision + trade status
+        When ticker_checked is set, header shows "MACA CHECK – TICKER" and signals are ticker-relevant.
         """
         try:
-            # Message 1: AI Council with signal inventory
-            msg1 = self.format_ai_council_message(proposals, signal_inventory=signal_inventory)
+            # Message 1: AI Council with signal inventory (ticker_checked for /check header)
+            msg1 = self.format_ai_council_message(
+                proposals, signal_inventory=signal_inventory, ticker_checked=ticker_checked
+            )
             
             # Truncate if needed
             if len(msg1) > 4000:
