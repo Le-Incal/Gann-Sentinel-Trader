@@ -607,13 +607,15 @@ class MACAOrchestrator:
             # ================================================================
             # PHASE 2: Chair synthesis (ticker check: must recommend BUY/SELL/HOLD for this ticker)
             # ================================================================
+            # Pass technical as list (same shape as scan) so Chair and Telegram get consistent format
+            tech_list_check = [technical_analysis] if (isinstance(technical_analysis, dict) and technical_analysis) else (technical_analysis if isinstance(technical_analysis, list) else [])
             synthesis = await self._phase2_synthesize(
                 cycle_id=cycle_id,
                 proposals=proposals_with_tech,
                 portfolio=portfolio,
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
-                technical_analysis=technical_analysis,
+                technical_analysis=tech_list_check,
                 debate=debate,
                 vote_summary=vote_summary,
                 signal_inventory=signal_inventory,
@@ -1796,12 +1798,17 @@ class MACAOrchestrator:
         if not decision_type:
             decision_type = "TRADE" if action in ["BUY", "SELL"] else "NO_TRADE"
 
+        # For ticker check, always set recommendation.ticker so UI shows e.g. "HOLD TSLA" not just "HOLD"
+        rec_ticker = ticker
+        if ticker_checked and not rec_ticker:
+            rec_ticker = ticker_checked
+
         synthesis = {
             "decision_type": decision_type,
             "rationale": (final_thesis.get("description") or "")[:2000],
             "synthesis_summary": (chair_out or {}).get("synthesis_summary") or "",
             "recommendation": {
-                "ticker": ticker,
+                "ticker": rec_ticker,
                 "side": side,
                 "conviction_score": conviction_score,
                 "thesis": final_thesis.get("summary") or final_thesis.get("description") or "",
