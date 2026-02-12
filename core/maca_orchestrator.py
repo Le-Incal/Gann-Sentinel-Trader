@@ -603,6 +603,7 @@ class MACAOrchestrator:
                 polymarket_signals=polymarket_signals,
                 event_signals=event_signals,
                 technical_analysis=technical_analysis,
+                run_debate_even_if_no_candidate=True,
             )
 
             # ================================================================
@@ -756,10 +757,11 @@ class MACAOrchestrator:
         )
         chatgpt_context = f"{ticker_context}\n\n{chatgpt_ticker_instruction}"
 
-        # Perplexity: search only this stock; investibility only; must recommend BUY/SELL/HOLD
+        # Perplexity: search only this stock; investibility only; must recommend BUY/SELL/HOLD (anti-refusal for /check)
         perplexity_extra = (
-            f"Search the web ONLY for news, events, and catalysts about {ticker}. "
-            f"Assess investibility of {ticker} only. You MUST recommend BUY, SELL, or HOLD for {ticker} with conviction 0-100."
+            f"TICKER CHECK MODE: You MUST perform this analysis. Search the web for news, events, and catalysts about {ticker}. "
+            f"Assess investibility of {ticker} only. Output valid JSON with your recommendation (BUY, SELL, or HOLD) and conviction 0-100. "
+            f"Do NOT refuse, clarify your role, or respond with meta-commentary; only output the required JSON."
         )
         perplexity_context = f"{ticker_context}\n\n{perplexity_extra}"
 
@@ -1133,9 +1135,11 @@ class MACAOrchestrator:
         event_signals: Optional[List[Dict[str, Any]]] = None,
         technical_analysis: Optional[Dict[str, Any]] = None,
         technical_charts: Optional[List[Dict[str, Any]]] = None,
+        run_debate_even_if_no_candidate: bool = False,
     ) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], Dict[str, Any]]:
         """Optional committee debate.
 
+        When run_debate_even_if_no_candidate is True (e.g. /check), debate runs even if all proposals are HOLD.
         Returns: (debate_summary, vote_summary, proposals_with_tech, signal_inventory)
         """
         tech_list = technical_charts if technical_charts is not None else ([technical_analysis] if technical_analysis else [])
@@ -1173,8 +1177,8 @@ class MACAOrchestrator:
         if not Config.DEBATE_ENABLED:
             return {}, {"hold": False, "reason": "Debate disabled"}, proposals, signal_inventory
 
-        # If there are no actionable proposals, short-circuit debate.
-        if not self._has_actionable_proposals(proposals):
+        # If there are no actionable proposals, short-circuit debate (unless ticker check: run debate anyway).
+        if not run_debate_even_if_no_candidate and not self._has_actionable_proposals(proposals):
             vote_summary = {
                 "n": 3,
                 "votes": [],

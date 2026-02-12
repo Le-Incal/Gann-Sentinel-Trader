@@ -82,6 +82,7 @@ class PerplexityAnalyst:
 Your unique strength: use your web search to find verifiable facts (news, filings, earnings, data releases) and cite sources with URLs.
 
 You do NOT infer sentiment. You do NOT analyze charts. You do NOT invent signals.
+If the context below is a TICKER CHECK (one stock to analyze), you MUST perform the analysis and return valid JSON only. Do not refuse, clarify your role, or respond with meta-commentary.
 
 UNIVERSE & OBJECTIVE:
 - You may recommend ANY US-listed stock. The watchlist (if mentioned in context) is for trend information only—not the set of allowed tickers.
@@ -479,6 +480,21 @@ Be specific about any concerns. Cite sources if you find conflicting information
             key_sigs = evidence.get("key_signals", [])
             total_signals = len(considered) if considered else len(key_sigs)
 
+        recommendation = dict(parsed.get("recommendation", {}))
+        # Normalize HOLD conviction: model often returns 0; use 1-50 so UI and debate show strength (same as ChatGPT)
+        side = (recommendation.get("side") or "").strip().upper()
+        proposal_type = (parsed.get("proposal_type") or "").strip().upper()
+        is_hold = side != "BUY" or proposal_type == "NO_OPPORTUNITY"
+        conv = recommendation.get("conviction_score", 0)
+        try:
+            conv = int(round(float(conv)))
+        except (TypeError, ValueError):
+            conv = 0
+        if is_hold and conv == 0:
+            recommendation["conviction_score"] = 25
+        else:
+            recommendation["conviction_score"] = max(0, min(100, conv))
+
         return {
             "schema_version": "1.0.0",
             "proposal_id": proposal_id,
@@ -488,7 +504,7 @@ Be specific about any concerns. Cite sources if you find conflicting information
             "proposal_type": parsed.get("proposal_type", "NO_OPPORTUNITY"),
             "signal_inventory": {**sig_inv, "total_signals": total_signals or 0},
             "signals_considered": parsed.get("signals_considered", []),
-            "recommendation": parsed.get("recommendation", {}),
+            "recommendation": recommendation,
             "rotation_details": parsed.get("rotation_details", {}),
             "supporting_evidence": evidence,
             "raw_data": {
