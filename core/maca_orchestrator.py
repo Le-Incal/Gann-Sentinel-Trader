@@ -553,8 +553,29 @@ class MACAOrchestrator:
             # Get available cash from portfolio
             available_cash = portfolio.get("cash", portfolio.get("available_cash", 100000))
 
-            # Market context focused on specific ticker
-            market_context = f"Analyze {ticker} specifically. User requested a detailed check of this ticker."
+            # Filter event signals to this ticker (and sector-relevant) so analysts see only relevant events
+            event_for_ticker = []
+            ticker_upper = (ticker or "").upper()
+            for ev in event_signals:
+                scope = ev.get("asset_scope") or {}
+                ev_tickers = [str(t).upper() for t in (scope.get("tickers") or [])]
+                if ticker_upper in ev_tickers or not ev_tickers:
+                    event_for_ticker.append(ev)
+            if not event_for_ticker and event_signals:
+                event_for_ticker = event_signals[:5]  # fallback: use first 5 if none match
+
+            # Market context and signal context for ticker-only analysis
+            market_context = (
+                f"TICKER CHECK: Analyze ONLY {ticker}. User requested a detailed check of this stock. "
+                f"You MUST recommend BUY, SELL, or HOLD for {ticker} with conviction 0-100. "
+                f"Polymarket: report only information relevant to {ticker} or its sector. "
+                f"Technical: the chart data is for {ticker} only."
+            )
+            signal_context = self._build_signal_context(
+                fred_signals=fred_signals,
+                polymarket_signals=polymarket_signals,
+                event_signals=event_for_ticker,
+            )
 
             # ================================================================
             # PHASE 1: Parallel thesis generation (ticker-focused)
@@ -564,7 +585,9 @@ class MACAOrchestrator:
                 ticker=ticker,
                 portfolio=portfolio,
                 available_cash=available_cash,
-                market_context=market_context
+                market_context=market_context,
+                signal_context=signal_context,
+                technical_analysis=technical_analysis,
             )
 
             phase1_complete = datetime.now(timezone.utc)
@@ -583,7 +606,7 @@ class MACAOrchestrator:
             )
 
             # ================================================================
-            # PHASE 2: Chair synthesis
+            # PHASE 2: Chair synthesis (ticker check: must recommend BUY/SELL/HOLD for this ticker)
             # ================================================================
             synthesis = await self._phase2_synthesize(
                 cycle_id=cycle_id,
@@ -595,6 +618,7 @@ class MACAOrchestrator:
                 debate=debate,
                 vote_summary=vote_summary,
                 signal_inventory=signal_inventory,
+                ticker_checked=ticker,
             )
 
             phase2_complete = datetime.now(timezone.utc)
@@ -698,12 +722,15 @@ class MACAOrchestrator:
         ticker: str,
         portfolio: Dict[str, Any],
         available_cash: float,
-        market_context: Optional[str] = None
+        market_context: Optional[str] = None,
+        signal_context: Optional[str] = None,
+        technical_analysis: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Phase 1: Generate thesis proposals for a specific ticker.
 
-        Similar to _phase1_generate_theses but focused on a single ticker.
+        Ticker-only: Polymarket/events filtered; Perplexity/ChatGPT get signal_context
+        and instructions to recommend BUY/SELL/HOLD for this ticker only.
         """
         logger.info(f"Phase 1: Generating theses for {ticker} (cycle {cycle_id})")
 
@@ -714,12 +741,22 @@ class MACAOrchestrator:
             "cash": available_cash
         }
 
-        # Ticker-specific market context
-        ticker_context = f"{market_context or ''}\n\nFocus on analyzing {ticker} - this is a specific ticker check request."
+        # Ticker-only context: market_context + signal inventory (so analysts cite signals)
+        ticker_context = (market_context or "").strip()
+        if signal_context:
+            ticker_context = f"{ticker_context}\n\n{signal_context}"
+        ticker_context = f"{ticker_context}\n\nFocus ONLY on {ticker}. Recommend BUY, SELL, or HOLD for {ticker} with conviction 0-100."
+
+        # Perplexity: search only this stock; investibility only; must recommend BUY/SELL/HOLD
+        perplexity_extra = (
+            f"Search the web ONLY for news, events, and catalysts about {ticker}. "
+            f"Assess investibility of {ticker} only. You MUST recommend BUY, SELL, or HOLD for {ticker} with conviction 0-100."
+        )
+        perplexity_context = f"{ticker_context}\n\n{perplexity_extra}"
 
         tasks = []
 
-        # Grok thesis for specific ticker
+        # Grok thesis for specific ticker (X/Twitter sentiment about this stock only)
         if hasattr(self.grok, 'check_ticker'):
             tasks.append(self._grok_ticker_check_adapter(
                 cycle_id=cycle_id,
@@ -728,7 +765,6 @@ class MACAOrchestrator:
                 available_cash=available_cash
             ))
         else:
-            # Fallback to market overview if no ticker-specific method
             tasks.append(self._grok_thesis_adapter(
                 cycle_id=cycle_id,
                 portfolio_summary=portfolio_summary,
@@ -736,17 +772,17 @@ class MACAOrchestrator:
                 market_context=ticker_context
             ))
 
-        # Perplexity thesis - pass ticker context
+        # Perplexity: ticker-only search + signal context
         tasks.append(self._safe_generate_thesis(
             "perplexity",
             self.perplexity.generate_thesis,
             portfolio_summary=portfolio_summary,
             available_cash=available_cash,
             scan_cycle_id=cycle_id,
-            additional_context=f"Focus analysis on {ticker}. User has specifically requested a check on this stock."
+            additional_context=perplexity_context
         ))
 
-        # ChatGPT thesis - pass ticker context
+        # ChatGPT: same ticker-only focus and BUY/SELL/HOLD recommendation
         tasks.append(self._safe_generate_thesis(
             "chatgpt",
             self.chatgpt.generate_thesis,
@@ -1669,8 +1705,9 @@ class MACAOrchestrator:
         debate: Optional[Dict[str, Any]] = None,
         vote_summary: Optional[Dict[str, Any]] = None,
         signal_inventory: Optional[Dict[str, Any]] = None,
+        ticker_checked: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Phase 2: Chair synthesizes proposals + debate into a final thesis. technical_analysis is full list of charts for market-wide view."""
+        """Phase 2: Chair synthesizes proposals + debate into a final thesis. If ticker_checked is set, Chair must recommend BUY/SELL/HOLD for that ticker."""
 
         logger.info(f"Phase 2: Chair synthesis for cycle {cycle_id}")
 
@@ -1678,6 +1715,15 @@ class MACAOrchestrator:
         if signal_inventory is not None:
             signal_inventory = dict(signal_inventory)
             signal_inventory["trading_skills"] = self._get_trading_skills_context()
+        else:
+            signal_inventory = {}
+
+        if ticker_checked:
+            signal_inventory["ticker_check"] = (
+                f"This is a ticker check for {ticker_checked}. You MUST output a recommendation for this stock: "
+                f"BUY {ticker_checked}, SELL {ticker_checked}, or HOLD. Do not output a generic no-trade; "
+                f"the user asked specifically about {ticker_checked}. Use synthesis_summary and final_thesis.action accordingly."
+            )
 
         try:
             chair_out = await asyncio.wait_for(

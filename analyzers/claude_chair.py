@@ -99,6 +99,7 @@ Return ONLY valid JSON, no markdown."""
         user_prompt = (
             "SYNTHESIZE THE COMMITTEE INPUTS INTO A FINAL THESIS.\n"
             "If signal_inventory contains 'trading_skills', use it when forming long/short/options recommendations.\n"
+            "If signal_inventory contains 'ticker_check', you MUST follow that instruction: output a recommendation for that stock only (BUY, SELL, or HOLD)—do not output a generic no-trade.\n"
             "You MUST output one clear, actionable line in synthesis_summary: either \"BUY TICKER at N conviction\" or \"SELL TICKER at N conviction\" or \"No trade: <reason>.\"\n"
             "Return JSON in this schema:\n"
             "{\n"
