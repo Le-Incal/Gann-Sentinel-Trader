@@ -2,6 +2,10 @@
 Gann Sentinel Trader - Alpaca Executor
 Executes trades via Alpaca API.
 Uses lazy imports so the app can start even when alpaca-py is not installed.
+
+Execution capabilities (current):
+- Equities: BUY (long) and SELL (long close or short open). Short requires margin and ETB.
+- Options: Not implemented; Alpaca API supports options but this module submits equity orders only.
 """
 
 import logging

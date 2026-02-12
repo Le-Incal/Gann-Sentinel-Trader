@@ -87,12 +87,13 @@ class Config:
     DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "0.05"))
     MIN_MARKET_CAP: int = int(os.getenv("MIN_MARKET_CAP", "500000000"))
 
-    # Trading capabilities (what the system is allowed to recommend and execute)
-    # Used by Chair and analysts so they know they can recommend shorts and options.
+    # Trading capabilities (what this system can actually execute via Alpaca)
+    # Equities: long (BUY) and short (SELL to open short) are implemented. Short requires margin + ETB.
+    # Options: Alpaca API supports options; this executor does NOT yet submit options orders—equity only.
     TRADING_CAPABILITIES: str = (
-        "The system can: buy and sell equities daily (no day-trade limit block); "
-        "take short positions (sell short); trade options. "
-        "You may recommend LONG (BUY), SHORT (SELL to open short), or options when evidence supports it."
+        "The system CAN execute: (1) BUY equities (long), (2) SELL equities to close a long or to open a short. "
+        "Short selling requires a margin account and easy-to-borrow (ETB) stock. "
+        "The system does NOT yet execute options; recommend equity long/short for actionable trades."
     )
     
     # ==========================================================================

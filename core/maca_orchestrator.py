@@ -837,12 +837,10 @@ class MACAOrchestrator:
                 confidence_raw = best_signal.get("confidence", 0.5)
                 conviction_score = int(confidence_raw * 100)
 
-            # Map directional_bias to side (bullish/positive -> BUY, bearish/negative -> SELL)
+            # Analysts may only recommend BUY or HOLD; Chair has exclusive authority for SELL.
             bias = (best_signal.get("directional_bias") or "neutral").lower()
             if bias in ("bullish", "positive"):
                 side = "BUY"
-            elif bias in ("bearish", "negative"):
-                side = "SELL"
             else:
                 side = None
 
@@ -1527,14 +1525,12 @@ class MACAOrchestrator:
                 confidence_raw = best_signal.get("confidence", 0.5)
                 conviction_score = int(confidence_raw * 100)
 
-            # Map directional_bias to side (bullish/positive -> BUY, bearish/negative -> SELL)
+            # Map directional_bias to side. Analysts may only recommend BUY or HOLD; Chair has exclusive authority for SELL.
             bias = (best_signal.get("directional_bias") or "neutral").lower()
             if bias in ("bullish", "positive"):
                 side = "BUY"
-            elif bias in ("bearish", "negative"):
-                side = "SELL"
             else:
-                side = None
+                side = None  # bearish/negative -> HOLD (do not recommend SELL; Chair decides sells)
 
             # Conviction = strength of trade recommendation only; no ticker/side -> HOLD -> 0
             if not ticker or not side:

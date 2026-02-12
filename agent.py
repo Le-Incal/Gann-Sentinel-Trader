@@ -1074,21 +1074,30 @@ class GannSentinelAgent:
                 })
                 return None
 
-            # Calculate shares - use equity, but fall back to cash if equity is 0
+            # Calculate shares. For SELL: if we have a position, use position qty (close long); else use size for short.
             equity = portfolio.get("equity", 0)
             cash = portfolio.get("cash", 0)
-            # Use the larger of equity or cash (equity should include cash, but fallback if not)
-            account_value = max(equity, cash, 100000)  # Minimum $100k fallback
+            account_value = max(equity, cash, 100000)
 
-            logger.info(f"MACA TRADE DEBUG: Portfolio equity=${equity:,.2f}, cash=${cash:,.2f}, "
-                       f"using account_value=${account_value:,.2f}")
-
-            position_value = account_value * (position_size_pct / 100)
-            shares = int(position_value / current_price)
-
-            logger.info(f"MACA TRADE DEBUG: Share calc: account_value=${account_value:,.2f}, "
-                       f"size_pct={position_size_pct}%, position_value=${position_value:,.2f}, "
-                       f"price=${current_price:.2f}, shares={shares}")
+            if side == "SELL":
+                # SELL: close long (qty = position) or open short (qty = size from %)
+                position_qty = 0
+                for p in positions_dict:
+                    if (p.get("ticker") or p.get("symbol") or "").upper() == (ticker or "").upper():
+                        position_qty = int(float(p.get("quantity") or p.get("qty") or 0))
+                        break
+                if position_qty > 0:
+                    shares = position_qty
+                    logger.info(f"MACA TRADE DEBUG: SELL closing long: {ticker} qty={shares} (position size)")
+                else:
+                    position_value = account_value * (position_size_pct / 100)
+                    shares = int(position_value / current_price)
+                    logger.info(f"MACA TRADE DEBUG: SELL opening short: {ticker} qty={shares} (from size_pct)")
+            else:
+                position_value = account_value * (position_size_pct / 100)
+                shares = int(position_value / current_price)
+                logger.info(f"MACA TRADE DEBUG: BUY: account_value=${account_value:,.2f}, "
+                           f"size_pct={position_size_pct}%, shares={shares}")
 
             if shares <= 0:
                 logger.warning(f"MACA TRADE DEBUG: Position too small - 0 shares calculated")
