@@ -1315,13 +1315,13 @@ class TelegramBot:
 
     @staticmethod
     def _md_escape(text: str) -> str:
-        """Escape * and _ for Telegram Markdown so user content doesn't break bold.
-        Replaces NO_TRADE/NO_OPPORTUNITY with space version so they display correctly (no \\_)."""
+        """Escape * _ ` and \\ for Telegram Markdown so user content doesn't break parsing.
+        Replaces NO_TRADE/NO_OPPORTUNITY with space version so they display correctly."""
         if not text:
             return ""
         s = str(text)
         s = s.replace("NO_TRADE", "NO TRADE").replace("NO_OPPORTUNITY", "NO OPPORTUNITY")
-        return s.replace("\\", "\\\\").replace("*", "\\*").replace("_", "\\_")
+        return s.replace("\\", "\\\\").replace("*", "\\*").replace("_", "\\_").replace("`", "\\`")
 
     def format_ai_proposal(self, proposal: Dict[str, Any], use_md: bool = True) -> str:
         """
@@ -1918,24 +1918,43 @@ class TelegramBot:
         Message 3: Chart analysis + Claude's decision + trade status
         When ticker_checked is set, header shows "MACA CHECK – TICKER" and signals are ticker-relevant.
         """
+        import asyncio
+        # Message 1: AI Council with signal inventory (ticker_checked for /check header) — must send first
+        msg1_sent = False
         try:
-            # Message 1: AI Council with signal inventory (ticker_checked for /check header)
             msg1 = self.format_ai_council_message(
                 proposals, signal_inventory=signal_inventory, ticker_checked=ticker_checked
             )
-            
-            # Truncate if needed
             if len(msg1) > 4000:
                 msg1 = msg1[:3950] + "\n\n[Truncated]"
-                
-            await self.send_message(msg1, parse_mode="Markdown", message_type="maca_ai_council")
+            msg1_sent = await self.send_message(msg1, parse_mode="Markdown", message_type="maca_ai_council")
+            if not msg1_sent:
+                # Retry without Markdown in case Telegram rejected format
+                await asyncio.sleep(0.3)
+                msg1_sent = await self.send_message(msg1, parse_mode=None, message_type="maca_ai_council")
+            if not msg1_sent:
+                logger.warning("AI Council message (Message 1) failed to send; sending fallback so user sees order")
+                fallback = (
+                    "🔍 *MACA CHECK* (AI Council summary could not be sent — format/length issue).\n"
+                    "Debate and synthesis follow below."
+                ) if ticker_checked else (
+                    "🔍 *MACA SCAN* (AI Council summary could not be sent).\n"
+                    "Debate and synthesis follow below."
+                )
+                await self.send_message(fallback, parse_mode="Markdown", message_type="maca_ai_council_fallback")
         except Exception as e:
             logger.error(f"Failed to send AI Council message: {e}")
             import traceback
             traceback.print_exc()
+            try:
+                await self.send_message(
+                    "🔍 MACA: First message (AI Council) failed. Debate and synthesis follow.",
+                    parse_mode=None,
+                    message_type="maca_ai_council_fallback",
+                )
+            except Exception:
+                pass
 
-        # Small delay between messages
-        import asyncio
         await asyncio.sleep(0.5)
 
         # Message 2: Debate transcript (if available) or unanimous agreement note
