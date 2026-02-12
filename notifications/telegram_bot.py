@@ -1713,6 +1713,15 @@ class TelegramBot:
                 lines.append(f"{EMOJI_CHECK} Risk Engine: PASS")
             lines.append("")
             lines.append("Use buttons below to approve or reject")
+        elif trade_id and not is_actionable:
+            lines.append(f"*{EMOJI_WHITE_CIRCLE} Below threshold ({conviction}/100)*")
+            lines.append("You can still approve this trade if you like the idea (override).")
+            lines.append("")
+            lines.append(f"Trade ID: {trade_id}")
+            if not self._risk_rejections:
+                lines.append(f"{EMOJI_CHECK} Risk Engine: PASS")
+            lines.append("")
+            lines.append("Use buttons below to approve or reject")
         elif self._risk_rejections:
             lines.append(f"*{EMOJI_RED_CIRCLE} BLOCKED BY RISK ENGINE*")
             for rejection in self._risk_rejections[:2]:
@@ -1731,7 +1740,7 @@ class TelegramBot:
             if rationale:
                 lines.append(f"Reason: {esc(rationale[:150])}")
         else:
-            lines.append(f"{EMOJI_WHITE_CIRCLE} *Watching* – conviction below threshold")
+            lines.append(f"{EMOJI_WHITE_CIRCLE} *Watching* – no trade created")
 
         # PORTFOLIO
         try:

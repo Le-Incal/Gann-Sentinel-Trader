@@ -713,9 +713,18 @@ class GannSentinelAgent:
                            f"conviction = {final_decision.get('final_conviction')}, "
                            f"decision_type = {final_decision.get('decision_type')}")
 
-                if proceed:
-                    logger.info("MACA SCAN: proceed=True, calling _create_maca_trade_from_scan...")
-                    # Create trade from MACA recommendation
+                # Create pending trade whenever committee recommends a trade (TRADE + ticker/side),
+                # so user can approve even when conviction is below threshold (override).
+                rec = final_decision.get("recommendation") or {}
+                rec = rec if isinstance(rec, dict) else {}
+                dt = final_decision.get("decision_type", "NONE")
+                has_trade_rec = dt == "TRADE" and rec.get("ticker") and rec.get("side")
+
+                if proceed or has_trade_rec:
+                    if has_trade_rec and not proceed:
+                        logger.info("MACA SCAN: conviction below threshold but TRADE with ticker/side – creating trade for optional approval (override)")
+                    else:
+                        logger.info("MACA SCAN: proceed=True, calling _create_maca_trade_from_scan...")
                     trade_id = await self._create_maca_trade_from_scan(
                         maca_result=maca_result,
                         portfolio=portfolio_dict,
@@ -726,16 +735,11 @@ class GannSentinelAgent:
                         self._current_pending_trade_id = trade_id
                         maca_result["final_decision"]["trade_id"] = trade_id
                 else:
-                    # Record why we're not creating a trade
                     conv = final_decision.get('final_conviction', 0)
-                    dt = final_decision.get('decision_type', 'NONE')
-                    rec = final_decision.get('recommendation', {})
-                    ticker = rec.get('ticker') if rec else None
-                    side = rec.get('side') if rec else None
-
-                    reason = f"proceed=False: conv={conv}, type={dt}, ticker={ticker}, side={side}"
-                    logger.info(f"MACA SCAN: proceed_to_execution=False, NOT creating trade. {reason}")
-
+                    ticker = rec.get('ticker')
+                    side = rec.get('side')
+                    reason = f"proceed=False, no TRADE+ticker: conv={conv}, type={dt}, ticker={ticker}, side={side}"
+                    logger.info(f"MACA SCAN: NOT creating trade. {reason}")
                     self.telegram.record_trade_blocker({
                         "type": "PROCEED_FALSE",
                         "details": reason
@@ -970,18 +974,8 @@ class GannSentinelAgent:
             logger.info(f"MACA TRADE DEBUG: decision_type = {final_decision.get('decision_type')}")
             logger.info(f"MACA TRADE DEBUG: full final_decision = {final_decision}")
 
-            # MACA orchestrator uses "proceed_to_execution" not "proceed"
-            if not final_decision.get("proceed_to_execution"):
-                logger.warning(f"MACA TRADE DEBUG: proceed_to_execution=False, skipping trade creation. "
-                             f"Conviction={final_decision.get('final_conviction')}, "
-                             f"decision_type={final_decision.get('decision_type')}")
-                self.telegram.record_trade_blocker({
-                    "type": "PROCEED_FALSE",
-                    "details": f"proceed_to_execution=False, conviction={final_decision.get('final_conviction')}"
-                })
-                return None
-
-            # Handle recommendation being None (when proceed was set to False in orchestrator)
+            # Create trade whenever we have a valid TRADE recommendation (allow approval even when conviction < 80).
+            # Handle recommendation being None
             rec = final_decision.get("recommendation")
             if rec is None:
                 logger.warning("MACA TRADE DEBUG: recommendation is None in final_decision")
