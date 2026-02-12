@@ -1409,6 +1409,8 @@ class MACAOrchestrator:
             {"source": s.get("source", "context"), "summary": (s.get("summary") or s.get("description") or "")[:120]}
             for s in parsed[:4]
         ] if parsed else []
+        # HOLD conviction 0-50: use low non-zero when we have context so not always 0/100
+        fallback_conviction = 25 if parsed else (15 if (technical_analysis and parts) else 0)
         return {
             "schema_version": "1.0.0",
             "proposal_id": str(uuid.uuid4()),
@@ -1419,7 +1421,7 @@ class MACAOrchestrator:
             "recommendation": {
                 "ticker": None,
                 "side": None,
-                "conviction_score": 0,
+                "conviction_score": fallback_conviction,
                 "thesis": thesis,
                 "time_horizon": None,
                 "catalyst": None,
@@ -1550,9 +1552,9 @@ class MACAOrchestrator:
             else:
                 side = None  # bearish/negative -> HOLD (do not recommend SELL; Chair decides sells)
 
-            # Conviction = strength of trade recommendation only; no ticker/side -> HOLD -> 0
+            # Conviction: for BUY use full 0-100; for HOLD use 0-50 as "strength of view" (so we don't show 0/100 across the board)
             if not ticker or not side:
-                conviction_score = 0
+                conviction_score = min(50, conviction_score)  # cap HOLD at 50 so it's clearly not an actionable trade
 
             # Build key_signals from Grok's own signals + context signals
             key_signals = []
