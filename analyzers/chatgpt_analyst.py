@@ -56,10 +56,12 @@ class ChatGPTAnalyst:
         available_cash: float,
         scan_cycle_id: str,
         market_context: Optional[str] = None,
-        additional_context: Optional[str] = None
+        additional_context: Optional[str] = None,
+        *,
+        ticker: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Generate a thesis proposal using GPT-4o.
+        Generate a thesis proposal using GPT-4o (or gpt-4o-search-preview when ticker is set for /check).
 
         Args:
             portfolio_summary: Current portfolio positions and P&L
@@ -67,6 +69,7 @@ class ChatGPTAnalyst:
             scan_cycle_id: ID of current scan cycle
             market_context: Recent market conditions summary
             additional_context: Any additional context
+            ticker: When set (e.g. /check), enable web search for this symbol so the model can find current sentiment/news.
 
         Returns:
             ThesisProposal schema-compliant dict
@@ -75,13 +78,19 @@ class ChatGPTAnalyst:
             return self._empty_proposal(scan_cycle_id, "ChatGPT not configured")
 
         current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        use_web_search = bool((ticker or "").strip())
 
         # Format portfolio for prompt
         positions_text = self._format_portfolio(portfolio_summary)
 
+        web_search_line = (
+            f"You MAY use web search to find current sentiment, news, and narrative about {ticker.upper()}; combine search results with the signal inventory below."
+            if use_web_search
+            else "You do NOT browse the web."
+        )
         prompt = f"""You are a Market Sentiment + Cognitive Bias Analyst.
 
-You do NOT browse the web. You do NOT draw or compute charts yourself. You do NOT invent signals.
+{web_search_line} You do NOT draw or compute charts yourself. You do NOT invent signals.
 
 The MARKET TREND CONTEXT (charts) in the signal inventory is for trend information only: (1) overall market trend direction and (2) whether we are buying high or low in the trend. Use it to inform sentiment and bias. Do NOT use it to limit which stocks you can recommend.
 
@@ -166,7 +175,7 @@ Return ONLY valid JSON (no markdown) in this exact structure:
                         "Content-Type": "application/json"
                     },
                     json={
-                        "model": self.model,
+                        "model": "gpt-4o-search-preview" if use_web_search else self.model,
                         "messages": [
                             {
                                 "role": "system",
@@ -175,7 +184,8 @@ Return ONLY valid JSON (no markdown) in this exact structure:
                             {"role": "user", "content": prompt}
                         ],
                         "temperature": 0.2,
-                        "max_tokens": 2000
+                        "max_tokens": 2000,
+                        **({"web_search_options": {}} if use_web_search else {}),
                     }
                 )
 

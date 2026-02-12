@@ -803,7 +803,7 @@ class MACAOrchestrator:
             ticker=ticker,
         ))
 
-        # ChatGPT: ticker-only focus; pass signal_context as additional_context so SIGNAL INVENTORY is populated (not just FRED)
+        # ChatGPT: ticker-only focus; pass ticker so analyst can enable web search (gpt-4o-search-preview) for /check
         tasks.append(self._safe_generate_thesis(
             "chatgpt",
             self.chatgpt.generate_thesis,
@@ -812,6 +812,7 @@ class MACAOrchestrator:
             scan_cycle_id=cycle_id,
             market_context=chatgpt_context,
             additional_context=signal_context or "",
+            ticker=ticker,
         ))
 
         # Wait for all with timeout
