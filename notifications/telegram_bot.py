@@ -216,11 +216,16 @@ class TelegramBot:
             logger.warning("Telegram not configured - message not sent")
             return False
 
+        if not text or not str(text).strip():
+            logger.warning("Empty message not sent")
+            return False
+
+        text = str(text).strip()
         target_chat = chat_id or self.chat_id
 
-        # Log outgoing message
+        # Log outgoing message (truncate for log)
         self._log_outgoing(
-            content=text,
+            content=text[:500] + ("..." if len(text) > 500 else ""),
             message_type=message_type,
             related_entity_id=related_entity_id,
             related_entity_type=related_entity_type
@@ -255,11 +260,15 @@ class TelegramBot:
                     )
                     return response.status_code == 200
 
-                logger.error(f"Telegram API error: {response.status_code} - {response.text}")
+                logger.error(
+                    "Telegram API error: status=%s body=%s",
+                    response.status_code,
+                    (response.text or "")[:500],
+                )
                 return False
 
         except Exception as e:
-            logger.error(f"Error sending Telegram message: {e}")
+            logger.error("Error sending Telegram message: %s", e)
             return False
 
     async def get_commands(self) -> List[Dict[str, Any]]:
@@ -1464,22 +1473,18 @@ class TelegramBot:
         proposals: List[Dict[str, Any]],
         signal_inventory: Optional[Dict[str, Any]] = None,
         ticker_checked: Optional[str] = None,
+        use_md: bool = True,
     ) -> str:
         """
         Format Message 1: AI Council Views.
 
         Shows signal inventory and thesis proposals from all AI analysts.
         When ticker_checked is set (e.g. /check TSLA), header and events are for that ticker only.
-
-        Args:
-            proposals: List of analyst proposals
-            signal_inventory: Dict with by_source counts (FRED, Polymarket, Events, Technical)
-            ticker_checked: If set, show "MACA CHECK – TICKER" and that signals are for this ticker
+        use_md=False produces plain text (no *bold*) so Telegram never rejects on Markdown parse.
         """
         from datetime import datetime, timezone
 
         now = datetime.now(timezone.utc)
-        use_md = True
 
         def b(s: str) -> str:
             return f"*{s}*" if use_md else s
@@ -1491,61 +1496,55 @@ class TelegramBot:
         lines.append("")
         lines.append("=" * 40)
         if ticker_checked:
-            lines.append(f"{EMOJI_SEARCH} *MACA CHECK – {ticker_checked.upper()}*")
+            lines.append(f"{EMOJI_SEARCH} MACA CHECK – {ticker_checked.upper()}" if not use_md else f"{EMOJI_SEARCH} *MACA CHECK – {ticker_checked.upper()}*")
             lines.append("Signals below are relevant to this ticker.")
         else:
-            lines.append(f"{EMOJI_SEARCH} *MACA SCAN – AI COUNCIL*")
+            lines.append(f"{EMOJI_SEARCH} MACA SCAN – AI COUNCIL" if not use_md else f"{EMOJI_SEARCH} *MACA SCAN – AI COUNCIL*")
         lines.append(f"{now.strftime('%Y-%m-%d %H:%M UTC')}")
         lines.append("=" * 40)
         lines.append("")
 
         # Signal Inventory header with actual signals
         if signal_inventory:
-            by_source = signal_inventory.get("by_source", {})
+            by_source = signal_inventory.get("by_source", {}) or {}
             total = signal_inventory.get("total", 0)
             fred_count = by_source.get("FRED", 0)
             poly_count = by_source.get("Polymarket", 0)
             event_count = by_source.get("Events", 0)
             tech_count = by_source.get("Technical", 0)
 
-            lines.append(f"{EMOJI_CHART} *Signals Collected:* {total}")
+            lines.append(f"{EMOJI_CHART} Signals Collected: {total}" if not use_md else f"{EMOJI_CHART} *Signals Collected:* {total}")
             lines.append("")
 
-            lines.append(f"*📈 FRED ({fred_count})*")
-            fred_sigs = signal_inventory.get("fred_signals", [])
-            if fred_sigs:
-                for fs in fred_sigs[:3]:
-                    summary = esc(fs.get("summary", "")[:100])
-                    lines.append(f"  • {summary}")
-            else:
+            lines.append(f"FRED ({fred_count})" if not use_md else f"*📈 FRED ({fred_count})*")
+            fred_sigs = signal_inventory.get("fred_signals", []) or []
+            for fs in (fred_sigs[:3] if fred_sigs else []):
+                summary = esc((fs.get("summary") or "")[:100])
+                lines.append(f"  • {summary}")
+            if not fred_sigs:
                 lines.append("  • None collected")
             lines.append("")
 
-            lines.append(f"*🎲 Polymarket ({poly_count})*")
-            poly_sigs = signal_inventory.get("polymarket_signals", [])
-            if poly_sigs:
-                for ps in poly_sigs[:3]:
-                    summary = esc(ps.get("summary", "")[:100])
-                    lines.append(f"  • {summary}")
-            else:
+            lines.append(f"Polymarket ({poly_count})" if not use_md else f"*🎲 Polymarket ({poly_count})*")
+            poly_sigs = signal_inventory.get("polymarket_signals", []) or []
+            for ps in (poly_sigs[:3] if poly_sigs else []):
+                summary = esc((ps.get("summary") or "")[:100])
+                lines.append(f"  • {summary}")
+            if not poly_sigs:
                 lines.append("  • None collected")
             lines.append("")
 
-            lines.append(f"*📅 Events ({event_count})*")
+            lines.append(f"Events ({event_count})" if not use_md else f"*📅 Events ({event_count})*")
             if event_count > 0:
-                event_sigs = signal_inventory.get("event_signals", [])
-                if event_sigs:
-                    for es in event_sigs[:2]:
-                        summary = esc(es.get("summary", "")[:100])
-                        lines.append(f"  • {summary}")
+                event_sigs = signal_inventory.get("event_signals", []) or []
+                for es in event_sigs[:2]:
+                    summary = esc((es.get("summary") or "")[:100])
+                    lines.append(f"  • {summary}")
             else:
-                if ticker_checked:
-                    lines.append(f"  • No {ticker_checked.upper()}-specific events")
-                else:
-                    lines.append("  • No events detected (check logs)")
+                lines.append(f"  • No {ticker_checked.upper()}-specific events" if ticker_checked else "  • No events detected (check logs)")
             lines.append("")
 
-            lines.append(f"*📊 Technical ({tech_count})*")
+            lines.append(f"Technical ({tech_count})" if not use_md else f"*📊 Technical ({tech_count})*")
             if tech_count > 0:
                 lines.append(f"  • {tech_count} chart(s) analyzed")
             else:
@@ -1554,27 +1553,31 @@ class TelegramBot:
             lines.append("-" * 40)
             lines.append("")
 
-        # Sort proposals by source for consistent ordering
+        # Sort proposals by source; format each defensively so one bad proposal doesn't break the whole message
         source_order = {"grok": 0, "perplexity": 1, "chatgpt": 2}
         sorted_proposals = sorted(
-            proposals,
-            key=lambda p: source_order.get(p.get("ai_source", "").lower(), 99)
+            (p for p in (proposals or []) if isinstance(p, dict)),
+            key=lambda p: source_order.get((p.get("ai_source") or "").lower(), 99),
         )
 
         for proposal in sorted_proposals:
-            lines.append(self.format_ai_proposal(proposal, use_md=use_md))
+            try:
+                block = self.format_ai_proposal(proposal, use_md=use_md)
+                if block and isinstance(block, str):
+                    lines.append(block)
+            except Exception as e:
+                logger.warning("Format proposal failed: %s", e)
+                src = (proposal.get("ai_source") or "unknown").upper()
+                lines.append(f"{src}: [Proposal format error — see logs]")
             lines.append("")
 
         lines.append("-" * 40)
         lines.append("")
-        lines.append(f"{EMOJI_BRAIN} *Claude's synthesis follows...*")
+        lines.append(f"{EMOJI_BRAIN} Claude's synthesis follows..." if not use_md else f"{EMOJI_BRAIN} *Claude's synthesis follows...*")
 
         message = "\n".join(lines)
-        
-        # Truncate if too long for Telegram (4096 char limit)
-        if len(message) > 4000:
-            message = message[:3950] + "\n\n[Truncated for length...]"
-        
+        if len(message) > 3800:
+            message = message[:3780] + "\n\n[Truncated]"
         return message
 
     def format_decision_message(
@@ -1919,25 +1922,22 @@ class TelegramBot:
         When ticker_checked is set, header shows "MACA CHECK – TICKER" and signals are ticker-relevant.
         """
         import asyncio
-        # Message 1: AI Council with signal inventory — keep under 4096 and resilient to Markdown rejections
-        TELEGRAM_MAX = 4096
-        msg1_safe_len = 3800  # leave headroom for "[Truncated]" and encoding
+        # Message 1: AI Council — send as PLAIN TEXT only so Telegram never rejects on Markdown parse
         msg1_sent = False
         try:
             msg1 = self.format_ai_council_message(
-                proposals, signal_inventory=signal_inventory, ticker_checked=ticker_checked
+                proposals or [],
+                signal_inventory=signal_inventory or {},
+                ticker_checked=ticker_checked,
+                use_md=False,
             )
-            if len(msg1) > msg1_safe_len:
-                msg1 = msg1[: msg1_safe_len - 20] + "\n\n[Truncated]"
-            # Try Markdown first; on any failure retry as plain text so Message 1 always delivers
-            msg1_sent = await self.send_message(msg1, parse_mode="Markdown", message_type="maca_ai_council")
+            if not msg1 or not msg1.strip():
+                msg1 = "MACA AI Council (no content). Debate and synthesis follow below."
+            if len(msg1) > 3800:
+                msg1 = msg1[:3780] + "\n\n[Truncated]"
+            msg1_sent = await self.send_message(msg1, parse_mode=None, message_type="maca_ai_council")
             if not msg1_sent:
-                await asyncio.sleep(0.3)
-                if len(msg1) > msg1_safe_len:
-                    msg1 = msg1[: msg1_safe_len - 20] + "\n\n[Truncated]"
-                msg1_sent = await self.send_message(msg1, parse_mode=None, message_type="maca_ai_council")
-            if not msg1_sent:
-                logger.warning("AI Council message (Message 1) failed to send; sending plain-text fallback")
+                logger.warning("AI Council message (Message 1) failed to send; sending short fallback")
                 fallback = (
                     "MACA CHECK (AI Council summary could not be sent). Debate and synthesis follow below."
                 ) if ticker_checked else (
@@ -1945,7 +1945,7 @@ class TelegramBot:
                 )
                 await self.send_message(fallback, parse_mode=None, message_type="maca_ai_council_fallback")
         except Exception as e:
-            logger.error(f"Failed to send AI Council message: {e}")
+            logger.error("Failed to send AI Council message: %s", e)
             import traceback
             traceback.print_exc()
             try:
