@@ -644,16 +644,7 @@ class MACAOrchestrator:
                 final_conviction=conviction
             )
 
-            # Notify via Telegram ONLY if NOT proceeding to trade
-            if self.telegram and not proceed:
-                await self._notify_decision(
-                    final_decision=final_decision,
-                    synthesis=synthesis,
-                    proposals=proposals_with_tech,
-                    technical_analysis=technical_analysis,
-                    portfolio=portfolio,
-                    signal_inventory=signal_inventory,
-                )
+            # For ticker check, do NOT notify here — agent sends the 3-message summary (with trade_id if created).
 
             logger.info(f"MACA ticker check {ticker} complete: {decision_type} (conviction: {conviction})")
 
@@ -667,6 +658,11 @@ class MACAOrchestrator:
                 "reviews": [],  # No reviews in 2-phase architecture
                 "final_decision": final_decision,
                 "proceed_to_execution": proceed,
+                "debate": debate,
+                "vote_summary": vote_summary,
+                "technical_analysis": technical_analysis,
+                "portfolio": portfolio,
+                "signal_inventory": signal_inventory,
                 "timing": {
                     "total_ms": int((phase2_complete - start_time).total_seconds() * 1000),
                     "phase1_ms": int((phase1_complete - start_time).total_seconds() * 1000),
@@ -1907,14 +1903,16 @@ class MACAOrchestrator:
                        f"proceed={final_decision.get('proceed_to_execution')}, "
                        f"signal_inventory={signal_inventory}")
 
+            debate = maca_result.get("debate") or synthesis.get("debate")
+            vote_summary = maca_result.get("vote_summary") or synthesis.get("vote_summary")
             await self.telegram.send_maca_scan_summary(
                 proposals=proposals,
                 synthesis=synthesis,
                 technical_signals=technical_signals,
                 portfolio=portfolio,
                 trade_id=trade_id,
-                debate=synthesis.get("debate"),
-                vote_summary=synthesis.get("vote_summary"),
+                debate=debate,
+                vote_summary=vote_summary,
                 cycle_id=maca_result.get("cycle_id"),
                 signal_inventory=signal_inventory,
             )

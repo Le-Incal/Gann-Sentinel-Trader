@@ -1429,7 +1429,7 @@ class GannSentinelAgent:
                 except Exception as e:
                     logger.warning(f"Technical analysis failed for {ticker}: {e}")
 
-            # Run MACA ticker check
+            # Run MACA ticker check (orchestrator does not send Telegram; we send the 3-message summary only)
             result = await self.maca.run_ticker_check(
                 ticker=ticker,
                 portfolio=portfolio,
@@ -1438,20 +1438,19 @@ class GannSentinelAgent:
                 technical_analysis=technical_data
             )
 
-            # Format and send MACA result
-            message = self.telegram.format_maca_check_result(result)
-            await self.telegram.send_message(message, parse_mode=None, message_type="maca_check")
-
-            # Check if we should create a trade
             synthesis = result.get("synthesis", {})
             conviction = synthesis.get("recommendation", {}).get("conviction_score", 0)
             side = synthesis.get("recommendation", {}).get("side")
 
+            # If conviction >= 80 and BUY, create pending trade so Message 3 can show Approve/Reject buttons
             if conviction >= 80 and side == "BUY":
-                # Create pending trade for approval
-                await self._create_maca_trade(ticker, result, portfolio)
+                trade_id = await self._create_maca_trade(ticker, result, portfolio, send_approval_message=False)
+                if trade_id:
+                    result.setdefault("final_decision", {})["trade_id"] = trade_id
 
-            # Log completion
+            # Send only the 3-message MACA summary (AI Council, Debate, Chart + Synthesis + Portfolio); no fourth "MACA CHECK" message
+            await self.maca.send_maca_summary(result)
+
             cycle_cost = result.get("cycle_cost", {})
             logger.info(f"MACA check completed for {ticker}: "
                        f"conviction={conviction}, "
@@ -1469,9 +1468,11 @@ class GannSentinelAgent:
         self,
         ticker: str,
         maca_result: Dict[str, Any],
-        portfolio: Dict[str, Any]
+        portfolio: Dict[str, Any],
+        send_approval_message: bool = True,
     ) -> Optional[str]:
-        """Create a pending trade from MACA result."""
+        """Create a pending trade from MACA result. Returns trade_id.
+        When send_approval_message=False, caller will send the summary with Approve/Reject buttons."""
         try:
             synthesis = maca_result.get("synthesis", {})
             rec = synthesis.get("recommendation", {})
@@ -1497,9 +1498,9 @@ class GannSentinelAgent:
             if shares <= 0:
                 return None
 
-            # Create trade
+            # Create trade (Trade model uses trade_id and stop_price)
             trade = Trade(
-                id=str(uuid.uuid4()),
+                trade_id=str(uuid.uuid4()),
                 analysis_id=maca_result.get("cycle_id"),
                 ticker=ticker,
                 side=OrderSide.BUY,
@@ -1508,22 +1509,22 @@ class GannSentinelAgent:
                 status=TradeStatus.PENDING_APPROVAL,
                 thesis=thesis,
                 conviction_score=conviction,
-                stop_loss_price=current_price * (1 - stop_loss_pct / 100)
+                stop_price=current_price * (1 - stop_loss_pct / 100)
             )
 
             self.db.save_trade(trade.to_dict())
 
-            # Send approval message
-            await self.telegram.send_message(
-                f"\n{EMOJI_BULLET} Trade pending approval:\n"
-                f"  {trade.side.value} {trade.quantity} {ticker}\n"
-                f"  Conviction: {conviction}/100\n"
-                f"  ID: {trade.id[:8]}\n\n"
-                f"Reply /approve {trade.id[:8]} or /reject {trade.id[:8]}",
-                parse_mode=None
-            )
+            if send_approval_message:
+                await self.telegram.send_message(
+                    f"\n{EMOJI_BULLET} Trade pending approval:\n"
+                    f"  {trade.side.value} {trade.quantity} {ticker}\n"
+                    f"  Conviction: {conviction}/100\n"
+                    f"  ID: {trade.trade_id[:8]}\n\n"
+                    f"Reply /approve {trade.trade_id[:8]} or /reject {trade.trade_id[:8]}",
+                    parse_mode=None
+                )
 
-            return trade.id
+            return trade.trade_id
 
         except Exception as e:
             logger.error(f"Failed to create MACA trade: {e}")
