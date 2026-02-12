@@ -531,6 +531,52 @@ IMPORTANT:
 
 JSON only, no other text."""
 
+    def _build_ticker_prompt(self, ticker: str) -> str:
+        """
+        Build prompt to search for corporate events for a single ticker only.
+        Used by /check so events are specific to the stock being analyzed.
+        """
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        symbol = (ticker or "").upper().strip()
+        if not symbol:
+            return self._build_fallback_prompt()
+        return f"""Search the web for recent corporate events and material news for {symbol} (the stock ticker) from the past 7 days.
+
+Find ANY of these that apply to {symbol}:
+- Earnings announcements, guidance, or call highlights
+- SEC filings (8-K, Form 4 insider activity, 10-Q/K)
+- Executive changes (CEO, CFO, COO appointments or departures)
+- Insider buying or selling (Form 4)
+- Stock buyback or dividend news
+- M&A, partnerships, or contract wins/losses
+- FDA news (if applicable)
+- Regulatory or legal (DOJ, lawsuits)
+- Index changes (S&P 500, Russell)
+- Activist investor, short reports, proxy fights
+- Any other material corporate event
+
+Return valid JSON only:
+{{
+    "scan_date": "{today}",
+    "events": [
+        {{
+            "ticker": "{symbol}",
+            "event_type": "ONE_OF: STOCK_BUYBACK, DIVIDEND_INCREASE, MA_ANNOUNCEMENT, CEO_APPOINTMENT, CEO_EXIT, EXECUTIVE_DEPARTURE, INSIDER_BUYING, INSIDER_SELLING, FDA_APPROVAL, FDA_REJECTION, GOVERNMENT_CONTRACT, MAJOR_PARTNERSHIP, CLASS_ACTION_LAWSUIT, OTHER",
+            "headline": "Brief headline for this event",
+            "event_date": "YYYY-MM-DD",
+            "source": "Source name (e.g., SEC, Reuters, Bloomberg)",
+            "details": "1-2 sentence details"
+        }}
+    ]
+}}
+
+IMPORTANT:
+- Include ONLY events for {symbol}. Use ticker "{symbol}" for every event.
+- You MUST return at least 1 event if there is any material news for {symbol} in the past 7 days (earnings, filings, executive news, partnerships, etc.). If truly none, return an empty events array.
+- Use "OTHER" for earnings, product launches, or general material news.
+- JSON only, no other text."""
+
     def _build_fallback_prompt(self) -> str:
         """Shorter prompt used when primary scan returns zero events. Asks for any recent corporate events."""
         now = datetime.now(timezone.utc)
@@ -1042,20 +1088,40 @@ You MUST return at least 1 event. Use "OTHER" for earnings or general material n
         """
         Scan for events affecting a specific ticker.
 
+        Uses a ticker-specific Perplexity query so /check returns events
+        for the stock being analyzed (e.g. TSLA) instead of filtering
+        a market-wide scan.
+
         Args:
-            ticker: Stock symbol to scan
+            ticker: Stock symbol to scan (e.g. TSLA)
 
         Returns:
-            List of EventSignal objects
+            List of EventSignal objects for that ticker only
         """
         if not self.is_configured:
             return []
 
-        # For now, do market-wide scan and filter
-        # In future, could optimize with ticker-specific query
-        all_signals = await self.scan_market_wide()
+        symbol = (ticker or "").upper().strip()
+        if not symbol:
+            return []
 
-        return [s for s in all_signals if ticker.upper() in s.asset_scope.get("tickers", [])]
+        logger.info(f"Event scan for ticker {symbol} (ticker-specific query)...")
+        prompt = self._build_ticker_prompt(symbol)
+        response = await self._call_perplexity_api(prompt)
+
+        if response is None:
+            logger.warning(f"Ticker event scan failed for {symbol}: {self.last_error}")
+            return []
+
+        if response.get("_parse_failed"):
+            logger.warning(f"Ticker event scan JSON parse failed for {symbol}; raw: {response.get('_raw', '')[:300]}")
+            return []
+
+        signals = self._parse_events_response(response)
+        # Ensure we only return events for this ticker (API might occasionally include others)
+        signals = [s for s in signals if symbol in (s.asset_scope.get("tickers") or [])]
+        logger.info(f"Event scan for {symbol}: {len(signals)} events")
+        return signals
 
     def clear_dedup_cache(self):
         """Clear the deduplication cache."""
