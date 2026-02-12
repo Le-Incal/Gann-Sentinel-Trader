@@ -166,28 +166,37 @@ Return ONLY valid JSON (no markdown) in this exact structure:
 
         try:
             start_time = datetime.now(timezone.utc)
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            payload_search = {
+                "model": "gpt-4o-search-preview",
+                "messages": [
+                    {"role": "system", "content": "You are a market sentiment and cognitive bias analyst. Respond with JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.2,
+                "max_tokens": 2000,
+                "web_search_options": {},
+            }
+            payload_standard = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "You are a market sentiment and cognitive bias analyst. Respond with JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.2,
+                "max_tokens": 2000,
+            }
+            payload = payload_search if use_web_search else payload_standard
 
             async with httpx.AsyncClient(timeout=45.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "gpt-4o-search-preview" if use_web_search else self.model,
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": "You are a market sentiment and cognitive bias analyst. Respond with JSON only."
-                            },
-                            {"role": "user", "content": prompt}
-                        ],
-                        "temperature": 0.2,
-                        "max_tokens": 2000,
-                        **({"web_search_options": {}} if use_web_search else {}),
-                    }
-                )
+                response = await client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
+
+                if response.status_code != 200 and use_web_search and response.status_code in (400, 404, 422):
+                    logger.warning(f"ChatGPT search model failed ({response.status_code}); retrying with standard model (no web search)")
+                    response = await client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload_standard)
 
                 latency_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
 
