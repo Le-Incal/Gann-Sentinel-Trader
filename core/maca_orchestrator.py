@@ -142,6 +142,7 @@ class MACAOrchestrator:
         fred_signals: Optional[List[Dict[str, Any]]] = None,
         polymarket_signals: Optional[List[Dict[str, Any]]] = None,
         event_signals: Optional[List[Dict[str, Any]]] = None,
+        congress_signals: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """Build a compact, analyst-readable signal inventory for prompts.
 
@@ -155,6 +156,7 @@ class MACAOrchestrator:
         fred_signals = fred_signals or []
         polymarket_signals = polymarket_signals or []
         event_signals = event_signals or []
+        congress_signals = congress_signals or []
 
         def _sig_line(s: Dict[str, Any]) -> str:
             summary = s.get("summary") or s.get("description") or ""
@@ -174,6 +176,9 @@ class MACAOrchestrator:
             lines.append(_sig_line(s))
         lines.append(f"- Event signals: {len(event_signals)}")
         for s in event_signals[:6]:
+            lines.append(_sig_line(s))
+        lines.append(f"- Congress trades: {len(congress_signals)} (House member disclosures)")
+        for s in congress_signals[:6]:
             lines.append(_sig_line(s))
 
         return "\n".join(lines)
@@ -270,6 +275,7 @@ class MACAOrchestrator:
         fred_signals: List[Dict[str, Any]],
         polymarket_signals: List[Dict[str, Any]],
         event_signals: Optional[List[Dict[str, Any]]] = None,
+        congress_signals: Optional[List[Dict[str, Any]]] = None,
         technical_analysis: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         market_context: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -330,6 +336,8 @@ class MACAOrchestrator:
             # ================================================================
             # PHASE 1: Parallel thesis generation
             # ================================================================
+            congress_signals = list(congress_signals or [])
+
             proposals = await self._phase1_generate_theses(
                 cycle_id=cycle_id,
                 portfolio=portfolio,
@@ -338,6 +346,7 @@ class MACAOrchestrator:
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
                 event_signals=event_signals,
+                congress_signals=congress_signals,
                 technical_analysis=primary_tech,
                 technical_charts=tech_list,
             )
@@ -354,6 +363,7 @@ class MACAOrchestrator:
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
                 event_signals=event_signals,
+                congress_signals=congress_signals,
                 technical_analysis=primary_tech,
                 technical_charts=tech_list,
             )
@@ -508,6 +518,7 @@ class MACAOrchestrator:
         fred_signals: Optional[List[Dict[str, Any]]] = None,
         polymarket_signals: Optional[List[Dict[str, Any]]] = None,
         event_signals: Optional[List[Dict[str, Any]]] = None,
+        congress_signals: Optional[List[Dict[str, Any]]] = None,
         technical_analysis: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
@@ -561,7 +572,14 @@ class MACAOrchestrator:
                 ev_tickers = [str(t).upper() for t in (scope.get("tickers") or [])]
                 if ticker_upper in ev_tickers or not ev_tickers:
                     event_for_ticker.append(ev)
-            # No fallback: for /check we show only ticker-relevant events (0 when none match)
+            # Filter congress signals to this ticker
+            congress_for_ticker = []
+            for cs in (congress_signals or []):
+                scope = cs.get("asset_scope") or {}
+                cs_tickers = [str(t).upper() for t in (scope.get("tickers") or [])]
+                if ticker_upper in cs_tickers or not cs_tickers:
+                    congress_for_ticker.append(cs)
+            # No fallback: for /check we show only ticker-relevant signals (0 when none match)
 
             # Market context and signal context for ticker-only analysis
             market_context = (
@@ -574,6 +592,7 @@ class MACAOrchestrator:
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
                 event_signals=event_for_ticker,
+                congress_signals=congress_for_ticker,
             )
 
             # ================================================================
@@ -602,6 +621,7 @@ class MACAOrchestrator:
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
                 event_signals=event_signals,
+                congress_signals=congress_for_ticker,
                 technical_analysis=technical_analysis,
                 run_debate_even_if_no_candidate=True,
             )
@@ -1010,6 +1030,7 @@ class MACAOrchestrator:
         fred_signals: Optional[List[Dict[str, Any]]] = None,
         polymarket_signals: Optional[List[Dict[str, Any]]] = None,
         event_signals: Optional[List[Dict[str, Any]]] = None,
+        congress_signals: Optional[List[Dict[str, Any]]] = None,
         technical_analysis: Optional[Dict[str, Any]] = None,
         technical_charts: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
@@ -1042,6 +1063,7 @@ class MACAOrchestrator:
             fred_signals=fred_signals,
             polymarket_signals=polymarket_signals,
             event_signals=event_signals,
+            congress_signals=congress_signals,
         )
         trading_skills = self._get_trading_skills_context()
 
@@ -1142,6 +1164,7 @@ class MACAOrchestrator:
         fred_signals: List[Dict[str, Any]],
         polymarket_signals: List[Dict[str, Any]],
         event_signals: Optional[List[Dict[str, Any]]] = None,
+        congress_signals: Optional[List[Dict[str, Any]]] = None,
         technical_analysis: Optional[Dict[str, Any]] = None,
         technical_charts: Optional[List[Dict[str, Any]]] = None,
         run_debate_even_if_no_candidate: bool = False,
@@ -1163,23 +1186,27 @@ class MACAOrchestrator:
                 "summary": (sig.get("summary") or sig.get("description") or "")[:150],
             }
 
+        congress_sigs = congress_signals or []
         signal_inventory: Dict[str, Any] = {
             "by_source": {
                 "FRED": len(fred_signals or []),
                 "Polymarket": len(polymarket_signals or []),
                 "Events": len(event_signals or []),
+                "Congress": len(congress_sigs),
                 "Technical": tech_count,
             },
             "total": int(
                 len(fred_signals or [])
                 + len(polymarket_signals or [])
                 + len(event_signals or [])
+                + len(congress_sigs)
                 + tech_count
             ),
             # Include actual signal details for Telegram display; Chair can use technical_charts
             "fred_signals": [_extract_signal_summary(s) for s in (fred_signals or [])[:5]],
             "polymarket_signals": [_extract_signal_summary(s) for s in (polymarket_signals or [])[:5]],
             "event_signals": [_extract_signal_summary(s) for s in (event_signals or [])[:3]],
+            "congress_signals": [_extract_signal_summary(s) for s in congress_sigs[:5]],
             "technical_charts": tech_list,
         }
 

@@ -11,6 +11,7 @@ alpaca-py>=0.13.0
 
 # Data handling
 pandas>=2.0.0
+pdfplumber>=0.10.0
 
 # Async support
 asyncio-throttle>=1.0.0

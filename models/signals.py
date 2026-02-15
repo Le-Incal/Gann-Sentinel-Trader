@@ -30,6 +30,7 @@ class SignalSource(Enum):
     FRED = "fred"               # Federal Reserve Economic Data
     POLYMARKET = "polymarket"   # Prediction markets
     ALPACA = "alpaca"           # Price data from broker
+    CONGRESS = "congress"       # Congressional STOCK Act disclosures (House)
     MANUAL = "manual"           # Manually entered signals
 
 

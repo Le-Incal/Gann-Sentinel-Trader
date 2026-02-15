@@ -1548,6 +1548,17 @@ class TelegramBot:
                 lines.append(f"  • No {ticker_checked.upper()}-specific events" if ticker_checked else "  • No events detected (check logs)")
             lines.append("")
 
+            congress_count = by_source.get("Congress", 0)
+            lines.append(f"Congress ({congress_count})" if not use_md else f"*🏛 Congress ({congress_count})*")
+            if congress_count > 0:
+                congress_sigs = signal_inventory.get("congress_signals", []) or []
+                for cs in congress_sigs[:3]:
+                    summary = esc((cs.get("summary") or "")[:100])
+                    lines.append(f"  • {summary}")
+            else:
+                lines.append("  • No House member trades (Pelosi, etc.)")
+            lines.append("")
+
             lines.append(f"Technical ({tech_count})" if not use_md else f"*📊 Technical ({tech_count})*")
             if tech_count > 0:
                 lines.append(f"  • {tech_count} chart(s) analyzed")

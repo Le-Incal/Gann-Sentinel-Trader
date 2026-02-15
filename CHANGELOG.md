@@ -6,6 +6,14 @@ All notable changes to Gann Sentinel Trader are documented in this file.
 
 ## [Unreleased]
 
+### Congress Scanner (v3.1.2)
+- **ADD:** Congress Scanner tracking House member stock trades (STOCK Act disclosures)
+- **Source:** House Clerk public data (free) — no paid APIs. Based on JayCh99/congress-trades approach.
+- **Watchlist:** Pelosi, McCarthy, McConnell, Schumer, Johnson (configurable via `CONGRESS_WATCHLIST` env)
+- **Scope:** House of Representatives only; 45-day disclosure lag per STOCK Act
+- **Integration:** Signals fed to MACA committee; Congress section in Telegram signal inventory
+- **Dependency:** `pdfplumber` for PTR PDF parsing
+
 ### A) Event scan
 - Event scanner was already wired; it runs when `XAI_API_KEY` is set and logs "Event Scanner not configured" when skipped. No code change; confirmed behavior.
 

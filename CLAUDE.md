@@ -6,7 +6,7 @@
 
 | Item | Value |
 |------|-------|
-| Version | 3.1.1 |
+| Version | 3.1.2 |
 | Status | Production (Paper Trading) |
 | Deployment | Railway (auto-deploy from GitHub main) |
 | URL | https://gann-sentinel-trader-production.up.railway.app |
@@ -39,14 +39,14 @@ Second-Order: SpaceX IPO → attention to space sector → investors comparison 
 
 ---
 
-## 2. Architecture Overview (v3.1.1)
+## 2. Architecture Overview (v3.1.2)
 
 ```
-Signal Collection (5 sources)
+Signal Collection (6 sources)
        ↓
 ┌──────────────────────────────────────────────────┐
 │  FRED (7) │ Polymarket (whitelist) │ Events (27) │
-│  Technical (IEX) │ Grok (sentiment)              │
+│  Technical (IEX) │ Congress (House) │ Grok (sentiment) │
 └──────────────────────────────────────────────────┘
        ↓
 AI Analysts (3 independent theses)
@@ -83,6 +83,7 @@ Each AI model has a **single epistemic role**. No model may operate outside its 
 | Polymarket Scanner | Prediction Markets | 12 investment categories (WHITELIST - no sports) |
 | Event Scanner | Perplexity API | 27 corporate event types (weekend-aware) |
 | Technical Scanner | Alpaca (IEX) | Chart analysis, market state, support/resistance |
+| Congress Scanner | House Clerk (STOCK Act) | House member trades (Pelosi, etc.) — leading indicator |
 
 Scanners **must not** propose trades or opinions.
 
@@ -209,7 +210,8 @@ gann-sentinel-trader/
 │   ├── fred_scanner.py      # Federal Reserve (7 series)
 │   ├── polymarket_scanner.py # Whitelist filtering (12 categories)
 │   ├── technical_scanner.py # Alpaca IEX charts
-│   └── event_scanner.py     # 27 event types (weekend-aware)
+│   ├── event_scanner.py     # 27 event types (weekend-aware)
+│   └── congress_scanner.py  # House member trades (Pelosi, etc.)
 │
 ├── ANALYZERS (AI Council)
 │   ├── perplexity_analyst.py   # 6-hour recency requirement
@@ -257,6 +259,7 @@ FRED_API_KEY=          # Macro data
 
 # Optional
 LOGS_API_TOKEN=        # Remote monitoring
+CONGRESS_WATCHLIST=    # House members to track, comma-separated (e.g. Pelosi,McCarthy). Default: Pelosi, McCarthy, McConnell, Schumer, Johnson
 LOG_LEVEL=INFO
 ```
 
@@ -282,7 +285,7 @@ LOG_LEVEL=INFO
 
 ---
 
-## 9. Current State (v3.1.1)
+## 9. Current State (v3.1.2)
 
 ### What's Working ✓
 - **3 AI analysts** generating independent theses
@@ -290,6 +293,7 @@ LOG_LEVEL=INFO
 - **Polymarket whitelist filtering** (12 investment categories, no sports)
 - **Technical Scanner** using free IEX data
 - **Event Scanner** with weekend-aware lookback
+- **Congress Scanner** tracking House member trades (Pelosi, etc.) — free House Clerk data
 - **Perplexity** with 6-hour recency requirement
 - **3-part Telegram messages** with interactive buttons
 - **Signal inventory** showing all collected signals
@@ -367,7 +371,15 @@ Execution → Alpaca paper trading
 
 ---
 
-## 13. Recent Fixes (v3.1.1)
+## 13. Recent Fixes (v3.1.2)
+
+### Congress Scanner
+- **ADD:** New scanner tracking House member stock trades (STOCK Act disclosures)
+- **Source:** House Clerk public data (free) — no paid APIs
+- **Watchlist:** Pelosi, McCarthy, McConnell, Schumer, Johnson (configurable via CONGRESS_WATCHLIST)
+- **Note:** 45-day disclosure lag per STOCK Act; House only (no Senate)
+
+### v3.1.1 Fixes
 
 ### Technical Scanner
 - **Issue:** Alpaca SIP data requires paid subscription
@@ -391,7 +403,7 @@ Execution → Alpaca paper trading
 
 ---
 
-## 14. Working Agreements
+## 14. Working Agreements (unchanged)
 
 1. **Safety First** - Human approval gate is non-negotiable
 2. **Observability** - Log everything, make debugging easy
@@ -410,5 +422,5 @@ Execution → Alpaca paper trading
 
 ---
 
-*Last Updated: January 17, 2026*
+*Last Updated: February 13, 2026*
 *Maintainer: Kyle + Claude*

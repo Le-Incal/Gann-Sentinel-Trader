@@ -124,6 +124,10 @@ class Config:
     # FRED SERIES TO TRACK
     # ==========================================================================
     
+    # Congress Scanner: House members to track (by last name). Pelosi is leading indicator.
+    # Set via env: CONGRESS_WATCHLIST=Pelosi,McCarthy (comma-separated). Default in CongressScanner if unset.
+    CONGRESS_WATCHLIST: list = None  # Parsed from os.getenv("CONGRESS_WATCHLIST") in CongressScanner
+
     FRED_SERIES: list = [
         "DGS10",      # 10-Year Treasury Yield
         "DGS2",       # 2-Year Treasury Yield

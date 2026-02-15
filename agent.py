@@ -40,6 +40,7 @@ except Exception as e:
         async def scan_ticker(self, *args, **kwargs):
             return None
 from scanners.event_scanner import EventScanner
+from scanners.congress_scanner import CongressScanner
 from analyzers.claude_analyst import ClaudeAnalyst, ClaudeMACAAnalyst
 from executors.risk_engine import RiskEngine
 from executors.alpaca_executor import AlpacaExecutor
@@ -135,6 +136,7 @@ class GannSentinelAgent:
         self.polymarket = PolymarketScanner()
         self.technical = TechnicalScanner()
         self.event_scanner = EventScanner()
+        self.congress_scanner = CongressScanner()
         self.risk_engine = RiskEngine()
         self.executor = AlpacaExecutor()
         self.telegram = TelegramBot(
@@ -197,6 +199,7 @@ class GannSentinelAgent:
         logger.info("All components initialized successfully")
         logger.info(f"Technical Scanner: {'CONFIGURED' if getattr(self.technical, 'is_configured', False) else 'NOT CONFIGURED'}")
         logger.info(f"Event Scanner: {'CONFIGURED' if self.event_scanner.is_configured else 'NOT CONFIGURED'}")
+        logger.info("Congress Scanner: CONFIGURED (House Clerk)")
         logger.info(f"Learning Engine: ENABLED")
         logger.info(f"Smart Scheduling: Morning (9:35 AM ET) + Midday (12:30 PM ET)")
         logger.info(f"MACA: {'ENABLED' if self.maca else 'DISABLED'}")
@@ -639,6 +642,36 @@ class GannSentinelAgent:
                 error=str(type(e).__name__)
             )
 
+        # =================================================================
+        # CONGRESS SCANNER - House member trades (Pelosi, etc.)
+        # =================================================================
+        congress_signals: List[Signal] = []
+        congress_signals_dict: List[Dict[str, Any]] = []
+        try:
+            logger.info("Running congress scan (House member trades)...")
+            congress_signals = await self.congress_scanner.scan()
+            for sig in congress_signals:
+                d = sig.to_dict() if hasattr(sig, "to_dict") else sig
+                congress_signals_dict.append(d)
+                signals.append(sig)
+                self.telegram.record_signal(d)
+            self.telegram.record_source_query(
+                source="Congress Scanner",
+                query="House PTR disclosures (Pelosi, etc.)",
+                signals_returned=len(congress_signals),
+                error=None
+            )
+            logger.info(f"Got {len(congress_signals)} congress trade signals")
+        except Exception as e:
+            logger.warning(f"Congress scan failed: {e}")
+            self.db.log_error("scan_error", "congress_scanner", str(e))
+            self.telegram.record_source_query(
+                source="Congress Scanner",
+                query="House PTR disclosures",
+                signals_returned=0,
+                error=str(type(e).__name__)
+            )
+
         # Save all signals
         for signal in signals:
             try:
@@ -701,6 +734,7 @@ class GannSentinelAgent:
                     fred_signals=fred_signals_dict,
                     polymarket_signals=polymarket_signals_dict,
                     event_signals=event_signals_dict,
+                    congress_signals=congress_signals_dict,
                     technical_analysis=technical_signals if technical_signals else None,
                     market_context=learning_context.get("learning_summary", "")
                 )
@@ -1430,11 +1464,12 @@ class GannSentinelAgent:
 
     async def _gather_signals_for_check(
         self, ticker: Optional[str] = None
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Gather FRED, Polymarket, and event signals for /check. When ticker is set, events and Polymarket are ticker-scoped."""
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Gather FRED, Polymarket, event, and congress signals for /check. When ticker is set, events/Polymarket/congress are ticker-scoped."""
         fred_list: List[Dict[str, Any]] = []
         polymarket_list: List[Dict[str, Any]] = []
         event_list: List[Dict[str, Any]] = []
+        congress_list: List[Dict[str, Any]] = []
 
         def to_dict_list(raw: Any) -> List[Dict[str, Any]]:
             if not raw:
@@ -1498,7 +1533,20 @@ class GannSentinelAgent:
             logger.warning(f"Event gather for check failed: {e}")
             event_list = [self._make_fallback_signal("event_scanner", "Events: scan failed; use technical and other sources.")]
 
-        return fred_list, polymarket_list, event_list
+        # Congress: scan and optionally filter to ticker-relevant
+        try:
+            congress_raw = await self.congress_scanner.scan()
+            congress_list = [x.to_dict() if hasattr(x, "to_dict") else x for x in congress_raw]
+            if ticker and congress_list:
+                ticker_upper = (ticker or "").upper()
+                congress_list = [
+                    s for s in congress_list
+                    if ticker_upper in [str(t).upper() for t in (s.get("asset_scope") or {}).get("tickers", [])]
+                ]
+        except Exception as e:
+            logger.warning(f"Congress gather for check failed: {e}")
+
+        return fred_list, polymarket_list, event_list, congress_list
 
     async def _handle_maca_check(self, ticker: str) -> None:
         """
@@ -1545,8 +1593,8 @@ class GannSentinelAgent:
                 except Exception as e:
                     logger.warning(f"Technical analysis failed for {ticker}: {e}")
 
-            # Gather FRED, Polymarket, and event signals (ticker-scoped for /check)
-            fred_signals, polymarket_signals, event_signals = await self._gather_signals_for_check(ticker=ticker)
+            # Gather FRED, Polymarket, event, and congress signals (ticker-scoped for /check)
+            fred_signals, polymarket_signals, event_signals, congress_signals = await self._gather_signals_for_check(ticker=ticker)
 
             # Run MACA ticker check (orchestrator does not send Telegram; we send the 3-message summary only)
             result = await self.maca.run_ticker_check(
@@ -1555,6 +1603,7 @@ class GannSentinelAgent:
                 fred_signals=fred_signals,
                 polymarket_signals=polymarket_signals,
                 event_signals=event_signals,
+                congress_signals=congress_signals,
                 technical_analysis=technical_data
             )
 
