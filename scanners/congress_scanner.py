@@ -183,14 +183,14 @@ def _parse_overview_xml(xml_path: Path, watchlist: List[str]) -> List[Filing]:
     return filings
 
 
-def _download_ptr_pdf(client: httpx.AsyncClient, filing: Filing, cache_dir: Path) -> Optional[bytes]:
+async def _download_ptr_pdf(client: httpx.AsyncClient, filing: Filing, cache_dir: Path) -> Optional[bytes]:
     """Download PTR PDF. Returns content or None."""
     pdf_path = cache_dir / "ptr" / filing.year / f"{filing.doc_id}.pdf"
     if pdf_path.exists():
         return pdf_path.read_bytes()
     url = f"https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/{filing.year}/{filing.doc_id}.pdf"
     try:
-        r = client.get(url, timeout=30.0)
+        r = await client.get(url, timeout=30.0)
         r.raise_for_status()
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
         pdf_path.write_bytes(r.content)
