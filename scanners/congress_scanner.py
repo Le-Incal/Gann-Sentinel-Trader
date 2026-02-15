@@ -53,6 +53,17 @@ TRANSACTION_DOLLAR_RANGES = [
 ]
 EXTRA_TRANSACTION_HEADERS = ["FILING STATUS", "SUBHOLDING OF", "DESCRIPTION", "LOCATION", "F S", "S O"]
 
+# PDF junk that gets mistaken for asset names (headers, footers, form labels)
+ASSET_NAME_JUNK_PATTERNS = [
+    r"FILING\s+ID\s*#?\d*",
+    r"P\s+T\s+R\s*",
+    r"CLERK\s+OF\s+THE",
+    r"ID\s+OWNER\s+ASSET",
+    r"PERIODIC\s+TRANSACTION",
+    r"^\d{8,}$",  # doc ID as number
+    r"SPINOFF|SURRENDERED|VISTRA",  # partial form text
+]
+
 
 @dataclass
 class Filing:
@@ -260,13 +271,19 @@ def _separate_transactions(text: str) -> List[str]:
     return transactions
 
 
+# Ownership/transaction codes that look like tickers but aren't
+FALSE_TICKER_CODES = {"P", "S", "SP", "JT", "DC", "ID", "PR", "PT", "C"}
+
+
 def _parse_transaction_block(block: str, member_name: str) -> Optional[CongressTransaction]:
     """Parse a single transaction block into CongressTransaction."""
     text = block
     ticker = ""
-    m = re.search(r"\(([A-Z]{1,5})\)", text)
+    m = re.search(r"\(([A-Z]{2,5})\)", text)  # 2-5 chars (excludes single P/S)
     if m:
-        ticker = m.group(1)
+        cand = m.group(1)
+        if cand not in FALSE_TICKER_CODES and len(cand) >= 2:
+            ticker = cand
         text = text.replace(m.group(0), "")
 
     dates_m = re.search(r"(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})", text)
@@ -301,6 +318,19 @@ def _parse_transaction_block(block: str, member_name: str) -> Optional[CongressT
     )
 
 
+def _is_junk_asset_name(name: str) -> bool:
+    """Return True if asset_name looks like PDF junk, not a real security."""
+    if not name or len(name) < 3:
+        return True
+    n = name.upper().strip()
+    for pat in ASSET_NAME_JUNK_PATTERNS:
+        if re.search(pat, n, re.IGNORECASE):
+            return True
+    if n.startswith("FILING") or n.startswith("ID #") or "CLERK" in n:
+        return True
+    return False
+
+
 def _transaction_to_directional_bias(txn: CongressTransaction) -> DirectionalBias:
     t = (txn.transaction_type or "").upper()
     if "P " in t or t.startswith("P"):
@@ -310,17 +340,66 @@ def _transaction_to_directional_bias(txn: CongressTransaction) -> DirectionalBia
     return DirectionalBias.MIXED
 
 
+def _short_dollar_range(rng: str) -> str:
+    """Shorten dollar range for display (e.g. '$1,000,001 - $5,000,000' -> '$1M-$5M')."""
+    if not rng:
+        return ""
+    r = rng.upper().replace("$", "").replace(",", "")
+    if "1001" in r and "15000" in r:
+        return "$1K-$15K"
+    if "15001" in r and "50000" in r:
+        return "$15K-$50K"
+    if "50001" in r and "100000" in r:
+        return "$50K-$100K"
+    if "100001" in r and "250000" in r:
+        return "$100K-$250K"
+    if "250001" in r and "500000" in r:
+        return "$250K-$500K"
+    if "500001" in r and "1000000" in r:
+        return "$500K-$1M"
+    if "1000001" in r and "5000000" in r:
+        return "$1M-$5M"
+    if "5000001" in r and "25000000" in r:
+        return "$5M-$25M"
+    if "25000001" in r and "50000000" in r:
+        return "$25M-$50M"
+    if "OVER" in rng.upper() and "50" in r:
+        return ">$50M"
+    if "SPOUSE" in rng.upper() or "DEPENDENT" in rng.upper():
+        return ">$1M (spouse/dependent)"
+    return rng[:35]  # fallback truncate
+
+
 def _transaction_to_signal(txn: CongressTransaction) -> Signal:
-    """Convert a CongressTransaction to a GST Signal."""
+    """Convert a CongressTransaction to a GST Signal with human-readable summary."""
     bias = _transaction_to_directional_bias(txn)
     tickers = [txn.ticker] if txn.ticker else []
-    action = "Bought" if bias == DirectionalBias.POSITIVE else "Sold"
+    action = "bought" if bias == DirectionalBias.POSITIVE else "sold"
+
+    # Use ticker as primary identifier; fall back to asset_name only if it's real
+    display_asset = txn.ticker or ""
+    if not _is_junk_asset_name(txn.asset_name) and txn.asset_name:
+        display_asset = f"{txn.asset_name}" + (f" ({txn.ticker})" if txn.ticker else "")
+    elif txn.ticker:
+        display_asset = txn.ticker
+    else:
+        display_asset = "securities"  # fallback when we have neither
+
+    amt = _short_dollar_range(txn.dollar_range)
+    amt_str = f" {amt}" if amt else ""
+
+    # Clear, actionable summary: who did what, when, and what it means
     summary = (
-        f"{txn.member_name} {action} {txn.asset_name}"
-        + (f" ({txn.ticker})" if txn.ticker else "")
-        + f" {txn.transaction_date}"
-        + (f", {txn.dollar_range}" if txn.dollar_range else "")
+        f"{txn.member_name} {action} {display_asset}{amt_str} on {txn.transaction_date}. "
+        f"STOCK Act PTR disclosure (required within 45 days)."
     )
+
+    evidence_excerpt = (
+        f"PTR = Periodic Transaction Report. {txn.transaction_type} on {txn.transaction_date}. "
+        f"Amount: {txn.dollar_range or 'not specified'}. "
+        f"Use as leading indicator — congressional trades have preceded market moves."
+    )
+
     return Signal(
         signal_id=str(uuid.uuid4()),
         signal_type=SignalType.POLICY,
@@ -329,9 +408,9 @@ def _transaction_to_signal(txn: CongressTransaction) -> Signal:
         summary=summary,
         evidence=[
             Evidence(
-                source="House Clerk PTR",
+                source="House Clerk PTR (STOCK Act)",
                 source_tier="official",
-                excerpt=f"{txn.transaction_type} {txn.transaction_date} {txn.dollar_range}",
+                excerpt=evidence_excerpt,
                 timestamp_utc=datetime.now(timezone.utc),
             )
         ],

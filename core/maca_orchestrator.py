@@ -177,7 +177,10 @@ class MACAOrchestrator:
         lines.append(f"- Event signals: {len(event_signals)}")
         for s in event_signals[:6]:
             lines.append(_sig_line(s))
-        lines.append(f"- Congress trades: {len(congress_signals)} (House member disclosures)")
+        lines.append(
+            f"- Congress trades: {len(congress_signals)} (House member STOCK Act disclosures — "
+            "leading indicator; format: Member bought/sold TICKER $range on date)"
+        )
         for s in congress_signals[:6]:
             lines.append(_sig_line(s))
 
