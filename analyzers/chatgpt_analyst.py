@@ -9,12 +9,18 @@ import os
 import json
 import logging
 import uuid
+import asyncio
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Retry config for rate limits (429) and server errors (503)
+OPENAI_RETRY_STATUSES = (429, 503)
+OPENAI_MAX_RETRIES = 3
+OPENAI_RETRY_BASE_SECONDS = 2
 
 
 class ChatGPTAnalyst:
@@ -45,6 +51,39 @@ class ChatGPTAnalyst:
     def is_configured(self) -> bool:
         """Check if analyst is properly configured."""
         return bool(self.api_key)
+
+    async def _post_with_retry(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: Dict[str, str],
+        json_body: Dict[str, Any],
+        timeout: float = 45.0,
+    ) -> httpx.Response:
+        """POST to OpenAI with retries on 429 (rate limit) and 503 (overloaded)."""
+        last_response: Optional[httpx.Response] = None
+        for attempt in range(OPENAI_MAX_RETRIES):
+            resp = await client.post(url, headers=headers, json=json_body, timeout=timeout)
+            if resp.status_code == 200:
+                return resp
+            if resp.status_code not in OPENAI_RETRY_STATUSES:
+                return resp
+            last_response = resp
+            # Honor Retry-After if present (seconds)
+            wait_sec = OPENAI_RETRY_BASE_SECONDS ** (attempt + 1)
+            retry_after = resp.headers.get("Retry-After")
+            if retry_after is not None:
+                try:
+                    wait_sec = min(int(retry_after), 60)
+                except ValueError:
+                    pass
+            if attempt < OPENAI_MAX_RETRIES - 1:
+                logger.warning(
+                    "OpenAI rate limit or overload (status=%s); retrying in %s seconds (attempt %s/%s)",
+                    resp.status_code, wait_sec, attempt + 1, OPENAI_MAX_RETRIES,
+                )
+                await asyncio.sleep(wait_sec)
+        return last_response or resp
 
     def _generate_proposal_id(self) -> str:
         """Generate unique proposal ID."""
@@ -192,17 +231,26 @@ Return ONLY valid JSON (no markdown) in this exact structure:
             payload = payload_search if use_web_search else payload_standard
 
             async with httpx.AsyncClient(timeout=45.0) as client:
-                response = await client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
+                response = await self._post_with_retry(
+                    client, f"{self.base_url}/chat/completions", headers, payload, timeout=45.0
+                )
 
                 if response.status_code != 200 and use_web_search and response.status_code in (400, 404, 422):
                     logger.warning(f"ChatGPT search model failed ({response.status_code}); retrying with standard model (no web search)")
-                    response = await client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload_standard)
+                    response = await self._post_with_retry(
+                        client, f"{self.base_url}/chat/completions", headers, payload_standard, timeout=45.0
+                    )
 
                 latency_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
 
                 if response.status_code != 200:
-                    logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
-                    return self._empty_proposal(scan_cycle_id, f"API error: {response.status_code}")
+                    err_msg = (
+                        "Rate limited (429); try again later"
+                        if response.status_code == 429
+                        else f"API error: {response.status_code}"
+                    )
+                    logger.error(f"OpenAI API error: {response.status_code} - {response.text[:300]}")
+                    return self._empty_proposal(scan_cycle_id, err_msg)
 
                 data = response.json()
                 content = data["choices"][0]["message"]["content"]
@@ -308,30 +356,28 @@ Be specific about risk concerns. Quantify where possible."""
         try:
             start_time = datetime.now(timezone.utc)
 
+            headers_review = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            body_review = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "You are a risk analyst. Always respond with valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.1,
+                "max_tokens": 1000
+            }
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": self.model,
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": "You are a risk analyst. Always respond with valid JSON only."
-                            },
-                            {"role": "user", "content": prompt}
-                        ],
-                        "temperature": 0.1,
-                        "max_tokens": 1000
-                    }
+                response = await self._post_with_retry(
+                    client, f"{self.base_url}/chat/completions", headers_review, body_review, timeout=30.0
                 )
 
                 if response.status_code != 200:
+                    err_msg = "Rate limited (429)" if response.status_code == 429 else "API error"
                     logger.error(f"OpenAI review API error: {response.status_code}")
-                    return self._empty_review(scan_cycle_id, synthesis.get("synthesis_id"), "API error")
+                    return self._empty_review(scan_cycle_id, synthesis.get("synthesis_id"), err_msg)
 
                 data = response.json()
                 content = data["choices"][0]["message"]["content"]
@@ -539,12 +585,15 @@ Output ONLY JSON in this schema:
             }
 
             async with httpx.AsyncClient(timeout=45.0) as client:
-                resp = await client.post(f"{self.base_url}/chat/completions", headers=headers, json=body)
+                resp = await self._post_with_retry(
+                    client, f"{self.base_url}/chat/completions", headers, body, timeout=45.0
+                )
                 if resp.status_code != 200:
+                    msg = "Rate limited (429)" if resp.status_code == 429 else f"Debate API error {resp.status_code}"
                     return {
                         "speaker": "chatgpt",
                         "round": round_num,
-                        "message": f"Debate API error {resp.status_code}",
+                        "message": msg,
                         "vote": {"action": "HOLD", "ticker": None, "side": None, "confidence": 0.0},
                         "changed_mind": False,
                         "status": "error",
